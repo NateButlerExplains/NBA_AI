@@ -27,8 +27,8 @@ import sqlite3
 from copy import deepcopy
 
 from src.config import config
+from src.database_updater.pbp import get_pbp, save_pbp
 from src.logging_config import setup_logging
-from src.pbp import get_pbp, save_pbp
 from src.utils import (
     log_execution_time,
     lookup_basic_game_info,

@@ -28,9 +28,9 @@ import logging
 import sqlite3
 
 from src.config import config
-from src.database_updater import update_database
+from src.database_updater.database_update_manager import update_database
+from src.database_updater.predictions import make_current_predictions
 from src.logging_config import setup_logging
-from src.predictions import make_current_predictions
 from src.utils import (
     date_to_season,
     game_id_to_season,
@@ -97,7 +97,7 @@ def get_basic_data(conn, game_ids, predictor_name):
                 "pre_game_data_finalized": row["pre_game_data_finalized"],
                 "game_data_finalized": row["game_data_finalized"],
                 "game_states": [],
-                "predictions": {},
+                "predictions": {"pre_game": {}},
             }
 
         # Adding the latest game state (only one per game)
@@ -188,10 +188,7 @@ def get_normal_data(conn, game_ids, predictor_name):
                 "game_data_finalized": row["game_data_finalized"],
                 "play_by_play": [],
                 "game_states": [],
-                "predictions": {
-                    "pre_game": None,
-                    "current": None,
-                },
+                "predictions": {"pre_game": {}},
             }
 
         # Extracting specific fields from log_data

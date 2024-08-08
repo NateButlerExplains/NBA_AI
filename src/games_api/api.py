@@ -27,7 +27,7 @@ Error Handling:
 from flask import Blueprint, jsonify, request
 
 from src.config import config
-from src.games import get_games, get_games_for_date
+from src.games_api.games import get_games, get_games_for_date
 from src.utils import (
     date_to_season,
     game_id_to_season,

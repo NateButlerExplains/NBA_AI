@@ -36,8 +36,11 @@ import numpy as np
 import pandas as pd
 
 from src.config import config
+from src.database_updater.prior_states import (
+    determine_prior_states_needed,
+    load_prior_states,
+)
 from src.logging_config import setup_logging
-from src.prior_states import determine_prior_states_needed, load_prior_states
 from src.utils import log_execution_time, lookup_basic_game_info
 
 # Configuration
@@ -126,9 +129,23 @@ def create_feature_sets(prior_states_dict, db_path=DB_PATH):
         # Convert the DataFrame to a dictionary and store it in the features_dict
         features_dict[game_id] = features_df.to_dict(orient="records")[0]
 
-    logging.info(f"Feature sets created successfully for {len(features_dict)} games.")
-    if features_dict:
-        example_game_id, example_features = next(iter(features_dict.items()))
+    # Calculate the number of successful and unsuccessful feature set creations
+    total_games = len(prior_states_dict)
+    successful_games = sum(1 for features in features_dict.values() if features)
+    no_feature_games_count = total_games - successful_games
+
+    # Log the results
+    logging.info(f"Feature sets created successfully for {successful_games} games.")
+    logging.info(
+        f"No feature sets were created for {no_feature_games_count} games due to insufficient prior states."
+    )
+
+    if successful_games > 0:
+        example_game_id, example_features = next(
+            (game_id, features)
+            for game_id, features in features_dict.items()
+            if features
+        )
         logging.debug(
             f"Example feature set - Game Id {example_game_id}: {example_features}"
         )
@@ -149,6 +166,7 @@ def save_feature_sets(feature_sets, db_path=DB_PATH):
         None. The function updates the database directly with the provided information.
     """
     logging.info(f"Saving feature sets for {len(feature_sets)} games...")
+
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
@@ -158,7 +176,7 @@ def save_feature_sets(feature_sets, db_path=DB_PATH):
             (
                 game_id,
                 current_datetime,  # Use the current datetime for all entries
-                json.dumps(feature_set),
+                json.dumps(feature_set),  # Convert feature set to JSON
             )
             for game_id, feature_set in feature_sets.items()
         ]
@@ -172,7 +190,15 @@ def save_feature_sets(feature_sets, db_path=DB_PATH):
         # Commit the changes to the database
         conn.commit()
 
-    logging.info("Feature sets saved successfully.")
+    # Count the number of games with empty feature sets
+    empty_feature_sets_count = sum(
+        1 for feature_set in feature_sets.values() if not feature_set
+    )
+    non_empty_feature_sets_count = len(feature_sets) - empty_feature_sets_count
+
+    logging.info(
+        f"Feature sets saved successfully for {non_empty_feature_sets_count} of {len(feature_sets)} games. {empty_feature_sets_count} were empty."
+    )
     if data:
         logging.debug(f"Example record: {data[0]}")
 
@@ -210,7 +236,12 @@ def load_feature_sets(game_ids, db_path=DB_PATH):
             game_id: json.loads(feature_set) for game_id, feature_set in cursor
         }
 
-    logging.info(f"Feature sets loaded successfully for {len(feature_sets)} games.")
+    non_empty_feature_sets_count = len([fs for fs in feature_sets.values() if fs])
+    empty_feature_sets_count = len(feature_sets) - non_empty_feature_sets_count
+
+    logging.info(
+        f"Feature sets loaded successfully for {non_empty_feature_sets_count} of {len(game_ids)} games. {empty_feature_sets_count} were empty."
+    )
     if feature_sets:
         example_game_id, example_features = next(iter(feature_sets.items()))
         logging.debug(

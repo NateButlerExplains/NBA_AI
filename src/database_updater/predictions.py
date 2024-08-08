@@ -45,7 +45,7 @@ import pandas as pd
 import torch
 
 from src.config import config
-from src.features import load_feature_sets
+from src.database_updater.features import load_feature_sets
 from src.logging_config import setup_logging
 from src.model_training.mlp_model import MLP
 from src.utils import log_execution_time
@@ -417,6 +417,87 @@ class BasePredictor(ABC):
         return updated_predictions
 
 
+class BaselinePredictor(BasePredictor):
+    """
+    Predictor that uses a simple baseline model to generate predictions for NBA games.
+
+    This class provides a simple baseline model that predicts the final scores of NBA games
+    based on the average scores of the home and away teams in the training data.
+    """
+
+    def load_models(self):
+        """
+        Load the baseline model (not applicable for baseline predictor).
+
+        Since the baseline predictor uses a simple average, no model loading is necessary.
+        """
+        pass
+
+    def make_pre_game_predictions(self, games):
+        """
+        Generate pre-game predictions using specific features from each game's data.
+
+        Parameters:
+        games (dict): A dictionary containing game data, with each game having associated features.
+
+        Returns:
+        dict: A dictionary of predictions, including predicted scores and win probabilities for each game.
+        """
+        predictions = {}
+
+        for game_id, game_data in games.items():
+            # Ensure all required features are present
+            if (
+                "Home_PPG" in game_data
+                and "Home_OPP_PPG" in game_data
+                and "Away_PPG" in game_data
+                and "Away_OPP_PPG" in game_data
+            ):
+
+                # Extract the relevant features
+                home_ppg = game_data["Home_PPG"]
+                home_opp_ppg = game_data["Home_OPP_PPG"]
+                away_ppg = game_data["Away_PPG"]
+                away_opp_ppg = game_data["Away_OPP_PPG"]
+
+                # Calculate the predicted scores
+                pred_home_score = (home_ppg + away_opp_ppg) / 2
+                pred_away_score = (away_ppg + home_opp_ppg) / 2
+
+                # Calculate the predicted win probability for the home team
+                pred_home_win_pct = calculate_home_win_prob(
+                    pred_home_score, pred_away_score
+                )
+
+                # Store predictions for the current game
+                predictions[game_id] = {
+                    "pred_home_score": pred_home_score,
+                    "pred_away_score": pred_away_score,
+                    "pred_home_win_pct": pred_home_win_pct,
+                    "pred_players": game_data.get(
+                        "pred_players", {"home": {}, "away": {}}
+                    ),
+                }
+
+            else:
+                # Skip games with missing data and optionally log the issue
+                print(f"Skipping game {game_id} due to missing data")
+
+        return predictions
+
+    def update_predictions(self, games):
+        """
+        Update predictions based on the current state of the games (baseline predictor uses base logic).
+
+        Parameters:
+        games (dict): A dictionary containing current game states and pre-game predictions.
+
+        Returns:
+        dict: A dictionary of updated predictions with baseline values.
+        """
+        return super().update_predictions(games)
+
+
 class LinearPredictor(BasePredictor):
     """
     Predictor that uses a linear regression model to generate predictions for NBA games.
@@ -691,13 +772,24 @@ def make_pre_game_predictions(games, predictor_name):
     if predictor_name == "Best":
         predictor_name = PREDICTORS["Best"]
 
-    logging.info(
-        f"Generating {len(games)} predictions using predictor '{predictor_name}'..."
-    )
+    total_games = len(games)
 
-    if not games:
-        logging.warning("No games to predict.")
+    # Filter out games with empty feature sets
+    games_to_predict = {
+        game_id: features for game_id, features in games.items() if features
+    }
+    skipped_games_count = total_games - len(games_to_predict)
+
+    if not games_to_predict:
+        logging.warning(
+            f"No games with sufficient data to predict. Skipping {skipped_games_count} games due to missing or empty feature sets."
+        )
         return {}
+
+    logging.info(
+        f"Generating predictions for {len(games_to_predict)} games using predictor '{predictor_name}'."
+        f" Skipping {skipped_games_count} games due to missing or empty feature sets."
+    )
 
     predictor_cfg = PREDICTORS[predictor_name]
     class_name = predictor_cfg["class"]
@@ -706,10 +798,10 @@ def make_pre_game_predictions(games, predictor_name):
     predictor_class = get_predictor_class(class_name)
     predictor = predictor_class(model_paths)
     predictor.load_models()
-    pre_game_predictions = predictor.make_pre_game_predictions(games)
+    pre_game_predictions = predictor.make_pre_game_predictions(games_to_predict)
 
     logging.info(
-        f"Predictions generated successfully for {len(games)} games using predictor '{predictor_name}'."
+        f"Predictions generated successfully for {len(pre_game_predictions)} games using predictor '{predictor_name}'."
     )
     logging.debug(f"Pre Game Predictions: {pre_game_predictions}")
 
@@ -792,6 +884,8 @@ def save_predictions(predictions, predictor_name, db_path=DB_PATH):
     prediction_datetime = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     if predictor_name == "Random":
         model_id = "Random"
+    elif predictor_name == "Baseline":
+        model_id = "Baseline"
     else:
         model_id = (
             PREDICTORS[predictor_name]["model_paths"][0].split("/")[-1].split(".")[0]
