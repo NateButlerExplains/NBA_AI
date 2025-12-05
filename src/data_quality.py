@@ -221,6 +221,27 @@ def quick_health_check(season: str, db_path: str = DB_PATH) -> DataQualityReport
             ),
         }
 
+        # TeamBox Coverage
+        cursor.execute(
+            """
+            SELECT COUNT(DISTINCT g.game_id)
+            FROM Games g
+            INNER JOIN TeamBox tb ON g.game_id = tb.game_id
+            WHERE g.season = ?
+            AND g.season_type IN ('Regular Season', 'Post Season')
+            AND g.status IN ('Completed', 'Final')
+        """,
+            (season,),
+        )
+        teambox_count = cursor.fetchone()[0]
+        report.coverage["TeamBox"] = {
+            "count": teambox_count,
+            "total": total_games,
+            "percentage": (
+                (teambox_count / total_games * 100) if total_games > 0 else 0
+            ),
+        }
+
         # Features Coverage
         cursor.execute(
             """
@@ -262,6 +283,39 @@ def quick_health_check(season: str, db_path: str = DB_PATH) -> DataQualityReport
                 (predictions_count / total_games * 100) if total_games > 0 else 0
             ),
         }
+
+        # InjuryReports Coverage (by season date range)
+        cursor.execute(
+            """
+            SELECT MIN(date_time_est), MAX(date_time_est)
+            FROM Games
+            WHERE season = ?
+            AND season_type IN ('Regular Season', 'Post Season')
+        """,
+            (season,),
+        )
+        date_range = cursor.fetchone()
+        if date_range[0] and date_range[1]:
+            start_date = date_range[0][:10]  # Extract YYYY-MM-DD
+            end_date = date_range[1][:10]
+            
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT report_timestamp)
+                FROM InjuryReports
+                WHERE report_timestamp >= ? AND report_timestamp <= ?
+            """,
+                (start_date, end_date),
+            )
+            injury_days = cursor.fetchone()[0]
+            
+            # Rough estimate: season is ~180 days for regular season
+            expected_days = 180 if "Regular" in season else 60
+            report.coverage["InjuryReports"] = {
+                "count": injury_days,
+                "total": f"~{expected_days} days",
+                "percentage": min((injury_days / expected_days * 100), 100) if expected_days > 0 else 0,
+            }
 
         # Check for critical gaps
         if pbp_count < total_games:

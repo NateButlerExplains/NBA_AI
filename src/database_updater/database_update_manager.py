@@ -36,6 +36,7 @@ from tqdm import tqdm
 from src.config import config
 from src.database_updater.boxscores import get_boxscores, save_boxscores
 from src.database_updater.game_states import create_game_states, save_game_states
+from src.database_updater.nba_official_injuries import update_nba_official_injuries
 from src.database_updater.pbp import get_pbp, save_pbp
 from src.database_updater.players import update_players
 from src.database_updater.prior_states import (
@@ -82,6 +83,8 @@ def update_database(
     update_game_data(season, db_path)
     # STEP 3.5: Update Live Game Data (for In Progress games)
     update_live_game_data(season, db_path)
+    # STEP 3.6: Update Injury Data (NBA Official daily reports)
+    update_injury_data(db_path)
     # STEP 4: Update Pre Game Data (Prior States, Feature Sets)
     update_pre_game_data(season, db_path)
     # STEP 5: Update Predictions
@@ -258,6 +261,37 @@ def update_live_game_data(season, db_path=DB_PATH):
 
     except Exception as e:
         logging.error(f"Error collecting live game data: {e}")
+
+
+@log_execution_time()
+def update_injury_data(db_path=DB_PATH):
+    """
+    Collects injury data from NBA's official daily injury report PDFs.
+
+    Source: https://ak-static.cms.nba.com/referee/injury/Injury-Report_{date}_05PM.pdf
+
+    These reports are published daily at 5pm ET and contain granular injury details:
+    - body_part (Ankle, Knee, Hamstring, etc.)
+    - injury_type (Sprain, Strain, Soreness, Surgery, etc.)
+    - injury_side (Left, Right)
+    - status (Out, Questionable, Doubtful, Probable, Available)
+
+    Parameters:
+        db_path (str): The path to the database (default is from config).
+
+    Returns:
+        None
+    """
+    # Fetch NBA Official daily injury reports
+    # Checks last 2 days for new reports (handles timezone/timing issues)
+    try:
+        nba_count = update_nba_official_injuries(days_back=1, db_path=db_path)
+        if nba_count > 0:
+            logging.info(f"NBA Official injury data complete: {nba_count} new records.")
+        else:
+            logging.debug("NBA Official injury data: already up to date.")
+    except Exception as e:
+        logging.error(f"Error collecting NBA Official injury data: {e}")
 
 
 @log_execution_time()

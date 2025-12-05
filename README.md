@@ -159,12 +159,12 @@ The core data pipeline and prediction engines are functional. The focus is now o
 
 ### Historical Data
 
-The default setup downloads only the current season. A database with seasons 2023-2024 through 2025-2026 is available from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases) as `NBA_AI_2023_2025.sqlite`.
+The default setup downloads only the current season. A database with seasons 2023-2024 through 2025-2026 is available from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases) as `NBA_AI_dev.sqlite`.
 
 To use it, update your `.env`:
 
 ```bash
-DATABASE_PATH=data/NBA_AI_2023_2025.sqlite
+DATABASE_PATH=data/NBA_AI_dev.sqlite
 ```
 
 ### Usage Notes
