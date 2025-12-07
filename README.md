@@ -26,14 +26,18 @@ The current system processes 3 seasons of data (2023-2026) with complete PBP →
 ![Project Flowchart](images/project_flowchart.png)
 
 The project is built around a few key components:
-* **Database Updater**: This component is responsible for updating the database with the latest NBA game data. It fetches data from the NBA Stats API, performs ETL operations, generates features, creates predictions, and stores the data in a SQLite database. It consists of a few modules:
+* **Database Updater**: This component is responsible for updating the database with the latest NBA game data. It fetches data from the NBA Stats API, performs ETL operations, generates features, creates predictions, and stores the data in a SQLite database. The pipeline includes:
     * `database_update_manager.py`: The main module that orchestrates the entire process.
     * `schedule.py`: Fetches the schedule from the NBA API and updates the database.
+    * `players.py`: Fetches and updates player reference data.
+    * `nba_official_injuries.py`: Fetches injury reports from NBA's official injury report PDFs.
+    * `betting_data.py`: Scrapes betting lines (spreads/totals) from Covers.com.
     * `pbp.py`: Fetches play-by-play data for games and updates the database.
     * `game_states.py`: Parses play-by-play data to generate game states and updates the database.
+    * `boxscores.py`: Fetches traditional boxscore stats (PlayerBox and TeamBox).
     * `prior_states.py`: Determines prior final game states for teams.
     * `features.py`: Uses prior final game states to generate features for the prediction engine.
-    * `predictions.py`: Generates predictions for games using the chosen prediction engine.
+    * `prediction_manager.py`: Generates predictions for games using the chosen prediction engine.
 
 * **Games API**: This component is responsible for updating predictions for ongoing or completed games and providing the data to the web app. It fetches data from the database, generates predictions, and serves the data to the web app.
     * `games.py`: Fetches game data from the database, manages prediction updating and data formatting.
@@ -52,7 +56,7 @@ The project is built around a few key components:
 
 1. **Data Sourcing**: Focus on a minimal number of data sources that fundamentally describe basketball. Currently, we use play-by-play data from the NBA API. In the future, incorporating video and tracking data would be interesting, though these require considerably more resources and access.
 
-2. **Prediction Engine**: This is the core of the project and will be the development focus until the 2024-2025 season begins. The current prediction engine options will be replaced with a DL and GenAI-based engine, allowing for decreased data parsing and feature engineering while also scaling to predict more complex outcomes, including individual player performance.
+2. **Prediction Engine**: This is the core of the project and the current development focus. The current prediction engine options will be replaced with a DL and GenAI-based engine, allowing for decreased data parsing and feature engineering while also scaling to predict more complex outcomes, including individual player performance.
 
 3. **Data Storage**: Future data storage will more seamlessly integrate with the prediction engine. The storage requirements will combine the current SQL-based data used for the API and web app with more advanced vector-based storage for RAG-based GenAI models.
 
@@ -80,7 +84,7 @@ Currently, there are a few basic prediction engines used to predict the outcomes
 ### Current Prediction Engines
 
 - **Baseline**: A simple predictor that predicts scores based on teams' PPG and opponents' PPG.
-- **Linear**: Ridge Regression model using 43 rolling average features from prior game states.
+- **Linear**: Ridge Regression model using 34 rolling average features from prior game states.
 - **Tree**: XGBoost model using the same features as the Linear model.
 - **MLP**: PyTorch MLP model using the same features as the Linear model.
 - **Ensemble**: Weighted average of Linear (30%), Tree (40%), and MLP (30%) predictions.
@@ -159,7 +163,7 @@ The core data pipeline and prediction engines are functional. The focus is now o
 
 ### Historical Data
 
-The default setup downloads only the current season. A database with seasons 2023-2024 through 2025-2026 is available from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases) as `NBA_AI_dev.sqlite`.
+The default setup downloads only the current season (2025-2026, 1,297 games). A development database with seasons 2023-2024 through 2025-2026 (4,094 games total) is available from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases) as `NBA_AI_dev.sqlite`.
 
 To use it, update your `.env`:
 
@@ -184,8 +188,8 @@ api:
 ### Technical Notes
 
 - Default focus: 2025-2026 season (current season for public release)
-- Database: SQLite with TEXT-based schema
-- Data pipeline: Schedule → PBP → GameStates → PlayerBox/TeamBox → Features → Predictions
-- Built with Python, Flask, SQLite, PyTorch, scikit-learn, and nba_api
+- Database: SQLite with complete pipeline (Schedule → Players → Injuries → Betting → PBP → GameStates → Boxscores → Features → Predictions)
+- Validation: Comprehensive database evaluator checks data quality and integrity
+- Built with Python, Flask, SQLite, PyTorch, scikit-learn, XGBoost, and nba_api
 
 

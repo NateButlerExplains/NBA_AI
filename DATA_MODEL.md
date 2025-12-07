@@ -1,5 +1,5 @@
 # NBA AI Data Model Reference
-**Last Updated**: December 4, 2025  
+**Last Updated**: December 6, 2025  
 **Purpose**: Comprehensive reference for all data structures, schemas, and API endpoints used in the project. This is the single source of truth for the database schema.
 
 ---
@@ -16,46 +16,55 @@
 
 ## Database Strategy
 
-### Three-Database Architecture
+### Two-Database Architecture
 
-The project maintains three SQLite databases for different purposes:
+The project maintains two SQLite databases:
 
 | Database | Size | Seasons | Purpose |
 |----------|------|---------|--------|
-| `NBA_AI_dev.sqlite` | 2.8 GB | 2023-2026 | Active development, new features |
-| `NBA_AI_current.sqlite` | 309 MB | 2025-2026 | Public repo alignment (frozen) |
-| `NBA_AI_ALL_SEASONS.sqlite` | 24 GB | 1999-2025 | Historical archive |
+| `NBA_AI_dev.sqlite` | 2.8 GB | 2023-2026 | Active development (3 seasons) |
+| `NBA_AI_ALL_SEASONS.sqlite` | 25 GB | 1999-2026 | Master archive (27 seasons) |
 
 **Dev Database** (`NBA_AI_dev.sqlite`):
 - Primary working database for all development
 - Contains 3 seasons: 2023-2024, 2024-2025, 2025-2026
-- Includes new tables: InjuryReports, ESPNGameMapping, PlayerIdMapping, PlayerBox, TeamBox
+- **Strict subset of ALL_SEASONS** - all DEV data exists in ALL_SEASONS
 - Set via `.env`: `DATABASE_PATH=data/NBA_AI_dev.sqlite`
 
-**Current Database** (`NBA_AI_current.sqlite`):
-- Aligned with public repository code
-- Single season (2025-2026) for lightweight deployment
-- Do NOT modify until GenAI work is merged to public repo
-- Standard schema without injury/mapping tables
-
 **ALL_SEASONS Database** (`NBA_AI_ALL_SEASONS.sqlite`):
-- 26 seasons of historical data (1999-2025)
-- Contains Betting table (future integration)
-- Missing newer tables (InjuryReports, PlayerBox, etc.)
-- Read-only archive; will be updated when dev features stabilize
+- 27 seasons of historical data (1999-2000 through 2025-2026)
+- Unified schema matching DEV (consolidated Dec 2025)
+- Contains all DEV data plus historical seasons
+- Use for GenAI training on full historical dataset
 
-### Schema Differences
+### Data Availability by Season
 
-| Table | Dev | Current | ALL_SEASONS |
-|-------|-----|---------|-------------|
-| Games, PbP_Logs, GameStates | ✓ | ✓ | ✓ |
-| Players, Teams, Features | ✓ | ✓ | ✓ |
-| Predictions, ScheduleCache | ✓ | ✓ | ✓ |
-| PlayerBox, TeamBox | ✓ | ✓ | ✗ |
-| InjuryReports | ✓ | ✗ | ✗ |
-| ESPNGameMapping | ✓ | ✗ | ✗ |
-| PlayerIdMapping | ✓ | ✗ | ✗ |
-| Betting | ✗ | ✗ | ✓ |
+| Data Type | Available From | Notes |
+|-----------|---------------|-------|
+| PBP/GameStates | 2000-2001 | 1999-2000 predates NBA API |
+| Betting | 2007-2008 | Pre-2007 not on Covers.com |
+| InjuryReports | Dec 2018 | NBA Official PDFs started mid-2018-2019 |
+| PlayerBox/TeamBox | 2023-2024 | Historical backfill deferred |
+
+### Schema (Unified)
+
+Both databases now share identical schema (13 tables):
+
+| Table | Description |
+|-------|-------------|
+| Games | Master schedule and collection status |
+| PbP_Logs | Raw play-by-play JSON |
+| GameStates | Parsed game state snapshots |
+| Players | Player reference data |
+| Teams | Team reference data |
+| Features | Pre-game feature sets for ML |
+| Predictions | Model predictions |
+| ScheduleCache | Season schedule cache |
+| PlayerBox | Player boxscore stats |
+| TeamBox | Team boxscore stats |
+| InjuryReports | NBA Official injury data |
+| ESPNGameMapping | NBA→ESPN game ID mapping |
+| Betting | Unified betting lines (single row per game) |
 
 ---
 
@@ -63,12 +72,12 @@ The project maintains three SQLite databases for different purposes:
 
 ### Overview
 - **Database**: SQLite
-- **Active DB**: `data/NBA_AI_dev.sqlite` (~2.8GB working database)
-- **Public DB**: `data/NBA_AI_current.sqlite` (309MB, frozen for public repo)
-- **Master Archive**: `data/NBA_AI_ALL_SEASONS.sqlite` (24GB, read-only)
+- **Active DB**: `data/NBA_AI_dev.sqlite` (~2.8GB, 3 seasons)
+- **Master Archive**: `data/NBA_AI_ALL_SEASONS.sqlite` (~25GB, 27 seasons)
 - **Key Design**: TEXT-based (game_id, team tricodes) for simplicity
+- **Relationship**: DEV is strict subset of ALL_SEASONS
 
-### Current Data Volumes (as of Dec 2025)
+### Current Data Volumes (DEV - as of Dec 2025)
 | Table | Rows | Notes |
 |-------|------|-------|
 | Games | 4,093 | 3 seasons (2023-2026) |
@@ -81,11 +90,22 @@ The project maintains three SQLite databases for different purposes:
 | Players | 5,115 | All-time NBA players |
 | Teams | 30 | Current NBA teams |
 | ScheduleCache | 3 | Per-season cache |
-| InjuryReports | 15,511 | NBA Official injury data (2023-2026) |
-| ESPNGameMapping | 2,968 | NBA→ESPN game ID mapping |
-| PlayerIdMapping | 783 | NBA↔ESPN player ID mapping |
+| InjuryReports | 15,587 | NBA Official injury data (2023-2026) |
+| ESPNGameMapping | 2,987 | NBA→ESPN game ID mapping |
+| Betting | 2,887 | Single-row betting data (ESPN + Covers) |
 
-### Tables (14 total)
+### ALL_SEASONS Data Volumes (as of Dec 2025)
+| Table | Rows | Notes |
+|-------|------|-------|
+| Games | 37,362 | 27 seasons (1999-2026) |
+| PbP_Logs | ~18M | Available 2000-2001 onwards |
+| GameStates | ~18M | 1:1 with PbP_Logs |
+| Betting | 21,169 | 2007-2008 onwards (~93% coverage) |
+| PlayerBox | 78,492 | 2023-2026 only (backfill deferred) |
+| TeamBox | 5,932 | 2023-2026 only (backfill deferred) |
+| InjuryReports | 15,587 | Dec 2018 onwards (backfill deferred) |
+
+### Tables (13 total)
 
 #### 1. Games (Master Schedule Table)
 **Purpose**: Central table tracking all NBA games and their collection status
@@ -99,16 +119,24 @@ CREATE TABLE IF NOT EXISTS "Games" (
     status TEXT NOT NULL,                  -- "Scheduled", "In Progress", "Completed", "Final"
     season TEXT NOT NULL,                  -- "2023-2024", "2024-2025"
     season_type TEXT NOT NULL,             -- "Regular Season", "Post Season", "Pre Season", "All-Star"
-    pre_game_data_finalized BOOLEAN NOT NULL DEFAULT 0,  -- Features/predictions ready
-    game_data_finalized BOOLEAN NOT NULL DEFAULT 0       -- PBP/GameStates/Boxscores complete
+    game_data_finalized BOOLEAN NOT NULL DEFAULT 0,       -- PBP/GameStates complete
+    boxscore_data_finalized BOOLEAN NOT NULL DEFAULT 0,   -- PlayerBox/TeamBox complete
+    pre_game_data_finalized BOOLEAN NOT NULL DEFAULT 0    -- Features/predictions ready
 );
 ```
 
 **Key Fields**:
 - `game_id`: Encodes season (chars 2-5) and game type (char 1)
   - `002` = Regular Season, `004` = Playoffs, `001` = Pre-Season, `003` = All-Star
-- `game_data_finalized`: Set to 1 when PbP_Logs, GameStates, PlayerBox, TeamBox all collected
-- `pre_game_data_finalized`: Set to 1 when Features and Predictions created
+- `game_data_finalized`: Set to 1 when **core PBP data** is collected:
+  - PbP_Logs (at least one play)
+  - GameStates (with is_final_state=1)
+- `boxscore_data_finalized`: Set to 1 when **boxscore data** is collected:
+  - PlayerBox (at least one player)
+  - TeamBox (both teams present)
+  - Note: Boxscores collected separately and can fail independently of PBP
+- `pre_game_data_finalized`: Set to 1 when Features created (requires game_data_finalized=1)
+- Note: Betting and InjuryReports are supplemental and do NOT gate any flags
 
 **Status Values**: 
 - "Scheduled" → "In Progress" → "Completed"/"Final"
@@ -449,10 +477,11 @@ CREATE TABLE IF NOT EXISTS InjuryReports (
     status TEXT NOT NULL,                  -- Out, Questionable, Doubtful, Probable, Available
     
     -- Injury details (parsed from NBA Official PDFs)
-    injury_type TEXT,                      -- e.g., "Injury/Illness", "G League - Two-Way"
+    injury_type TEXT,                      -- e.g., "Sprain", "Strain", "Soreness"
     body_part TEXT,                        -- e.g., "Knee", "Ankle", "Hand"
     injury_location TEXT,                  -- e.g., "Leg", "Arm" (broader category)
     injury_side TEXT,                      -- "Left", "Right", or NULL
+    category TEXT DEFAULT 'Injury',        -- "Injury" or "Non-Injury" (Rest, Personal, etc.)
     
     -- Timing
     report_timestamp TEXT,                 -- Report date (YYYY-MM-DD)
@@ -520,27 +549,95 @@ CREATE INDEX idx_espn_mapping_espn_id ON ESPNGameMapping(espn_event_id);
 3. Match by teams (ESPN uses different abbreviations, NBATeamConverter handles this)
 4. Cache mapping for future lookups
 
-**Note**: This table supports ESPN data integration (used for historical boxscore enrichment). Current injury data uses NBA Official PDFs instead.
+**Note**: This table supports ESPN data integration (used for betting data collection).
 
 ---
 
-#### 13. PlayerIdMapping (NBA↔ESPN Player ID Mapping)
-**Purpose**: Cross-reference NBA player IDs with ESPN athlete IDs
+#### 13. Betting (Unified Betting Data - Single Row Per Game)
+**Purpose**: Store closing betting lines (spreads, totals, results) for NBA games
 
 ```sql
-CREATE TABLE IF NOT EXISTS PlayerIdMapping (
-    nba_person_id INTEGER,                 -- NBA person_id (matches Players.person_id)
-    espn_athlete_id INTEGER,               -- ESPN athlete ID
-    nba_name TEXT,                         -- Player name from NBA API
-    espn_name TEXT,                        -- Player name from ESPN
-    position TEXT,                         -- Position from ESPN
-    position_abbr TEXT                     -- Position abbreviation
+CREATE TABLE IF NOT EXISTS Betting (
+    -- Primary key = one row per game
+    game_id TEXT PRIMARY KEY,                 -- NBA game_id (FK to Games)
+    
+    -- ESPN mapping (for Tier 1 fetches)
+    espn_event_id TEXT,                       -- ESPN event ID for reference
+    
+    -- Closing Spread (from home team perspective, negative = home favored)
+    spread REAL,                              -- Home team spread: -10.5 means home favored by 10.5
+    spread_result TEXT,                       -- 'W', 'L', 'P' (home team perspective)
+    spread_home_odds INTEGER,                 -- Spread odds for home: -110 (ESPN only)
+    spread_away_odds INTEGER,                 -- Spread odds for away: -110 (ESPN only)
+    
+    -- Closing Total (Over/Under)
+    total REAL,                               -- Over/under line: 224.5
+    ou_result TEXT,                           -- 'O', 'U', 'P' (over/under/push)
+    over_odds INTEGER,                        -- Over odds: -105 (ESPN only)
+    under_odds INTEGER,                       -- Under odds: -115 (ESPN only)
+    
+    -- Moneylines (ESPN only, Covers doesn't provide these)
+    home_moneyline INTEGER,                   -- Home ML: -485 (favored) or +150 (underdog)
+    away_moneyline INTEGER,                   -- Away ML: +370 (underdog) or -200 (favored)
+    
+    -- Metadata
+    source TEXT NOT NULL DEFAULT 'ESPN',      -- 'ESPN', 'Covers', 'Manual'
+    lines_finalized INTEGER NOT NULL DEFAULT 0,  -- 1 = closing lines confirmed, won't update
+    
+    -- Timestamps
+    created_at TEXT NOT NULL,                 -- When this row was created (ISO 8601)
+    updated_at TEXT NOT NULL,                 -- When this row was last updated (ISO 8601)
+    
+    FOREIGN KEY (game_id) REFERENCES Games(game_id)
 );
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_betting_lines_finalized ON Betting(lines_finalized);
+CREATE INDEX IF NOT EXISTS idx_betting_source ON Betting(source);
 ```
 
-**Data Volume**: 783 mappings  
-**Purpose**: Enable cross-referencing between NBA and ESPN data sources  
-**Generated**: From ESPN roster data with fuzzy matching to NBA Players table
+**3-Tier Fetching Strategy**:
+
+| Tier | Source | Window | Use Case |
+|------|--------|--------|----------|
+| 1 | ESPN API | -7 to +2 days | Live/recent data, full odds |
+| 2 | Covers Matchups | >7 days old | On-demand finalization by date |
+| 3 | Covers Team Schedules | Historical | Bulk backfill via CLI |
+
+**Data Sources**:
+- **ESPN API**: `http://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={espn_id}`
+  - Provides: spread, total, moneylines with odds (-110, etc.)
+  - Window: ~7 days before to ~2 days after game
+  
+- **Covers.com Matchups**: `https://www.covers.com/sports/NBA/matchups?selectedDate=YYYY-MM-DD`
+  - Provides: closing spread, total (no odds)
+  - Used for: dates with unfinalized games outside ESPN window
+  
+- **Covers.com Team Schedules**: `https://www.covers.com/sport/basketball/nba/teams/main/{slug}/{season}`
+  - Provides: spread, spread_result, total, ou_result
+  - Used for: historical season backfill (30 API calls per season)
+
+**Module**: `src/database_updater/betting.py`, `src/database_updater/covers.py`
+
+**Key Fields**:
+- `spread`: Home team closing spread (negative = favored)
+- `spread_result`: 'W' (covered), 'L' (didn't cover), 'P' (push)
+- `total`: Over/under closing line
+- `ou_result`: 'O' (over), 'U' (under), 'P' (push)
+- `source`: Data source ('ESPN', 'Covers', 'Manual')
+- `lines_finalized`: 1 when we have confirmed closing lines
+
+**CLI Usage**:
+```bash
+# Automatic update (Tier 1 + 2)
+python -m src.database_updater.betting --season=2024-2025
+
+# Historical backfill (Tier 3)
+python -m src.database_updater.betting --backfill --season=2023-2024
+
+# Force re-fetch finalized games
+python -m src.database_updater.betting --force --season=2024-2025
+```
 
 ---
 

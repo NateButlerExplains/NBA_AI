@@ -1,121 +1,71 @@
 # NBA AI TODO
 
-> **Last Updated**: December 4, 2025  
-> **Current Sprint**: Sprint 12 - GenAI Architecture & Prototype
-
----
-
-## ✅ Recently Completed
-
-### Sprint 11: Data Infrastructure & Simplification (Dec 3-4, 2025) ✅
-
-**Goal**: Simplify data pipeline, integrate injury data, prepare for GenAI development.
-
-**Completed**:
-- [x] Switched injury source from ESPN to NBA Official PDFs (simpler, authoritative)
-- [x] Simplified Players table (removed biometric columns - position/height/weight/age)
-- [x] Simplified InjuryReports schema (removed ESPN columns, added nba_player_id)
-- [x] Implemented player ID matching for injuries (97.6% match rate)
-- [x] Backfilled injury data for all 3 seasons (15,511 records)
-- [x] Renamed database to `NBA_AI_dev.sqlite` (clearer naming)
-- [x] Documented 3-database architecture (dev/current/all_seasons)
-- [x] Updated DATA_MODEL.md with current schemas
-- [x] Updated data_quality.py (added TeamBox, InjuryReports coverage)
-- [x] Created test_data_pipeline.py (16 tests, all passing)
-- [x] Removed obsolete files (espn_injuries.py, backfill scripts)
-- [x] Verified automatic updates working for current season
-
-**Data Status**:
-- 4,093 games across 3 seasons (2023-2026)
-- 1.58M PBP records, 78K PlayerBox records
-- 15,511 injury records with 97.6% player ID matching
-- All pipelines automated for current season
+> **Last Updated**: December 7, 2025  
+> **Current Sprint**: Sprint 14 - GenAI Predictor Design
 
 ---
 
 ## 🎯 Active Sprint
 
-### Sprint 12: GenAI Architecture & Prototype (Starting)
+### Sprint 14: GenAI Predictor Design
 
-**Goal**: Design and build minimal viable GenAI predictor using PBP data.
+**Goal**: Design and prototype the GenAI prediction engine using PBP data as the primary source.
+
+**Status**: 🔄 IN PROGRESS
 
 **Tasks**:
-- [ ] Research transformer architectures (TFT, Informer, PatchTST, custom)
-- [ ] Define prediction targets (game score, player stats, both?)
-- [ ] Define sequence representation (what is one "event"? what context?)
-- [ ] Design input representation (tokenization, embeddings)
-- [ ] Write Architecture Decision Record (ADR)
-- [ ] Define train/val/test split strategy
-- [ ] Data pipeline: PBP → model-ready sequences
-- [ ] Minimal viable model (prove concept works)
-- [ ] Baseline evaluation vs XGBoost (MAE 10.2)
+- [ ] Research transformer architectures for sports prediction (sequence modeling)
+- [ ] Design PBP tokenization strategy (event types, players, teams, scores)
+- [ ] Define sequence representation format (game-level, season-level)
+- [ ] Prototype embedding layer for basketball events
+- [ ] Evaluate pre-training vs fine-tuning approaches
+- [ ] Design output head for score/win probability prediction
+
+**Key Decisions**:
+- Input: Raw PBP sequences or GameStates snapshots?
+- Architecture: Encoder-only (BERT-style) vs Decoder-only (GPT-style)?
+- Training: Per-game prediction vs next-event prediction?
 
 ---
 
 ## 📋 Backlog
 
----
-
-### 📊 Post-GenAI (Priority 2)
-
-#### External Prediction Baselines
-**Goal**: Measure GenAI against Vegas lines and ESPN predictions for proper comparison
-
-**Available Data Sources**:
-1. **Existing Betting Table** (ALL_SEASONS DB): 18,292 games with spreads/O-U/moneylines (2007-2021)
-   - `home_spread_at_open`, `home_spread_at_close`, `over_at_open`, `over_at_close`
-   - `home_ml`, `away_ml`, `2h_home_spread`, `2h_over`
-   - **Status**: Already collected, just needs migration to working DB for recent seasons
-
-2. **ESPN Pickcenter** (via sportsdataverse-py): Live betting data from ESPN API
-   - Spreads, O/U, moneylines from multiple sportsbooks
-   - `espn_nba_pbp(game_id)['pickcenter']`, `['odds']`, `['againstTheSpread']`
-   - **Pros**: Free, live during games, includes ATS results
-   - **Cons**: May not have historical depth
-
-3. **ESPN Win Probability**: `espn_nba_pbp(game_id)['espnWP']`
-   - ESPN's proprietary win probability model
-   - Good for calibration comparison (is our 70% = ESPN's 70%?)
-
-4. **Covers.com** (scraping): Historical lines archive
-   - Most comprehensive historical data
-   - Requires scraper (see `klane/databall` repo for reference)
-   - **Use case**: Fill gaps in existing Betting table (2022-present)
-
-**Implementation Plan**:
-- [ ] Migrate existing Betting data to working DB (18K games of free baseline!)
-- [ ] Add ESPN pickcenter to data collection pipeline
-- [ ] Extend Betting table with recent seasons (scrape or ESPN)
-- [ ] Build Vegas baseline predictor (predict using closing line implied probability)
-- [ ] Add comparison metrics: vs Vegas ATS%, O/U%, ROI simulation
-
-#### Player Props Model
-**Goal**: Player-level predictions (points, rebounds, etc.)  
-**Approach**: Either GenAI extension or dedicated model using PlayerBox data
-
----
-
-### 🔧 Tech Debt & Nice-to-Have (Priority 3 - Defer)
-
-#### Player Enrichment Optimization
-**Issue**: Updates all 5,103 players (7+ hours) instead of only changed ones  
-**Status**: RESOLVED - Simplified players.py, removed biometric collection (~1 second now)
-
-#### Web App UX Improvements
-**Items**: Auto-refresh for live games, mobile responsive, confidence intervals display
-
-#### Logging & Monitoring
-**Items**: Structured logging, performance metrics, error alerting
-
-#### Database Consolidation
-**Goal**: Eventually make dev DB a strict subset of ALL_SEASONS
-- [ ] Backfill injuries to ALL_SEASONS (15K records)
-- [ ] Migrate Betting data from ALL_SEASONS to dev (for baseline comparisons)
-- [ ] Add PlayerBox/TeamBox to ALL_SEASONS
+- **Core Pipeline Optimization**: Improve chunking strategy, memory management, and explore parallel processing opportunities in database_update_manager.py. See [Core Flowchart](diagrams/core_flowchart.drawio) for pipeline structure.
+- **Historical Data Backfill**: PlayerBox/TeamBox (2000-2022, ~30K games), InjuryReports (Dec 2018-2023, ~900 PDFs/season)
+- **Player Props Model**: Player-level predictions using PlayerBox data
+- **Web App UX**: Auto-refresh for live games, mobile responsive, confidence intervals
+- **Logging & Monitoring**: Structured logging, performance metrics, error alerting
 
 ---
 
 ## ✅ Completed Sprints
+
+### Sprint 13: Cleanup & Testing (Dec 6, 2025)
+- Consolidated 3 CLI tools → single database_evaluator.py
+- Created workflow-aware validation for all 14 database tables
+- Deep review of all 9 pipeline stages
+- Frontend tests passing (14/14)
+- Removed src/database_migration.py, data_quality.py, database_validator.py, validators/
+
+### Sprint 12: Database Consolidation (Dec 6, 2025)
+- Removed unused tables from DEV (BettingLines, PlayerIdMapping)
+- Created new tables in ALL_SEASONS (PlayerBox, TeamBox, InjuryReports, ESPNGameMapping, ScheduleCache)
+- Migrated ALL_SEASONS Betting to new schema (18,282 rows)
+- Synced all DEV data to ALL_SEASONS (DEV is now strict subset)
+- Backfilled betting: 2021-2022 (93.4%), 2022-2023 (93.6%) from Covers.com
+- Data availability audit: PBP 2000+, Betting 2007+, InjuryReports Dec 2018+
+- Updated DATA_MODEL.md: Two-database architecture, unified schema (13 tables)
+- Cleaned up data files: removed 227MB of obsolete archives, organized backups
+- Removed outdated scripts (betting_backfill_status.py, test_espn_betting_api.py)
+- Enhanced data_quality.py: added Betting coverage, database selection flag
+
+### Sprint 11.5: Betting Data Integration (Dec 5-6, 2025)
+- Fixed Covers.com scraper (headers, HTML selectors)
+- Built 3-tier betting system (ESPN → Covers matchups → Covers schedules)
+- Created 36-test suite for betting system
+- Backfilled 2023-2024 (1,220 games), updated 2025-2026 (347 games)
+- Simplified betting.py (~240 lines removed)
+- 2024-2025 at 100% coverage, all results verified
 
 ### Sprint 11: Data Infrastructure & Simplification (Dec 3-4, 2025)
 - Switched from ESPN to NBA Official injury PDFs
