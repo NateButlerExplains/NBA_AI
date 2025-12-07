@@ -7,7 +7,7 @@ Classes:
 - TreePredictor: Uses XGBoost (gradient boosted trees) to generate predictions.
 
 Model:
-- XGBoost trained on 34 features from FeatureSets.
+- XGBoost trained on 34 features from Features table.
 - Outputs [home_score, away_score] predictions.
 
 Usage:

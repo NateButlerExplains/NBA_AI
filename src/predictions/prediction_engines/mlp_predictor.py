@@ -7,7 +7,7 @@ Classes:
 - MLPPredictor: Uses PyTorch neural network to generate predictions.
 
 Model:
-- Multi-layer perceptron trained on 43 features from FeatureSets.
+- Multi-layer perceptron trained on 34 features from Features table.
 - Outputs [home_score, away_score] predictions.
 - Includes normalization parameters in checkpoint.
 

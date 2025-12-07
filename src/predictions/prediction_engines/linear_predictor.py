@@ -7,7 +7,7 @@ Classes:
 - LinearPredictor: Uses scikit-learn Ridge Regression to generate predictions.
 
 Model:
-- Ridge Regression trained on 34 features from FeatureSets.
+- Ridge Regression trained on 34 features from Features table.
 - Outputs [home_score, away_score] predictions.
 
 Usage:

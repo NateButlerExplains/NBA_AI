@@ -23,7 +23,7 @@ class BaselinePredictor(BasePredictor):
     """
     Formula-based predictor that averages team offensive and defensive stats.
 
-    Uses 4 features from FeatureSets:
+    Uses 4 features from Features table:
     - Home_PPG: Home team points per game
     - Home_OPP_PPG: Home team opponent points per game (defense)
     - Away_PPG: Away team points per game
