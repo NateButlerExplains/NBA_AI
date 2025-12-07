@@ -255,13 +255,17 @@ def _format_date_time_display(game):
 
     # Handle cases for not started or completed games
     game_date_time_est = game["date_time_est"]
-    # Parse as UTC time (the 'Z' suffix means UTC)
-    game_date_time_utc = datetime.strptime(game_date_time_est, "%Y-%m-%dT%H:%M:%SZ")
-    # Add UTC timezone info
-    game_date_time_utc = pytz.utc.localize(game_date_time_utc)
+    # Parse as Eastern Time (despite the Z suffix, NBA API returns ET)
+    # Remove the Z suffix and parse as naive datetime
+    game_date_time_naive = datetime.strptime(
+        game_date_time_est.rstrip("Z"), "%Y-%m-%dT%H:%M:%S"
+    )
+    # Localize to Eastern timezone
+    eastern_tz = pytz.timezone("America/New_York")
+    game_date_time_eastern = eastern_tz.localize(game_date_time_naive)
     # Convert to user's local timezone
     user_timezone = get_localzone()
-    game_date_time_local = game_date_time_utc.astimezone(user_timezone)
+    game_date_time_local = game_date_time_eastern.astimezone(user_timezone)
 
     game_date = game_date_time_local.date()
     current_date = datetime.now().date()
