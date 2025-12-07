@@ -4,12 +4,14 @@ project:
 database:
   path: "${DATABASE_PATH}"  # Should be updated in the .env file. Defaults to data/NBA_AI_BASE.sqlite
 
-# Limited to current season for public release to avoid API overload.
+# Limited to seasons with data in database.
 # Developers can add more seasons locally if needed.
 # Database Updater supports all seasons back to 2000-2001.
 api:
   max_game_ids: 20 # Only applies to game_ids input of Games API. Not the date input.
   valid_seasons: 
+    - "2023-2024"
+    - "2024-2025"
     - "2025-2026"
 
 # OpenAI API - removed Nov 2025, rebuilding GenAI from scratch
@@ -55,23 +57,23 @@ nba_api:
 default_predictor: "Tree"
 
 # Predictors Configuration
-# Models trained on 2023-2024, tested on 2024-2025 (Nov 2025)
+# Models trained on 2023-2024, tested on 2024-2025 (Dec 2025)
 predictors:
   Baseline: {}  # Formula-based, no models required
   Linear:
     model_paths:
-      - "models/ridge_v1.0_mae13.7.joblib"
+      - "models/ridge_v0.3_mae11.2.joblib"
   Tree:
     model_paths:
-      - "models/xgboost_v1.0_mae10.2.joblib"
+      - "models/xgboost_v0.3_mae10.0.joblib"
   MLP:
     model_paths:
-      - "models/mlp_v1.0_mae11.8.pth"
+      - "models/mlp_v0.3_mae11.0.pth"
   Ensemble:
     model_paths:
       Linear:
-        - "models/ridge_v1.0_mae13.7.joblib"
+        - "models/ridge_v0.3_mae11.2.joblib"
       Tree:
-        - "models/xgboost_v1.0_mae10.2.joblib"
+        - "models/xgboost_v0.3_mae10.0.joblib"
       MLP:
-        - "models/mlp_v1.0_mae11.8.pth"
+        - "models/mlp_v0.3_mae11.0.pth"

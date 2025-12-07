@@ -37,12 +37,12 @@ from pathlib import Path
 # =============================================================================
 
 GITHUB_REPO = "NBA-Betting/NBA_AI"
-RELEASE_TAG = "v0.2.0"  # Specific release tag for v0.2.0
+RELEASE_TAG = "v0.3.0"  # Specific release tag for v0.3.0
 
 # Files to download from GitHub Releases
-DATABASE_ZIP_FILENAME = "NBA_AI_current.zip"  # Zipped database (~20MB)
-DATABASE_FILENAME = "NBA_AI_current.sqlite"  # Extracted database (~300MB)
-MODELS_FILENAME = "models.zip"  # Trained ML models (~1MB)
+DATABASE_ZIP_FILENAME = "NBA_AI_current.zip"  # Zipped database (~24MB)
+DATABASE_FILENAME = "NBA_AI_current.sqlite"  # Extracted database (~400MB)
+MODELS_FILENAME = "models_v0.3.zip"  # Trained ML models (~280KB)
 
 # Local fallback for testing (set via --local-source=/path/to/NBA_AI)
 LOCAL_SOURCE = None
@@ -554,9 +554,9 @@ def verify_installation():
 
     # Test 5: Check models (optional)
     print_info("Checking model files...")
-    xgb_model = MODELS_DIR / "xgboost_v1.0_mae10.2.joblib"
-    ridge_model = MODELS_DIR / "ridge_v1.0_mae13.7.joblib"
-    mlp_model = MODELS_DIR / "mlp_v1.0_mae13.8.pth"
+    xgb_model = MODELS_DIR / "xgboost_v0.3_mae10.0.joblib"
+    ridge_model = MODELS_DIR / "ridge_v0.3_mae11.2.joblib"
+    mlp_model = MODELS_DIR / "mlp_v0.3_mae11.0.pth"
 
     if xgb_model.exists() and ridge_model.exists() and mlp_model.exists():
         print_success("All model files present (Tree, Linear, MLP predictors ready)")

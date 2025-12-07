@@ -3,7 +3,9 @@
 # Development/planning docs (local only)
 TODO.md
 DATA_MODEL.md
-.github/copilot-instructions.md
+
+# GitHub Copilot workspace instructions (local only)
+.github/
 
 # Test scripts (local only)
 test_setup.sh
@@ -11,16 +13,11 @@ test_setup.sh
 # Release assets (upload to GitHub Releases, not repo)
 models.zip
 
-# Diagram files
-diagrams/
-
 # Data directory (download from GitHub Releases)
 data/
 
-# Model files (trained models - download from GitHub Releases or train locally)
-models/*.joblib
-models/*.pth
-models/*.json
+# Models directory (trained models - download from GitHub Releases or train locally)
+models/
 
 # Documentation build
 docs/_site/
@@ -55,11 +52,12 @@ htmlcov/
 .cache
 .pytest_cache/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
 # Logs
 *.log
 
-# Sphinx documentation
-docs/_build/
+# Editor and OS files
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/

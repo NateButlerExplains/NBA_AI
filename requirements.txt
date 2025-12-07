@@ -36,12 +36,9 @@ python-json-logger==4.0.0
 pytest==9.0.1
 pytest-cov==7.0.0
 
-# Development Tools (Optional - uncomment if needed)
-# ipykernel==6.29.5
-# jupyter_client==8.6.2
-# jupyter_core==5.7.2
-# matplotlib==3.9.1
-# seaborn==0.13.2
+# Visualization
+matplotlib==3.9.1
+seaborn==0.13.2
 
 # Removed unused dependencies:
 # - wandb (experiment tracking - removed Nov 2025, not needed for GenAI path)
