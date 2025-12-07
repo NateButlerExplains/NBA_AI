@@ -131,9 +131,9 @@ def _update_schedule_cache(season, db_path):
             conn.commit()
             logging.debug(f"Updated schedule cache for season {season}")
     except sqlite3.OperationalError as e:
-        # Table doesn't exist - run migration
+        # Table doesn't exist - this should only happen on fresh databases
         logging.warning(
-            f"ScheduleCache table not found. Run: python -m src.database_migration"
+            f"ScheduleCache table not found. The table should be created automatically on first use."
         )
 
 
@@ -310,10 +310,12 @@ def save_schedule(games, season, db_path=DB_PATH):
 
             # Insert or replace new and updated game records
             insert_sql = """
-            INSERT INTO Games (game_id, date_time_est, home_team, away_team, status, season, season_type, pre_game_data_finalized, game_data_finalized)
+            INSERT INTO Games (game_id, date_time_est, home_team, away_team, status, season, season_type, 
+                pre_game_data_finalized, game_data_finalized, boxscore_data_finalized)
             VALUES (:game_id, :date_time_est, :home_team, :away_team, :status, :season, :season_type,
                 COALESCE((SELECT pre_game_data_finalized FROM Games WHERE game_id = :game_id), 0),
-                COALESCE((SELECT game_data_finalized FROM Games WHERE game_id = :game_id), 0))
+                COALESCE((SELECT game_data_finalized FROM Games WHERE game_id = :game_id), 0),
+                COALESCE((SELECT boxscore_data_finalized FROM Games WHERE game_id = :game_id), 0))
             ON CONFLICT(game_id) DO UPDATE SET
                 date_time_est=excluded.date_time_est,
                 home_team=excluded.home_team,
@@ -351,7 +353,7 @@ def save_schedule(games, season, db_path=DB_PATH):
 
                 # Skip games with None values (e.g., Cup/All-Star games with TBD teams)
                 if any(v is None for v in params.values()):
-                    logging.debug(f"Skipping game {game_id} with TBD teams: {params}")
+                    logging.info(f"Skipping game {game_id} with TBD teams: {params}")
                     continue
 
                 cursor.execute(insert_sql, params)

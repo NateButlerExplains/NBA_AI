@@ -214,6 +214,7 @@ def save_pbp(pbp_data, db_path=DB_PATH):
     """
     logging.info(f"Saving play-by-play logs to database: {db_path}")
     overall_success = True
+    data_to_insert = None  # Initialize to avoid NameError in debug logging
 
     try:
         with sqlite3.connect(db_path) as conn:
@@ -257,7 +258,7 @@ def save_pbp(pbp_data, db_path=DB_PATH):
     else:
         logging.warning("Some play-by-play logs were not saved successfully.")
 
-    if pbp_data:
+    if pbp_data and data_to_insert:
         logging.debug(f"Example record (First): {data_to_insert[0]}")
         logging.debug(f"Example record (Last): {data_to_insert[-1]}")
 

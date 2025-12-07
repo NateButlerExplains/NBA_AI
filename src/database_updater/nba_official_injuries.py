@@ -29,6 +29,7 @@ from typing import List, Optional
 import pandas as pd
 import pdfplumber
 import requests
+from tqdm import tqdm
 
 from src.config import config
 
@@ -223,20 +224,22 @@ def parse_injury_pdf(pdf_content: bytes) -> pd.DataFrame:
 
             body_part, injury_type, side, category = parse_injury_reason(reason)
 
-            if category == "Injury":
-                records.append(
-                    {
-                        "game_date": current_date,
-                        "game_time": current_time,
-                        "matchup": current_matchup,
-                        "player_name": player_name,
-                        "status": status,
-                        "reason": reason,
-                        "body_part": body_part,
-                        "injury_type": injury_type,
-                        "injury_side": side,
-                    }
-                )
+            # Include ALL absences (injuries + rest/personal/etc.)
+            records.append(
+                {
+                    "game_date": current_date,
+                    "game_time": current_time,
+                    "matchup": current_matchup,
+                    "player_name": player_name,
+                    "status": status,
+                    "reason": reason,
+                    "body_part": body_part,
+                    "injury_type": injury_type,
+                    "injury_side": side,
+                    "category": category
+                    or "Injury",  # Default to Injury if not classified
+                }
+            )
 
     return pd.DataFrame(records)
 
@@ -358,6 +361,7 @@ def save_injury_records(df: pd.DataFrame, db_path: str = DB_PATH) -> int:
                 "body_part": row["body_part"],
                 "injury_location": injury_location,
                 "injury_side": row["injury_side"],
+                "category": row.get("category", "Injury"),
                 "report_timestamp": row["report_date"],
                 "source": "NBA_Official",
             }
@@ -387,31 +391,56 @@ def update_nba_official_injuries(days_back: int = 1, db_path: str = DB_PATH) -> 
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
     # Generate dates to check
-    dates = [today - timedelta(days=i) for i in range(days_back + 1)]
-    dates.reverse()  # Process oldest first
-
-    logging.info(f"Checking NBA Official injury reports for {len(dates)} days...")
+    all_dates = [today - timedelta(days=i) for i in range(days_back + 1)]
+    all_dates.reverse()  # Process oldest first
 
     conn = sqlite3.connect(db_path)
 
+    # Pre-filter: Get dates that already have data to skip them entirely
+    start_date = all_dates[0].strftime("%Y-%m-%d")
+    end_date = all_dates[-1].strftime("%Y-%m-%d")
+
+    existing_dates_df = pd.read_sql(
+        """
+        SELECT DISTINCT DATE(report_timestamp) as report_date
+        FROM InjuryReports 
+        WHERE source = 'NBA_Official'
+        AND DATE(report_timestamp) BETWEEN ? AND ?
+        """,
+        conn,
+        params=(start_date, end_date),
+    )
+    existing_dates = (
+        set(existing_dates_df["report_date"].tolist())
+        if not existing_dates_df.empty
+        else set()
+    )
+
+    # Filter to only dates we don't have
+    dates = [dt for dt in all_dates if dt.strftime("%Y-%m-%d") not in existing_dates]
+
+    if len(dates) == 0:
+        logging.info(f"All {len(all_dates)} days already cached, nothing to fetch")
+        conn.close()
+        return 0
+
+    logging.info(
+        f"Checking NBA Official injury reports for {len(dates)} days ({len(all_dates) - len(dates)} cached)..."
+    )
+
     total_inserted = 0
-    for dt in dates:
+
+    # Use tqdm for progress bar only if fetching more than 7 days
+    iterator = (
+        tqdm(dates, desc="Fetching injury reports", unit="day")
+        if days_back > 7
+        else dates
+    )
+
+    for dt in iterator:
         date_str = dt.strftime("%Y-%m-%d")
 
-        # Check if we already have data for this date
-        existing = pd.read_sql(
-            "SELECT COUNT(*) as cnt FROM InjuryReports WHERE source = 'NBA_Official' AND report_timestamp = ?",
-            conn,
-            params=(date_str,),
-        )["cnt"].iloc[0]
-
-        if existing > 0:
-            logging.debug(
-                f"NBA Official injuries for {date_str}: already have {existing} records"
-            )
-            continue
-
-        # Fetch the report
+        # Fetch the report (already pre-filtered to skip cached dates)
         df = fetch_injury_report(dt)
         if not df.empty:
             count = save_injury_records(df, db_path)
@@ -419,8 +448,12 @@ def update_nba_official_injuries(days_back: int = 1, db_path: str = DB_PATH) -> 
                 f"NBA Official injuries for {date_str}: inserted {count} records"
             )
             total_inserted += count
+            if isinstance(iterator, tqdm):
+                iterator.set_postfix({"status": "inserted", "records": count})
         else:
             logging.debug(f"NBA Official injuries for {date_str}: no report available")
+            if isinstance(iterator, tqdm):
+                iterator.set_postfix({"status": "not found"})
 
         time.sleep(0.1)  # Be nice to NBA servers
 
@@ -434,3 +467,184 @@ def update_nba_official_injuries(days_back: int = 1, db_path: str = DB_PATH) -> 
         logging.debug("NBA Official injury update: no new records")
 
     return total_inserted
+
+
+def backfill_injury_reports(
+    start_date: str, end_date: str, db_path: str = DB_PATH, batch_size: int = 50
+) -> int:
+    """
+    Backfill NBA Official injury reports for a date range.
+
+    This is for historical data collection. Uses batch saving and progress bars
+    for efficient processing of large date ranges.
+
+    Args:
+        start_date: Start date (YYYY-MM-DD)
+        end_date: End date (YYYY-MM-DD)
+        db_path: Path to database
+        batch_size: Number of days to process before saving (default: 50)
+
+    Returns:
+        Number of records inserted
+    """
+    from datetime import datetime, timedelta
+
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
+    if start_dt > end_dt:
+        raise ValueError("start_date must be before end_date")
+
+    # Generate all dates in range
+    current_dt = start_dt
+    dates = []
+    while current_dt <= end_dt:
+        dates.append(current_dt)
+        current_dt += timedelta(days=1)
+
+    logging.info(
+        f"Backfilling NBA Official injury reports for {len(dates)} days ({start_date} to {end_date})..."
+    )
+
+    conn = sqlite3.connect(db_path)
+    total_inserted = 0
+    total_cached = 0
+    total_not_found = 0
+
+    # Batch collection for efficient saving
+    batch_dfs = []
+
+    # Progress bar for large backfills
+    with tqdm(dates, desc="Backfilling injury reports", unit="day") as pbar:
+        for dt in pbar:
+            date_str = dt.strftime("%Y-%m-%d")
+
+            # Check if we already have data for this date
+            existing = pd.read_sql(
+                "SELECT COUNT(*) as cnt FROM InjuryReports WHERE source = 'NBA_Official' AND report_timestamp = ?",
+                conn,
+                params=(date_str,),
+            )["cnt"].iloc[0]
+
+            if existing > 0:
+                logging.debug(f"{date_str}: already have {existing} records")
+                total_cached += 1
+                pbar.set_postfix(
+                    {
+                        "cached": total_cached,
+                        "inserted": total_inserted,
+                        "not_found": total_not_found,
+                    }
+                )
+                continue
+
+            # Fetch the report
+            df = fetch_injury_report(dt)
+            if not df.empty:
+                batch_dfs.append(df)
+                pbar.set_postfix(
+                    {
+                        "cached": total_cached,
+                        "batch": len(batch_dfs),
+                        "pending": total_inserted,
+                    }
+                )
+
+                # Save batch if it reaches batch_size
+                if len(batch_dfs) >= batch_size:
+                    combined_df = pd.concat(batch_dfs, ignore_index=True)
+                    count = save_injury_records(combined_df, db_path)
+                    logging.info(
+                        f"Saved batch: {count} records from {len(batch_dfs)} days"
+                    )
+                    total_inserted += count
+                    batch_dfs = []  # Clear batch
+            else:
+                logging.debug(f"{date_str}: no report available")
+                total_not_found += 1
+                pbar.set_postfix(
+                    {
+                        "cached": total_cached,
+                        "inserted": total_inserted,
+                        "not_found": total_not_found,
+                    }
+                )
+
+            # Rate limiting - be respectful to NBA servers
+            time.sleep(0.2)
+
+    # Save any remaining records in the last batch
+    if batch_dfs:
+        combined_df = pd.concat(batch_dfs, ignore_index=True)
+        count = save_injury_records(combined_df, db_path)
+        logging.info(f"Saved final batch: {count} records from {len(batch_dfs)} days")
+        total_inserted += count
+
+    conn.close()
+
+    logging.info(
+        f"Backfill complete: {total_inserted} new records, {total_cached} cached, {total_not_found} not found ({len(dates)} days total)"
+    )
+    return total_inserted
+
+
+def main():
+    """CLI entry point for injury data collection."""
+    import argparse
+
+    from src.logging_config import setup_logging
+
+    parser = argparse.ArgumentParser(
+        description="Collect NBA Official injury reports",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Update recent reports (default: yesterday + today)
+  python -m src.database_updater.nba_official_injuries
+  
+  # Update last 7 days
+  python -m src.database_updater.nba_official_injuries --days-back 7
+  
+  # Backfill historical range
+  python -m src.database_updater.nba_official_injuries --backfill --start 2024-10-01 --end 2024-12-01
+        """,
+    )
+
+    parser.add_argument(
+        "--days-back",
+        type=int,
+        default=1,
+        help="Number of days to look back (default: 1)",
+    )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Backfill historical data (requires --start and --end)",
+    )
+    parser.add_argument(
+        "--start", type=str, help="Start date for backfill (YYYY-MM-DD)"
+    )
+    parser.add_argument("--end", type=str, help="End date for backfill (YYYY-MM-DD)")
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        help="Logging level (DEBUG, INFO, WARNING, ERROR)",
+    )
+
+    args = parser.parse_args()
+    setup_logging(log_level=args.log_level.upper())
+
+    if args.backfill:
+        if not args.start or not args.end:
+            parser.error("--backfill requires both --start and --end dates")
+
+        count = backfill_injury_reports(args.start, args.end)
+        print(f"✓ Backfill complete: {count} new records")
+    else:
+        count = update_nba_official_injuries(days_back=args.days_back)
+        print(f"✓ Update complete: {count} new records")
+
+
+if __name__ == "__main__":
+    main()

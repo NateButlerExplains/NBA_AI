@@ -108,7 +108,7 @@ def create_game_states(games_info):
             # Check if the first log has orderNumber to decide which logic to use
             if "orderNumber" in logs[0]:
                 # Logic for logs from the live endpoint (includes orderNumber)
-                for row in logs:
+                for i, row in enumerate(logs):
                     if (
                         row.get("personId") is not None
                         and row.get("playerNameI") is not None
@@ -127,6 +127,14 @@ def create_game_states(games_info):
                             points = int(row["pointsTotal"])
                             players[team][player_id]["points"] = points
 
+                    # Only mark as final if this is the last play AND it's a 'Game End' action
+                    # This prevents marking in-progress games as final
+                    is_final = (
+                        i == len(logs) - 1
+                        and row.get("actionType") == "game"
+                        and row.get("subType") == "end"
+                    )
+
                     current_game_state = {
                         "game_id": game_id,
                         "play_id": int(row["orderNumber"]),
@@ -139,7 +147,7 @@ def create_game_states(games_info):
                         "away_score": int(row["scoreAway"]),
                         "total": int(row["scoreHome"]) + int(row["scoreAway"]),
                         "home_margin": int(row["scoreHome"]) - int(row["scoreAway"]),
-                        "is_final_state": row["description"] == "Game End",
+                        "is_final_state": is_final,
                         "players_data": deepcopy(players),
                     }
 
@@ -183,8 +191,11 @@ def create_game_states(games_info):
                         "away_score": current_away_score,
                         "total": current_home_score + current_away_score,
                         "home_margin": current_home_score - current_away_score,
-                        "is_final_state": (i == len(logs) - 1)
-                        and (row.get("subType") == "end"),
+                        "is_final_state": (
+                            i == len(logs) - 1
+                            and row.get("actionType") == "game"
+                            and row.get("subType") == "end"
+                        ),
                         "players_data": deepcopy(players),
                     }
 
@@ -208,8 +219,11 @@ def create_game_states(games_info):
 @log_execution_time(average_over="game_states")
 def save_game_states(game_states, db_path=DB_PATH):
     """
-    Saves the game states to the database and updates Games.game_data_finalized to True if any state has is_final_state = True.
+    Saves the game states to the database.
     Each game_id is processed in a separate transaction to ensure all-or-nothing behavior.
+
+    Note: Does NOT set game_data_finalized flag - that's handled by the orchestrator
+    after all Stage 3 data (PBP, GameStates, PlayerBox, TeamBox) is collected.
 
     Parameters:
     game_states (dict): A dictionary with game IDs as keys and lists of dictionaries (game states) as values.
@@ -220,6 +234,7 @@ def save_game_states(game_states, db_path=DB_PATH):
     """
     logging.info(f"Saving game states to database: {db_path}")
     overall_success = True
+    data_to_insert = None  # Initialize to avoid NameError in debug logging
 
     try:
         with sqlite3.connect(db_path) as conn:
@@ -264,15 +279,6 @@ def save_game_states(game_states, db_path=DB_PATH):
                         data_to_insert,
                     )
 
-                    # Check if any state has is_final_state = True and update Games table accordingly
-                    if any(state["is_final_state"] for state in states):
-                        conn.execute(
-                            """
-                            UPDATE Games SET game_data_finalized = 1 WHERE game_id = ?
-                            """,
-                            (game_id,),
-                        )
-
                     conn.commit()
                 except Exception as e:
                     conn.rollback()  # Roll back the transaction if an error occurred
@@ -288,7 +294,7 @@ def save_game_states(game_states, db_path=DB_PATH):
     else:
         logging.error("Some game states were not saved successfully")
 
-    if game_states:
+    if game_states and data_to_insert:
         logging.debug(f"Example record (First): {data_to_insert[0]}")
         logging.debug(f"Example record (Last): {data_to_insert[-1]}")
 

@@ -30,10 +30,13 @@ Usage:
 import argparse
 import logging
 import sqlite3
+from datetime import datetime, timedelta
 
+import pandas as pd
 from tqdm import tqdm
 
 from src.config import config
+from src.database_updater.betting import update_betting_data
 from src.database_updater.boxscores import get_boxscores, save_boxscores
 from src.database_updater.game_states import create_game_states, save_game_states
 from src.database_updater.nba_official_injuries import update_nba_official_injuries
@@ -58,7 +61,9 @@ DB_PATH = config["database"]["path"]
 
 @log_execution_time()
 def update_database(
-    season="Current", predictor=None, db_path=DB_PATH, skip_players=False
+    season="Current",
+    predictor=None,
+    db_path=DB_PATH,
 ):
     """
     Orchestrates the full update process for the specified season.
@@ -67,33 +72,314 @@ def update_database(
         season (str): The season to update (default is "Current").
         predictor: The prediction model to use (default is None).
         db_path (str): The path to the database (default is from config).
-        skip_players (bool): If True, skip player enrichment (default is False).
 
     Returns:
         None
     """
     # STEP 1: Update Schedule
     update_schedule(season)
-    # STEP 2: Update Players List (optional - can be slow on first run)
-    if not skip_players:
-        update_players(db_path)
-    else:
-        logging.info("Skipping player enrichment (--skip-players flag set)")
-    # STEP 3: Update Game Data (Play-by-Play Logs, Game States, Boxscores)
-    update_game_data(season, db_path)
-    # STEP 3.5: Update Live Game Data (for In Progress games)
-    update_live_game_data(season, db_path)
-    # STEP 3.6: Update Injury Data (NBA Official daily reports)
-    update_injury_data(db_path)
-    # STEP 4: Update Pre Game Data (Prior States, Feature Sets)
+
+    # STEP 2: Update Players List
+    update_players(db_path)
+
+    # STEP 3: Update Injury Data
+    update_injury_data(season, db_path)
+
+    # STEP 4: Update Betting Data
+    update_betting_lines(season, db_path)
+
+    # STEP 5: Update Play-by-Play Data
+    update_pbp_data(season, db_path)
+
+    # STEP 6: Update Game States (parsed from PbP)
+    update_game_state_data(season, db_path)
+
+    # STEP 7: Update Boxscore Data
+    update_boxscore_data(season, db_path)
+
+    # STEP 8: Update Pre Game Data (Prior States, Feature Sets)
     update_pre_game_data(season, db_path)
-    # STEP 5: Update Predictions
+
+    # STEP 9: Update Predictions
     if predictor:
         update_prediction_data(season, predictor, db_path)
 
 
 @log_execution_time()
+def update_pbp_data(season, db_path=DB_PATH, chunk_size=100):
+    """
+    Collects play-by-play logs for games needing updates.
+
+    This is Step 5 of the pipeline - fetches raw PBP data from NBA API.
+    Automatically uses live endpoint for in-progress games.
+    Does NOT parse into GameStates (that's Step 6).
+
+    Parameters:
+        season (str): The season to update.
+        db_path (str): The path to the database (default is from config).
+        chunk_size (int): Number of games to process at a time (default is 100).
+
+    Returns:
+        None
+    """
+    game_ids = get_games_needing_pbp_update(season, db_path)
+
+    if not game_ids:
+        logging.info("No games need PBP data updates.")
+        return
+
+    total_games = len(game_ids)
+    total_chunks = (total_games + chunk_size - 1) // chunk_size
+
+    if total_chunks > 1:
+        logging.info(f"Processing {total_games} PBP games in {total_chunks} chunks.")
+
+    pbar = (
+        tqdm(total=total_chunks, desc="PBP chunks", unit="chunk")
+        if total_chunks > 1
+        else None
+    )
+
+    for i in range(0, total_games, chunk_size):
+        chunk_game_ids = game_ids[i : i + chunk_size]
+
+        try:
+            pbp_data = get_pbp(chunk_game_ids, pbp_endpoint="both")
+            save_pbp(pbp_data, db_path)
+
+            if pbar:
+                pbar.update(1)
+        except Exception as e:
+            logging.error(f"Error processing PBP chunk starting at index {i}: {str(e)}")
+            if pbar:
+                pbar.update(1)
+            continue
+
+    if pbar:
+        pbar.close()
+
+    logging.info(
+        f"Step 5 complete: Play-by-Play data collected for {total_games} games."
+    )
+
+
+@log_execution_time()
+def update_game_state_data(season, db_path=DB_PATH, chunk_size=100):
+    """
+    Parses play-by-play logs into structured GameStates.
+
+    This is Step 6 of the pipeline - converts raw PBP into game state snapshots.
+    Handles both completed and in-progress games.
+    Requires PBP data to already exist (Step 5 must run first).
+
+    Parameters:
+        season (str): The season to update.
+        db_path (str): The path to the database (default is from config).
+        chunk_size (int): Number of games to process at a time (default is 100).
+
+    Returns:
+        None
+    """
+    game_ids = get_games_needing_game_state_update(season, db_path)
+
+    if not game_ids:
+        logging.info("No games need GameState updates.")
+        return
+
+    total_games = len(game_ids)
+    total_chunks = (total_games + chunk_size - 1) // chunk_size
+
+    if total_chunks > 1:
+        logging.info(
+            f"Processing {total_games} GameState games in {total_chunks} chunks."
+        )
+
+    pbar = (
+        tqdm(total=total_chunks, desc="GameState chunks", unit="chunk")
+        if total_chunks > 1
+        else None
+    )
+
+    for i in range(0, total_games, chunk_size):
+        chunk_game_ids = game_ids[i : i + chunk_size]
+
+        try:
+            basic_game_info = lookup_basic_game_info(chunk_game_ids, db_path)
+
+            # Load PBP data for parsing
+            pbp_data = {}
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                for game_id in chunk_game_ids:
+                    cursor.execute(
+                        "SELECT log_data FROM PbP_Logs WHERE game_id = ?", (game_id,)
+                    )
+                    rows = cursor.fetchall()
+                    if rows:
+                        import json
+
+                        pbp_data[game_id] = [json.loads(row[0]) for row in rows]
+
+            # Create GameStates from PBP
+            game_state_inputs = {
+                game_id: {
+                    "home": basic_game_info[game_id]["home"],
+                    "away": basic_game_info[game_id]["away"],
+                    "date_time_est": basic_game_info[game_id]["date_time_est"],
+                    "pbp_logs": game_info,
+                }
+                for game_id, game_info in pbp_data.items()
+            }
+
+            game_states = create_game_states(game_state_inputs)
+            save_game_states(game_states)
+
+            # Set game_data_finalized flag for games with complete PBP/GameStates
+            pbp_finalized = _mark_pbp_games_finalized(chunk_game_ids, db_path)
+            if pbp_finalized:
+                logging.debug(
+                    f"Marked {len(pbp_finalized)} games with PBP/GameStates finalized."
+                )
+
+            if pbar:
+                pbar.update(1)
+        except Exception as e:
+            logging.error(
+                f"Error processing GameState chunk starting at index {i}: {str(e)}"
+            )
+            if pbar:
+                pbar.update(1)
+            continue
+
+    if pbar:
+        pbar.close()
+
+    logging.info(
+        f"Step 6 complete: GameStates created and game_data_finalized flags updated."
+    )
+
+
+@log_execution_time()
+def update_boxscore_data(season, db_path=DB_PATH, chunk_size=100):
+    """
+    Collects boxscore data (PlayerBox, TeamBox) for games needing updates.
+
+    This is Step 7 of the pipeline - fetches boxscore statistics from NBA API.
+    Independent of PBP/GameStates (can run in parallel if needed).
+
+    Parameters:
+        season (str): The season to update.
+        db_path (str): The path to the database (default is from config).
+        chunk_size (int): Number of games to process at a time (default is 100).
+
+    Returns:
+        None
+    """
+    game_ids = get_games_needing_boxscores(season, db_path)
+
+    if not game_ids:
+        logging.info("No games need boxscore updates.")
+        return
+
+    total_games = len(game_ids)
+    total_chunks = (total_games + chunk_size - 1) // chunk_size
+
+    if total_chunks > 1:
+        logging.info(
+            f"Processing {total_games} boxscore games in {total_chunks} chunks."
+        )
+
+    pbar = (
+        tqdm(total=total_chunks, desc="Boxscore chunks", unit="chunk")
+        if total_chunks > 1
+        else None
+    )
+
+    for i in range(0, total_games, chunk_size):
+        chunk_game_ids = game_ids[i : i + chunk_size]
+
+        try:
+            boxscore_data = get_boxscores(
+                chunk_game_ids, check_game_status=True, db_path=db_path
+            )
+            save_boxscores(boxscore_data, db_path)
+
+            # Set boxscore_data_finalized flag for games with complete boxscore data
+            boxscore_finalized = _mark_boxscore_games_finalized(chunk_game_ids, db_path)
+            if boxscore_finalized:
+                logging.debug(
+                    f"Marked {len(boxscore_finalized)} games with boxscores finalized."
+                )
+
+            if pbar:
+                pbar.update(1)
+        except Exception as e:
+            logging.error(
+                f"Error processing boxscore chunk starting at index {i}: {str(e)}"
+            )
+            if pbar:
+                pbar.update(1)
+            continue
+
+    if pbar:
+        pbar.close()
+
+    logging.info(
+        f"Step 7 complete: Boxscores collected and boxscore_data_finalized flags updated."
+    )
+
+
+@log_execution_time()
 def update_game_data(season, db_path=DB_PATH, chunk_size=100):
+    """
+    DEPRECATED: Legacy function that combines PBP, GameStates, and Boxscores.
+
+    Use the individual functions instead:
+    - update_pbp_data() for play-by-play collection
+    - update_game_state_data() for parsing PBP into states
+    - update_boxscore_data() for boxscore collection
+
+    This function is kept for backwards compatibility but will call
+    the new modular functions internally.
+
+    Parameters:
+        season (str): The season to update.
+        db_path (str): The path to the database (default is from config).
+        chunk_size (int): Number of games to process at a time (default is 100).
+
+    Returns:
+        None
+    """
+    logging.warning(
+        "update_game_data() is deprecated. Use update_pbp_data(), update_game_state_data(), update_boxscore_data() instead."
+    )
+
+    # Call new modular functions
+    update_pbp_data(season, db_path, chunk_size)
+    update_game_state_data(season, db_path, chunk_size)
+    update_boxscore_data(season, db_path, chunk_size)
+
+
+# Helper functions for determining which games need updates
+
+
+def get_games_needing_pbp_update(season, db_path):
+    """Get list of game_ids needing PBP data collection (includes in-progress games)."""
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT game_id FROM Games
+            WHERE season = ?
+            AND season_type IN ('Regular Season', 'Post Season')
+            AND status IN ('Completed', 'Final', 'In Progress')
+            AND game_data_finalized = 0
+            AND NOT EXISTS (SELECT 1 FROM PbP_Logs WHERE PbP_Logs.game_id = Games.game_id)
+            ORDER BY date_time_est
+            """,
+            (season,),
+        )
+        return [row[0] for row in cursor.fetchall()]
     """
     Updates play-by-play logs and game states for games needing updates.
 
@@ -146,9 +432,23 @@ def update_game_data(season, db_path=DB_PATH, chunk_size=100):
             game_states = create_game_states(game_state_inputs)
             save_game_states(game_states)
 
+            # Set game_data_finalized flag for games with complete PBP/GameStates
+            pbp_finalized = _mark_pbp_games_finalized(chunk_game_ids, db_path)
+            if pbp_finalized:
+                logging.debug(
+                    f"Marked {len(pbp_finalized)} games with PBP/GameStates finalized."
+                )
+
             # Collect boxscore data for completed games
             boxscore_data = get_boxscores(chunk_game_ids)
             save_boxscores(boxscore_data, db_path)
+
+            # Set boxscore_data_finalized flag for games with complete boxscore data
+            boxscore_finalized = _mark_boxscore_games_finalized(chunk_game_ids, db_path)
+            if boxscore_finalized:
+                logging.debug(
+                    f"Marked {len(boxscore_finalized)} games with boxscores finalized."
+                )
 
             # Update progress bar
             if pbar:
@@ -162,6 +462,10 @@ def update_game_data(season, db_path=DB_PATH, chunk_size=100):
 
     if pbar:
         pbar.close()
+
+    logging.info(
+        f"Stage 3 complete. Updated game_data_finalized and boxscore_data_finalized flags."
+    )
 
     # ADDITIONAL CHECK: Collect boxscores for games that have PBP but no PlayerBox
     # This handles cases where boxscores were added to the pipeline after initial collection
@@ -188,6 +492,13 @@ def update_game_data(season, db_path=DB_PATH, chunk_size=100):
                 boxscore_data = get_boxscores(chunk, check_game_status=False)
                 save_boxscores(boxscore_data, db_path)
 
+                # Mark games as finalized now that boxscores are backfilled
+                boxscore_finalized = _mark_boxscore_games_finalized(chunk, db_path)
+                if boxscore_finalized:
+                    logging.debug(
+                        f"Marked {len(boxscore_finalized)} backfilled games as finalized."
+                    )
+
                 if pbar:
                     pbar.update(1)
             except Exception as e:
@@ -201,97 +512,127 @@ def update_game_data(season, db_path=DB_PATH, chunk_size=100):
 
 
 @log_execution_time()
-def update_live_game_data(season, db_path=DB_PATH):
+def update_injury_data(season, db_path=DB_PATH):
     """
-    Collects live play-by-play and boxscore data for in-progress games.
+    Collects NBA Official injury reports for the specified season.
 
-    This function specifically targets games with status='In Progress' to collect
-    real-time game data using the live NBA API endpoints. This ensures the web app
-    can display current scores and statistics for ongoing games.
+    Smart fetching strategy based on season:
+    - Current season: Fetch recent days (yesterday + today) for daily updates
+    - Historical seasons: Fetch entire season date range for backfill
 
     Parameters:
-        season (str): The season to update.
+        season (str): The season to update (e.g., "2024-2025" or "Current").
         db_path (str): The path to the database (default is from config).
 
     Returns:
         None
     """
-    game_ids = get_games_in_progress(season, db_path)
+    from src.utils import determine_current_season
 
-    if not game_ids:
-        logging.debug("No in-progress games found.")
+    current_season = determine_current_season()
+
+    # For current season, just fetch recent days (daily update mode)
+    if season == "Current" or season == current_season:
+        try:
+            count = update_nba_official_injuries(days_back=1, db_path=db_path)
+            if count > 0:
+                logging.info(f"Injury data: {count} new records for recent days.")
+            else:
+                logging.debug("Injury data: no new records for recent days.")
+        except Exception as e:
+            logging.error(f"Error collecting NBA Official injury data: {e}")
         return
 
-    logging.info(f"Collecting live data for {len(game_ids)} in-progress games...")
-
+    # For historical seasons, determine the full date range
     try:
-        # Collect live play-by-play data
-        pbp_data = get_pbp(game_ids, pbp_endpoint="live")
-        save_pbp(pbp_data)
-
-        # Get basic game info for game states
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
-            basic_game_info = {}
-            for game_id in game_ids:
-                cursor.execute(
-                    "SELECT date_time_est FROM Games WHERE game_id = ?", (game_id,)
+            cursor.execute(
+                """
+                SELECT MIN(date_time_est), MAX(date_time_est)
+                FROM Games
+                WHERE season = ?
+                AND season_type IN ('Regular Season', 'Post Season')
+            """,
+                (season,),
+            )
+            result = cursor.fetchone()
+
+            if not result or not result[0]:
+                logging.warning(
+                    f"No games found for season {season} - skipping injury data"
                 )
-                row = cursor.fetchone()
-                if row:
-                    basic_game_info[game_id] = {"date_time_est": row[0]}
+                return
 
-        # Create game states from live PBP
-        game_state_inputs = {
-            game_id: {
-                "date_time_est": basic_game_info[game_id]["date_time_est"],
-                "pbp_logs": game_info,
-            }
-            for game_id, game_info in pbp_data.items()
-        }
+            first_game = pd.to_datetime(result[0]).date()
+            last_game = pd.to_datetime(result[1]).date()
+            today = datetime.now().date()
 
-        game_states = create_game_states(game_state_inputs)
-        save_game_states(game_states)
+            # Smart fetching: For completed historical seasons, only check recent days
+            # For current/recent seasons, check entire range
+            season_is_historical = last_game < (today - timedelta(days=30))
 
-        # Collect live boxscores (with check_game_status=True to use live endpoint)
-        boxscore_data = get_boxscores(game_ids, check_game_status=True, db_path=db_path)
-        save_boxscores(boxscore_data, db_path)
+            if season_is_historical:
+                # Historical season - only check last 7 days for corrections/updates
+                days_back = 7
+                logging.info(
+                    f"Historical season {season}: checking last {days_back} days for injury updates"
+                )
+            else:
+                # Current/recent season - check full range
+                end_date = min(last_game, today)
+                days_back = (end_date - first_game).days
+                logging.info(
+                    f"Fetching injury reports for {season} ({first_game} to {end_date}, {days_back} days)"
+                )
 
-        logging.info(f"Live data collection complete for {len(game_ids)} games.")
+            count = update_nba_official_injuries(days_back=days_back, db_path=db_path)
+            if count > 0:
+                logging.info(f"Injury data: {count} new records for {season}.")
+            else:
+                logging.debug(f"Injury data: no new records for {season}.")
 
     except Exception as e:
-        logging.error(f"Error collecting live game data: {e}")
+        logging.error(f"Error collecting injury data for {season}: {e}")
 
 
 @log_execution_time()
-def update_injury_data(db_path=DB_PATH):
+def update_betting_lines(season, db_path=DB_PATH):
     """
-    Collects injury data from NBA's official daily injury report PDFs.
+    Collects betting data (spreads, totals, moneylines) from ESPN DraftKings.
 
-    Source: https://ak-static.cms.nba.com/referee/injury/Injury-Report_{date}_05PM.pdf
+    Tiered fetching strategy:
+    - Games > 2 days in future: Skip (not available yet)
+    - Games -7 days to +2 days: Fetch from ESPN API (DraftKings odds)
+    - Games older than 7 days: Use Covers for backfill
 
-    These reports are published daily at 5pm ET and contain granular injury details:
-    - body_part (Ankle, Knee, Hamstring, etc.)
-    - injury_type (Sprain, Strain, Soreness, Surgery, etc.)
-    - injury_side (Left, Right)
-    - status (Out, Questionable, Doubtful, Probable, Available)
+    ESPN provides DraftKings odds approximately 1-2 days before games
+    and retains them for about 5-7 days after completion.
 
     Parameters:
+        season (str): The season to update (e.g., "2024-2025" or "Current").
         db_path (str): The path to the database (default is from config).
 
     Returns:
         None
     """
-    # Fetch NBA Official daily injury reports
-    # Checks last 2 days for new reports (handles timezone/timing issues)
+    from src.utils import determine_current_season
+
+    # Convert "Current" to actual season
+    if season == "Current":
+        season = determine_current_season()
+
     try:
-        nba_count = update_nba_official_injuries(days_back=1, db_path=db_path)
-        if nba_count > 0:
-            logging.info(f"NBA Official injury data complete: {nba_count} new records.")
+        stats = update_betting_data(season=season, use_covers=True)
+        if stats["saved"] > 0:
+            logging.info(
+                f"Betting data complete: {stats['saved']} lines saved, "
+                f"{stats['skipped']} skipped."
+            )
         else:
-            logging.debug("NBA Official injury data: already up to date.")
+            logging.debug("Betting data: no new lines available.")
     except Exception as e:
-        logging.error(f"Error collecting NBA Official injury data: {e}")
+        logging.error(f"Error collecting betting data: {e}")
 
 
 @log_execution_time()
@@ -390,80 +731,71 @@ def update_prediction_data(season, predictor, db_path=DB_PATH):
     game_ids = get_games_for_prediction_update(season, predictor, db_path)
 
     # Generate and save predictions
-    predictions = make_pre_game_predictions(game_ids, predictor)
+    predictions = make_pre_game_predictions(game_ids, predictor, save=True)
+
+
+def get_games_needing_boxscores(season, db_path):
+    """Get list of game_ids needing boxscore data collection (includes in-progress games)."""
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT game_id FROM Games
+            WHERE season = ?
+            AND season_type IN ('Regular Season', 'Post Season')
+            AND status IN ('Completed', 'Final', 'In Progress')
+            AND boxscore_data_finalized = 0
+            AND NOT EXISTS (SELECT 1 FROM PlayerBox WHERE PlayerBox.game_id = Games.game_id)
+            ORDER BY date_time_est
+            """,
+            (season,),
+        )
+        return [row[0] for row in cursor.fetchall()]
 
 
 @log_execution_time()
 def get_games_needing_game_state_update(season, db_path=DB_PATH):
     """
-    Retrieves game_ids for games needing game state updates.
+    Retrieves game_ids for games needing GameState creation from PBP logs.
+
+    This function looks for games that have PBP data but no GameStates yet.
+    Includes in-progress games to enable live updates.
 
     Parameters:
         season (str): The season to filter games by.
         db_path (str): The path to the database (default is from config).
 
     Returns:
-        list: A list of game_ids for games that need to be updated.
+        list: A list of game_ids for games that need GameState parsing.
     """
     with sqlite3.connect(db_path) as db_connection:
         cursor = db_connection.cursor()
-        # Query to identify completed games needing data collection
-        # Note: Only collect from finalized games to avoid incomplete data
         cursor.execute(
             """
             SELECT game_id 
             FROM Games 
             WHERE season = ?
               AND season_type IN ('Regular Season', 'Post Season') 
-              AND status IN ('Completed', 'Final')
-              AND game_data_finalized = False;
+              AND status IN ('Completed', 'Final', 'In Progress')
+              AND game_data_finalized = 0
+              AND EXISTS (SELECT 1 FROM PbP_Logs WHERE PbP_Logs.game_id = Games.game_id)
+              AND NOT EXISTS (SELECT 1 FROM GameStates WHERE GameStates.game_id = Games.game_id AND is_final_state = 1)
+            ORDER BY date_time_est;
         """,
             (season,),
         )
 
         games_to_update = cursor.fetchall()
 
-    # Return a list of game_ids
     return [game_id for (game_id,) in games_to_update]
-
-
-@log_execution_time()
-def get_games_in_progress(season, db_path=DB_PATH):
-    """
-    Retrieves game_ids for games currently in progress.
-
-    Parameters:
-        season (str): The season to filter games by.
-        db_path (str): The path to the database (default is from config).
-
-    Returns:
-        list: A list of game_ids for games with status='In Progress'.
-    """
-    with sqlite3.connect(db_path) as db_connection:
-        cursor = db_connection.cursor()
-        cursor.execute(
-            """
-            SELECT game_id 
-            FROM Games 
-            WHERE season = ?
-              AND season_type IN ('Regular Season', 'Post Season') 
-              AND status = 'In Progress';
-        """,
-            (season,),
-        )
-
-        games_in_progress = cursor.fetchall()
-
-    # Return a list of game_ids
-    return [game_id for (game_id,) in games_in_progress]
 
 
 @log_execution_time()
 def get_games_needing_boxscores_only(season, db_path=DB_PATH):
     """
-    Retrieves game_ids for games that have PBP data but are missing PlayerBox records.
+    Retrieves game_ids for games that have PBP data but are missing boxscores.
 
-    This handles cases where boxscores were added to the pipeline after initial collection.
+    This handles cases where PBP/GameStates succeeded but boxscore collection failed.
 
     Parameters:
         season (str): The season to check.
@@ -482,9 +814,7 @@ def get_games_needing_boxscores_only(season, db_path=DB_PATH):
             AND g.season_type IN ('Regular Season', 'Post Season')
             AND g.status IN ('Completed', 'Final')
             AND g.game_data_finalized = 1
-            AND NOT EXISTS (
-                SELECT 1 FROM PlayerBox pb WHERE pb.game_id = g.game_id
-            )
+            AND g.boxscore_data_finalized = 0
             ORDER BY g.date_time_est
         """,
             (season,),
@@ -510,6 +840,7 @@ def get_games_with_incomplete_pre_game_data(season, db_path=DB_PATH):
     WHERE season = ?
       AND season_type IN ("Regular Season", "Post Season")
       AND pre_game_data_finalized = 0
+      AND game_data_finalized = 1
       AND (status = 'Completed' OR status = 'In Progress')
     
     UNION
@@ -527,7 +858,7 @@ def get_games_with_incomplete_pre_game_data(season, db_path=DB_PATH):
             AND g2.season_type IN ("Regular Season", "Post Season")
             AND g2.date_time_est < g1.date_time_est
             AND (g2.home_team = g1.home_team OR g2.away_team = g1.home_team OR g2.home_team = g1.away_team OR g2.away_team = g1.away_team)
-            AND g2.game_data_finalized = 0
+            AND (g2.game_data_finalized = 0 OR g2.boxscore_data_finalized = 0)
       )
     """
 
@@ -537,6 +868,98 @@ def get_games_with_incomplete_pre_game_data(season, db_path=DB_PATH):
         results = cursor.fetchall()
 
     return [row[0] for row in results]
+
+
+def _mark_pbp_games_finalized(game_ids, db_path=DB_PATH):
+    """
+    Marks games as having finalized PBP/GameStates data:
+    - PBP_Logs (at least one play)
+    - GameStates (with is_final_state=1)
+
+    This is the core play-by-play data that can succeed independently of boxscores.
+
+    Parameters:
+        game_ids (list): List of game IDs to check.
+        db_path (str): Path to database.
+
+    Returns:
+        list: Game IDs that were marked as finalized.
+    """
+    finalized = []
+
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+
+        for game_id in game_ids:
+            # Check if PBP and GameStates exist
+            cursor.execute(
+                """
+                SELECT 
+                    (SELECT COUNT(*) FROM PbP_Logs WHERE game_id = ?) > 0 as has_pbp,
+                    (SELECT COUNT(*) FROM GameStates WHERE game_id = ? AND is_final_state = 1) > 0 as has_final_state
+                """,
+                (game_id, game_id),
+            )
+
+            row = cursor.fetchone()
+            has_pbp, has_final_state = row
+
+            if has_pbp and has_final_state:
+                cursor.execute(
+                    "UPDATE Games SET game_data_finalized = 1 WHERE game_id = ?",
+                    (game_id,),
+                )
+                finalized.append(game_id)
+
+        conn.commit()
+
+    return finalized
+
+
+def _mark_boxscore_games_finalized(game_ids, db_path=DB_PATH):
+    """
+    Marks games as having finalized boxscore data:
+    - PlayerBox (at least one player)
+    - TeamBox (both teams)
+
+    Boxscores are collected separately and can fail independently of PBP/GameStates.
+
+    Parameters:
+        game_ids (list): List of game IDs to check.
+        db_path (str): Path to database.
+
+    Returns:
+        list: Game IDs that were marked as finalized.
+    """
+    finalized = []
+
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+
+        for game_id in game_ids:
+            # Check if boxscore data exists
+            cursor.execute(
+                """
+                SELECT 
+                    (SELECT COUNT(*) FROM PlayerBox WHERE game_id = ?) > 0 as has_players,
+                    (SELECT COUNT(*) FROM TeamBox WHERE game_id = ?) >= 2 as has_teams
+                """,
+                (game_id, game_id),
+            )
+
+            row = cursor.fetchone()
+            has_players, has_teams = row
+
+            if has_players and has_teams:
+                cursor.execute(
+                    "UPDATE Games SET boxscore_data_finalized = 1 WHERE game_id = ?",
+                    (game_id,),
+                )
+                finalized.append(game_id)
+
+        conn.commit()
+
+    return finalized
 
 
 @log_execution_time()
@@ -601,17 +1024,15 @@ def main():
         type=str,
         help="The predictor to use for predictions.",
     )
-    parser.add_argument(
-        "--skip-players",
-        action="store_true",
-        help="Skip player enrichment (useful for quick data collection).",
-    )
 
     args = parser.parse_args()
     log_level = args.log_level.upper()
     setup_logging(log_level=log_level)
 
-    update_database(args.season, args.predictor, skip_players=args.skip_players)
+    update_database(
+        args.season,
+        args.predictor,
+    )
 
 
 if __name__ == "__main__":
