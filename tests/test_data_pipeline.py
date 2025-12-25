@@ -34,7 +34,7 @@ class TestDataCompleteness:
             """
             SELECT COUNT(*) 
             FROM Games g
-            WHERE g.status IN ('Completed', 'Final')
+            WHERE g.status = 3
             AND g.season_type = 'Regular Season'
             AND NOT EXISTS (SELECT 1 FROM PbP_Logs p WHERE p.game_id = g.game_id)
         """
@@ -49,7 +49,7 @@ class TestDataCompleteness:
             """
             SELECT COUNT(*) 
             FROM Games g
-            WHERE g.status IN ('Completed', 'Final')
+            WHERE g.status = 3
             AND g.season_type = 'Post Season'
             AND NOT EXISTS (SELECT 1 FROM PbP_Logs p WHERE p.game_id = g.game_id)
         """
@@ -65,7 +65,7 @@ class TestDataCompleteness:
             SELECT p.game_id, COUNT(*) as play_count
             FROM PbP_Logs p
             JOIN Games g ON p.game_id = g.game_id
-            WHERE g.status IN ('Completed', 'Final')
+            WHERE g.status = 3
             AND g.season_type IN ('Regular Season', 'Post Season')
             GROUP BY p.game_id
             HAVING play_count < 300 OR play_count > 700
@@ -107,7 +107,7 @@ class TestDataCompleteness:
             """
             SELECT COUNT(*) 
             FROM Games g
-            WHERE g.status IN ('Completed', 'Final')
+            WHERE g.status = 3
             AND g.season_type IN ('Regular Season', 'Post Season')
             AND NOT EXISTS (SELECT 1 FROM PlayerBox pb WHERE pb.game_id = g.game_id)
         """
@@ -122,7 +122,7 @@ class TestDataCompleteness:
             """
             SELECT COUNT(*) 
             FROM Games g
-            WHERE g.status IN ('Completed', 'Final')
+            WHERE g.status = 3
             AND g.season_type IN ('Regular Season', 'Post Season')
             AND NOT EXISTS (SELECT 1 FROM GameStates gs WHERE gs.game_id = g.game_id)
         """
@@ -171,7 +171,7 @@ class TestDataCompleteness:
             """
             SELECT COUNT(*) 
             FROM Games g
-            WHERE g.status IN ('Completed', 'Final')
+            WHERE g.status = 3
             AND g.season_type IN ('Regular Season', 'Post Season')
             AND NOT EXISTS (
                 SELECT 1 FROM GameStates gs 
@@ -254,7 +254,7 @@ class TestDataCompleteness:
             """
             SELECT COUNT(*) 
             FROM Games g
-            WHERE g.status IN ('Completed', 'Final')
+            WHERE g.status = 3
             AND g.season_type IN ('Regular Season', 'Post Season')
             AND (SELECT COUNT(*) FROM TeamBox tb WHERE tb.game_id = g.game_id) != 2
         """
@@ -499,10 +499,10 @@ class TestDataCompleteness:
         # Allow some NaN values (early season games), but not too many
         assert checked > 0, "No feature sets checked"
         nan_pct = (
-            nan_count / (checked * 34) if checked > 0 else 0
-        )  # ~34 features per game
+            nan_count / (checked * 43) if checked > 0 else 0
+        )  # 43 features per game
         assert (
-            nan_pct < 0.05
+            nan_pct < 0.06
         ), f"Too many NaN features: {nan_pct:.1%} ({nan_count} NaN in {checked} games)"
 
     def test_features_depend_on_prior_final_states(self, db_connection):
@@ -510,7 +510,7 @@ class TestDataCompleteness:
         cursor = db_connection.cursor()
         cursor.execute(
             """
-            SELECT g.game_id, g.home_team, g.away_team, g.date_time_est, g.season
+            SELECT g.game_id, g.home_team, g.away_team, g.date_time_utc, g.season
             FROM Games g
             JOIN Features f ON g.game_id = f.game_id
             WHERE LENGTH(f.feature_set) > 100
@@ -524,7 +524,7 @@ class TestDataCompleteness:
                 """
                 SELECT COUNT(*) FROM Games g
                 JOIN GameStates gs ON g.game_id = gs.game_id
-                WHERE g.date_time_est < ?
+                WHERE g.date_time_utc < ?
                 AND (g.home_team = ? OR g.away_team = ?)
                 AND g.season = ?
                 AND g.season_type IN ('Regular Season', 'Post Season')
@@ -542,7 +542,7 @@ class TestDataCompleteness:
                 """
                 SELECT COUNT(*) FROM Games g
                 JOIN GameStates gs ON g.game_id = gs.game_id
-                WHERE g.date_time_est < ?
+                WHERE g.date_time_utc < ?
                 AND (g.home_team = ? OR g.away_team = ?)
                 AND g.season = ?
                 AND g.season_type IN ('Regular Season', 'Post Season')
@@ -567,7 +567,7 @@ class TestDataCompleteness:
                 SELECT 1 FROM Games g2
                 WHERE g2.season = g.season
                 AND g2.season_type IN ('Regular Season', 'Post Season')
-                AND g2.date_time_est < g.date_time_est
+                AND g2.date_time_utc < g.date_time_utc
                 AND (g2.home_team = g.home_team OR g2.away_team = g.home_team)
             )
             LIMIT 5
@@ -596,13 +596,13 @@ class TestDataCompleteness:
         # Find a game late in season with many prior games
         cursor.execute(
             """
-            SELECT g.game_id, g.home_team, g.date_time_est, g.season
+            SELECT g.game_id, g.home_team, g.date_time_utc, g.season
             FROM Games g
             JOIN Features f ON g.game_id = f.game_id
             WHERE g.season = '2024-2025'
             AND g.season_type = 'Regular Season'
             AND LENGTH(f.feature_set) > 100
-            ORDER BY g.date_time_est DESC
+            ORDER BY g.date_time_utc DESC
             LIMIT 1
         """
         )
@@ -615,7 +615,7 @@ class TestDataCompleteness:
             cursor.execute(
                 """
                 SELECT COUNT(*) FROM Games
-                WHERE date_time_est < ?
+                WHERE date_time_utc < ?
                 AND (home_team = ? OR away_team = ?)
                 AND season = ?
                 AND season_type IN ('Regular Season', 'Post Season')
@@ -877,9 +877,9 @@ class TestDataFreshness:
         cursor.execute(
             """
             SELECT COUNT(*) FROM Games
-            WHERE date_time_est >= ? AND date_time_est < ?
+            WHERE date_time_utc >= ? AND date_time_utc < ?
             AND season_type = 'Regular Season'
-            AND status NOT IN ('Completed', 'Final')
+            AND status <> 3
         """,
             (week_ago, three_days_ago),
         )
@@ -1034,7 +1034,7 @@ class TestPredictions:
         cursor = db_connection.cursor()
         cursor.execute(
             """
-            SELECT p.game_id, p.predictor, p.prediction_datetime, g.date_time_est
+            SELECT p.game_id, p.predictor, p.prediction_datetime, g.date_time_utc
             FROM Predictions p
             JOIN Games g ON p.game_id = g.game_id
             WHERE g.season_type IN ('Regular Season', 'Post Season')

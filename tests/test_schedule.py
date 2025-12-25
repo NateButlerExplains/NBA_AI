@@ -48,59 +48,79 @@ class TestScheduleCache:
 
         os.unlink(db.name)
 
-    def test_cache_skips_update_for_fresh_historical_season(self, temp_db):
-        """Historical season with fresh cache should skip update."""
+    def test_cache_skips_update_for_finalized_historical_season(self, temp_db):
+        """Historical season with schedule_finalized=1 should skip update."""
         current_season = determine_current_season()
         historical_season = "2022-2023"  # Not current
 
-        # Insert recent cache entry
+        # Ensure schedule_finalized column exists
         with sqlite3.connect(temp_db) as conn:
             cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(ScheduleCache)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if "schedule_finalized" not in columns:
+                cursor.execute(
+                    "ALTER TABLE ScheduleCache ADD COLUMN schedule_finalized INTEGER DEFAULT 0"
+                )
+
+            # Insert finalized cache entry
             now = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute(
-                "INSERT INTO ScheduleCache VALUES (?, ?)", (historical_season, now)
+                "INSERT INTO ScheduleCache (season, last_update_datetime, schedule_finalized) VALUES (?, ?, 1)",
+                (historical_season, now),
             )
             conn.commit()
 
-        # Should NOT update (cache is fresh)
+        # Should NOT update (schedule is finalized)
         result = schedule._should_update_schedule(historical_season, temp_db)
-        assert result is False, "Fresh cache should skip update"
+        assert result is False, "Finalized schedule should skip update"
 
-    def test_cache_updates_expired_historical_season(self, temp_db):
-        """Historical season with expired cache should update."""
+    def test_cache_updates_non_finalized_historical_season(self, temp_db):
+        """Historical season without finalized flag should update."""
         historical_season = "2022-2023"
 
-        # Insert old cache entry (10 minutes ago)
+        # Ensure schedule_finalized column exists
         with sqlite3.connect(temp_db) as conn:
             cursor = conn.cursor()
-            old_time = (pd.Timestamp.now() - timedelta(minutes=10)).strftime(
+            cursor.execute("PRAGMA table_info(ScheduleCache)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if "schedule_finalized" not in columns:
+                cursor.execute(
+                    "ALTER TABLE ScheduleCache ADD COLUMN schedule_finalized INTEGER DEFAULT 0"
+                )
+
+            # Insert non-finalized cache entry
+            old_time = (pd.Timestamp.now() - timedelta(days=1)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
             cursor.execute(
-                "INSERT INTO ScheduleCache VALUES (?, ?)", (historical_season, old_time)
+                "INSERT INTO ScheduleCache (season, last_update_datetime, schedule_finalized) VALUES (?, ?, 0)",
+                (historical_season, old_time),
             )
             conn.commit()
 
-        # Should update (cache expired)
+        # Should update (not yet finalized)
         result = schedule._should_update_schedule(historical_season, temp_db)
-        assert result is True, "Expired cache should trigger update"
+        assert result is True, "Non-finalized schedule should trigger update"
 
     def test_current_season_always_updates(self, temp_db):
-        """Current season should always update regardless of cache."""
+        """Current season should update when cache expires (5 minutes)."""
         current_season = determine_current_season()
 
-        # Insert fresh cache entry for current season
+        # Insert old cache entry for current season (6 minutes ago - beyond 5-minute threshold)
         with sqlite3.connect(temp_db) as conn:
             cursor = conn.cursor()
-            now = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+            old_time = (pd.Timestamp.now() - timedelta(minutes=6)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
             cursor.execute(
-                "INSERT INTO ScheduleCache VALUES (?, ?)", (current_season, now)
+                "INSERT INTO ScheduleCache VALUES (?, ?)", (current_season, old_time)
             )
             conn.commit()
 
-        # Should still update (current season always updates)
+        # Should update (cache expired - older than 5 minutes)
         result = schedule._should_update_schedule(current_season, temp_db)
-        assert result is True, "Current season should always update"
+        assert result is True, "Current season should update when cache expires"
 
     def test_missing_cache_triggers_update(self, temp_db):
         """Season with no cache entry should update."""
@@ -129,7 +149,7 @@ class TestScheduleFlagPreservation:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT game_id, date_time_est, home_team, away_team, status, season, season_type
+                SELECT game_id, date_time_utc, home_team, away_team, status, season, season_type
                 FROM Games 
                 WHERE game_data_finalized = 1 
                 AND boxscore_data_finalized = 1 
@@ -149,10 +169,11 @@ class TestScheduleFlagPreservation:
             {
                 "gameId": game_id,
                 "season": season,
-                "gameDateTimeEst": date_time,
+                "gameDateTimeUTC": date_time,
                 "homeTeam": home,
                 "awayTeam": away,
                 "gameStatus": status,
+                "gameStatusText": "Final",
                 "seasonType": season_type,
             }
         ]

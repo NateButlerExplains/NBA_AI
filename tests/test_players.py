@@ -83,15 +83,26 @@ class TestPlayerSmartUpdate:
 
         with patch("src.database_updater.players.fetch_players") as mock_fetch:
             with patch("src.database_updater.players.save_players") as mock_save:
-                mock_fetch.return_value = [mock_new_player]
+                with patch(
+                    "src.database_updater.players._should_update_players",
+                    return_value=True,
+                ):
+                    # Properly mock StageLogger
+                    with patch(
+                        "src.database_updater.players.StageLogger"
+                    ) as mock_logger_class:
+                        mock_logger = MagicMock()
+                        mock_logger_class.return_value = mock_logger
 
-                players.update_players(db_path)
+                        mock_fetch.return_value = [mock_new_player]
 
-                # save_players SHOULD be called with new player
-                mock_save.assert_called_once()
-                saved_players = mock_save.call_args[0][0]
-                assert len(saved_players) == 1
-                assert saved_players[0]["person_id"] == 999999999
+                        players.update_players(db_path)
+
+                        # save_players SHOULD be called with new player
+                        mock_save.assert_called_once()
+                        saved_players = mock_save.call_args[0][0]
+                        assert len(saved_players) == 1
+                        assert saved_players[0]["person_id"] == 999999999
 
     def test_update_processes_changed_players(self):
         """Should update players with field changes."""
@@ -130,14 +141,25 @@ class TestPlayerSmartUpdate:
 
         with patch("src.database_updater.players.fetch_players") as mock_fetch:
             with patch("src.database_updater.players.save_players") as mock_save:
-                mock_fetch.return_value = [mock_changed_player]
+                with patch(
+                    "src.database_updater.players._should_update_players",
+                    return_value=True,
+                ):
+                    # Properly mock StageLogger
+                    with patch(
+                        "src.database_updater.players.StageLogger"
+                    ) as mock_logger_class:
+                        mock_logger = MagicMock()
+                        mock_logger_class.return_value = mock_logger
 
-                players.update_players(db_path)
+                        mock_fetch.return_value = [mock_changed_player]
 
-                # save_players SHOULD be called with changed player
-                mock_save.assert_called_once()
-                saved_players = mock_save.call_args[0][0]
-                assert len(saved_players) == 1
+                        players.update_players(db_path)
+
+                        # save_players SHOULD be called with changed player
+                        mock_save.assert_called_once()
+                        saved_players = mock_save.call_args[0][0]
+                        assert len(saved_players) == 1
 
 
 class TestPlayerDataParsing:
@@ -145,7 +167,10 @@ class TestPlayerDataParsing:
 
     def test_fetch_players_returns_list(self):
         """fetch_players should return list of dicts."""
-        result = players.fetch_players()
+        from unittest.mock import MagicMock
+
+        mock_logger = MagicMock()
+        result = players.fetch_players(mock_logger)
 
         assert isinstance(result, list), "Should return list"
         if result:  # If API call succeeded
