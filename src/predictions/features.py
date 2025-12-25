@@ -61,7 +61,7 @@ def create_feature_sets(prior_states_dict, db_path=DB_PATH):
     dict: A dictionary where each key is a game_id and each value is a dictionary containing the generated features for that game.
     """
 
-    logging.info(f"Creating feature sets for {len(prior_states_dict)} games...")
+    logging.debug(f"Creating feature sets for {len(prior_states_dict)} games...")
     game_ids = list(prior_states_dict.keys())
     game_info = lookup_basic_game_info(game_ids, db_path)
 
@@ -72,7 +72,7 @@ def create_feature_sets(prior_states_dict, db_path=DB_PATH):
     for game_id, game_info in game_info.items():
         home_team = game_info["home"]
         away_team = game_info["away"]
-        game_date = game_info["date_time_est"][:10]
+        game_date = game_info["date_time_utc"][:10]
 
         # Get the prior states for the home and away teams
         home_prior_states = prior_states_dict[game_id]["home_prior_states"]
@@ -135,8 +135,8 @@ def create_feature_sets(prior_states_dict, db_path=DB_PATH):
     no_feature_games_count = total_games - successful_games
 
     # Log the results
-    logging.info(f"Feature sets created successfully for {successful_games} games.")
-    logging.info(
+    logging.debug(f"Feature sets created successfully for {successful_games} games.")
+    logging.debug(
         f"No feature sets were created for {no_feature_games_count} games due to insufficient prior states."
     )
 
@@ -165,7 +165,7 @@ def save_feature_sets(feature_sets, db_path=DB_PATH):
     Returns:
         None. The function updates the database directly with the provided information.
     """
-    logging.info(f"Saving feature sets for {len(feature_sets)} games...")
+    logging.debug(f"Saving feature sets for {len(feature_sets)} games...")
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
@@ -196,7 +196,7 @@ def save_feature_sets(feature_sets, db_path=DB_PATH):
     )
     non_empty_feature_sets_count = len(feature_sets) - empty_feature_sets_count
 
-    logging.info(
+    logging.debug(
         f"Feature sets saved successfully for {non_empty_feature_sets_count} of {len(feature_sets)} games. {empty_feature_sets_count} were empty."
     )
     if data:
@@ -215,7 +215,7 @@ def load_feature_sets(game_ids, db_path=DB_PATH):
     Returns:
         dict: A dictionary where each key is a game_id and each value is the corresponding feature set.
     """
-    logging.info(f"Loading feature sets for {len(game_ids)} games...")
+    logging.debug(f"Loading feature sets for {len(game_ids)} games...")
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
@@ -239,7 +239,7 @@ def load_feature_sets(game_ids, db_path=DB_PATH):
     non_empty_feature_sets_count = len([fs for fs in feature_sets.values() if fs])
     empty_feature_sets_count = len(feature_sets) - non_empty_feature_sets_count
 
-    logging.info(
+    logging.debug(
         f"Feature sets loaded successfully for {non_empty_feature_sets_count} of {len(game_ids)} games. {empty_feature_sets_count} were empty."
     )
     if feature_sets:
@@ -552,6 +552,9 @@ def _create_rest_and_season_features(home_df, away_df, game_date):
         """
         Calculate rest days, day of season, and average game frequency for a team.
 
+        Optimized to use set-based lookups (O(1)) instead of nested loops with
+        list membership checks (O(n)).
+
         Parameters:
         df (pd.DataFrame): DataFrame containing the team's game data.
         target_date (str): The date of the game.
@@ -562,14 +565,16 @@ def _create_rest_and_season_features(home_df, away_df, game_date):
         # Convert target_date to datetime
         target_date = pd.to_datetime(target_date)
 
-        # Find the start date of the season
-        team_season_start = pd.to_datetime(df["game_date"].min())
+        # Parse all game dates once (vectorized)
+        game_dates = pd.to_datetime(df["game_date"])
+        team_season_start = game_dates.min()
 
-        # Filter out games that happened after the target_date
-        previous_games = df[pd.to_datetime(df["game_date"]) < target_date]
+        # Filter previous games (vectorized comparison)
+        previous_mask = game_dates < target_date
+        previous_game_dates = game_dates[previous_mask]
 
         # Calculate rest days
-        if previous_games.empty:
+        if previous_game_dates.empty:
             last_game_date = team_season_start
             rest_days = (
                 (target_date - last_game_date).days
@@ -577,26 +582,26 @@ def _create_rest_and_season_features(home_df, away_df, game_date):
                 else 0
             )
         else:
-            last_game_date = pd.to_datetime(previous_games["game_date"].max())
+            last_game_date = previous_game_dates.max()
             rest_days = (target_date - last_game_date).days
 
         # Calculate day of season
         day_of_season = (target_date - team_season_start).days
 
+        # Use set for O(1) lookup instead of O(n) list membership
+        game_dates_set = set(previous_game_dates.dt.normalize())
+
         # Calculate average game frequency over the last 5, 10, and 30 days
         rest_play_counts = []
         for days in [5, 10, 30]:
             start_date = max(target_date - pd.Timedelta(days=days), team_season_start)
-            date_range = pd.date_range(
-                start=start_date, end=target_date - pd.Timedelta(days=1)
+            # Count games in window using set (O(1) per lookup)
+            games_in_window = sum(
+                1 for d in game_dates_set if start_date <= d < target_date
             )
-            rest_play_count = 0
-            for day in date_range:
-                rest_play_count += (
-                    1
-                    if day in pd.to_datetime(previous_games["game_date"]).values
-                    else -1
-                )
+            days_in_window = (target_date - start_date).days
+            # rest_play_count: +1 for game day, -1 for rest day
+            rest_play_count = games_in_window - (days_in_window - games_in_window)
             rest_play_counts.append(rest_play_count)
 
         avg_rest_play_count = np.mean(rest_play_counts)

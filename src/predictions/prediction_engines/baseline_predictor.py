@@ -15,6 +15,8 @@ Usage:
     pre_game_predictions = predictor.make_pre_game_predictions(game_ids)
 """
 
+import logging
+
 from src.predictions.prediction_engines.base_predictor import BasePredictor
 from src.predictions.prediction_utils import calculate_home_win_prob
 
@@ -79,7 +81,7 @@ class BaselinePredictor(BasePredictor):
                     ),
                 }
             else:
-                # Skip games with missing data and optionally log the issue
-                print(f"Skipping game {game_id} due to missing data")
+                # Skip games with missing data
+                logging.debug(f"Skipping game {game_id} due to missing feature data")
 
         return predictions
