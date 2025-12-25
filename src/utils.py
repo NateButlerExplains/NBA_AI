@@ -1,8 +1,8 @@
 """
 utils.py
 
-This module provides utility functions and classes for managing and processing NBA data, including 
-database interactions, HTTP request handling, and data validation. It includes functions for looking 
+This module provides utility functions and classes for managing and processing NBA data, including
+database interactions, HTTP request handling, and data validation. It includes functions for looking
 up game information, validating game IDs and dates, and converting between different NBA team identifiers.
 
 Core Functions:
@@ -44,6 +44,110 @@ from src.config import config
 DB_PATH = config["database"]["path"]
 PROJECT_ROOT = Path(config["project"]["root"])
 
+# Timezone constants
+EASTERN_TZ_OFFSET_HOURS = -5  # EST (standard time)
+EASTERN_TZ_OFFSET_DST_HOURS = -4  # EDT (daylight saving time)
+
+
+def parse_utc_datetime(utc_string: str) -> datetime:
+    """
+    Parse a UTC datetime string from the database.
+
+    Args:
+        utc_string: ISO 8601 UTC string, e.g., "2024-10-22T00:30:00Z"
+
+    Returns:
+        datetime: Timezone-aware datetime in UTC
+    """
+    from datetime import timezone
+
+    # Handle both "Z" suffix and no suffix
+    if utc_string.endswith("Z"):
+        utc_string = utc_string[:-1]
+
+    # Handle space separator (SQLite datetime output) vs T separator
+    if " " in utc_string:
+        dt = datetime.strptime(utc_string, "%Y-%m-%d %H:%M:%S")
+    else:
+        dt = datetime.strptime(utc_string, "%Y-%m-%dT%H:%M:%S")
+
+    return dt.replace(tzinfo=timezone.utc)
+
+
+def utc_to_eastern(utc_dt: datetime) -> datetime:
+    """
+    Convert UTC datetime to US Eastern time (handles DST automatically).
+
+    Args:
+        utc_dt: datetime in UTC (can be naive or aware)
+
+    Returns:
+        datetime: Timezone-aware datetime in US/Eastern
+    """
+    try:
+        import pytz
+
+        eastern = pytz.timezone("US/Eastern")
+
+        # If naive, assume UTC
+        if utc_dt.tzinfo is None:
+            from datetime import timezone
+
+            utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+
+        return utc_dt.astimezone(eastern)
+    except ImportError:
+        # Fallback without pytz - use fixed offset (doesn't handle DST)
+        from datetime import timedelta, timezone
+
+        eastern_offset = timezone(timedelta(hours=EASTERN_TZ_OFFSET_HOURS))
+        if utc_dt.tzinfo is None:
+            utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+        return utc_dt.astimezone(eastern_offset)
+
+
+def utc_to_local(utc_dt: datetime) -> datetime:
+    """
+    Convert UTC datetime to user's local timezone.
+
+    Args:
+        utc_dt: datetime in UTC (can be naive or aware)
+
+    Returns:
+        datetime: Timezone-aware datetime in local timezone
+    """
+    try:
+        from tzlocal import get_localzone
+
+        local_tz = get_localzone()
+
+        # If naive, assume UTC
+        if utc_dt.tzinfo is None:
+            from datetime import timezone
+
+            utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+
+        return utc_dt.astimezone(local_tz)
+    except ImportError:
+        # Fallback - return as-is (UTC)
+        return utc_dt
+
+
+def format_eastern_datetime(utc_string: str, fmt: str = "%Y-%m-%d %I:%M %p ET") -> str:
+    """
+    Convert UTC string to formatted Eastern time string.
+
+    Args:
+        utc_string: ISO 8601 UTC string from database
+        fmt: strftime format string (default includes ET suffix)
+
+    Returns:
+        str: Formatted datetime string in Eastern time
+    """
+    utc_dt = parse_utc_datetime(utc_string)
+    eastern_dt = utc_to_eastern(utc_dt)
+    return eastern_dt.strftime(fmt)
+
 
 def lookup_basic_game_info(game_ids, db_path=DB_PATH):
     """
@@ -55,7 +159,7 @@ def lookup_basic_game_info(game_ids, db_path=DB_PATH):
 
     Returns:
         dict: A dictionary with game IDs as keys and each value being a dictionary representing a game.
-              Each game dictionary contains the home team, away team, date/time, status, season, and season type.
+              Each game dictionary contains the home team, away team, date/time (UTC), status, season, and season type.
     """
     if not isinstance(game_ids, list):
         game_ids = [game_ids]
@@ -63,7 +167,7 @@ def lookup_basic_game_info(game_ids, db_path=DB_PATH):
     validate_game_ids(game_ids)
 
     sql = f"""
-    SELECT game_id, home_team, away_team, date_time_est, status, season, season_type
+    SELECT game_id, home_team, away_team, date_time_utc, status, season, season_type
     FROM Games
     WHERE game_id IN ({','.join(['?'] * len(game_ids))})
     """
@@ -75,12 +179,12 @@ def lookup_basic_game_info(game_ids, db_path=DB_PATH):
 
     game_ids_set = set(game_ids)
     game_info_dict = {}
-    for game_id, home, away, date_time_est, status, season, season_type in games:
+    for game_id, home, away, date_time_utc, status, season, season_type in games:
         game_ids_set.remove(game_id)
         game_info_dict[game_id] = {
             "home": home,
             "away": away,
-            "date_time_est": date_time_est,
+            "date_time_utc": date_time_utc,
             "status": status,
             "season": season,
             "season_type": season_type,
@@ -110,6 +214,42 @@ def determine_current_season():
         season = f"{current_year - 1}-{current_year}"
 
     return season
+
+
+def get_season_start_date(season: str, db_path: str = DB_PATH) -> datetime:
+    """
+    Gets the actual start date of a season from the Games table.
+    Falls back to Oct 22 if no games found.
+
+    Args:
+        season: Season string in 'XXXX-XXXX' format
+        db_path: Path to database
+
+    Returns:
+        datetime: Date of first game in season (or Oct 22 fallback)
+    """
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT MIN(date_time_utc)
+            FROM Games
+            WHERE season = ?
+            AND season_type IN ('Regular Season', 'Post Season')
+            """,
+            (season,),
+        )
+        result = cursor.fetchone()[0]
+
+        if result:
+            # Parse ISO format datetime and return just the date part
+            return datetime.fromisoformat(result.replace("Z", "+00:00")).replace(
+                hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+            )
+        else:
+            # Fallback to Oct 22 if no games found (typical season start)
+            season_start_year = int(season.split("-")[0])
+            return datetime(season_start_year, 10, 22)
 
 
 def get_player_image(player_id):
@@ -156,75 +296,154 @@ def get_player_image(player_id):
 
 def log_execution_time(average_over=None):
     """
-    Decorator that logs the execution time of a function and optionally averages the time over the output or a specified input.
+    Decorator that tracks execution time silently (no logging).
+    Use StageLogger for actual logging output.
 
     Args:
-        average_over (str or None): Specifies what to average over. Can be None, "output", or the name of an input argument.
+        average_over (str or None): Deprecated, kept for compatibility.
 
     Returns:
-        function: The wrapped function with added logging for execution time.
+        function: The wrapped function with execution time tracking.
     """
-    if average_over not in (None, "output") and not isinstance(average_over, str):
-        raise ValueError(
-            "average_over must be None, 'output', or a string representing an input argument name."
-        )
 
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            # Validate that if average_over is specified as an argument name, it exists among the function's arguments.
-            if average_over and average_over != "output" and average_over not in kwargs:
-                arg_names = func.__code__.co_varnames[: func.__code__.co_argcount]
-                if average_over not in arg_names:
-                    raise ValueError(
-                        f"The specified average_over argument '{average_over}' does not exist in the function '{func.__name__}'."
-                    )
-
             start_time = time.time()
-            logging.info(f"Starting {func.__name__}...")
-
             result = func(*args, **kwargs)
-
             duration = time.time() - start_time
 
-            if average_over:
-                items_to_average = None
-                if average_over == "output":
-                    if isinstance(result, (list, tuple)):
-                        items_to_average = result
-                    elif isinstance(result, dict):
-                        items_to_average = result.keys()
-                elif average_over in kwargs:
-                    arg = kwargs[average_over]
-                    if isinstance(arg, (list, tuple)):
-                        items_to_average = arg
-                    elif isinstance(arg, dict):
-                        items_to_average = arg.keys()
-                else:
-                    for arg in args:
-                        if isinstance(arg, (list, tuple, dict)):
-                            items_to_average = (
-                                arg if not isinstance(arg, dict) else arg.keys()
-                            )
-                            break
-
-                if items_to_average is not None and len(items_to_average) > 0:
-                    avg_time_per_item = duration / len(items_to_average)
-                else:
-                    avg_time_per_item = 0
-
-            if average_over:
-                logging.info(
-                    f"{func.__name__} execution time: {duration:.2f} seconds. Average per item: {avg_time_per_item:.2f} seconds."
-                )
-            else:
-                logging.info(f"{func.__name__} execution time: {duration:.2f} seconds.")
+            # Store duration in function for access by StageLogger if needed
+            wrapper.last_duration = duration
 
             return result
 
         return wrapper
 
     return decorator
+
+
+class StageLogger:
+    """
+    Unified logger for pipeline stages - outputs ONE line per stage.
+
+    Format: [Stage] season: +added ~updated -removed (total, validation) | duration | api_calls
+    Example: [Schedule] 2024-2025: +3 ~47 -0 (1230 total, WARN: 18 TBD) | 1.2s | 1 API call
+    """
+
+    def __init__(self, stage_name: str):
+        self.stage_name = stage_name
+        self.logger = logging.getLogger(__name__)
+        self.start_time = time.time()
+        self.api_calls = 0
+        self.added = 0
+        self.updated = 0
+        self.removed = 0
+        self.total = 0
+        self.validation_suffix = ""
+        self.extra_info = ""
+
+    def log_api_call(self):
+        """Increment API call counter."""
+        self.api_calls += 1
+
+    def set_counts(self, added=0, updated=0, removed=0, total=0):
+        """Set update counts."""
+        self.added = added
+        self.updated = updated
+        self.removed = removed
+        self.total = total
+
+    def set_validation(self, validation_result):
+        """Set validation suffix from ValidationResult."""
+        if hasattr(validation_result, "log_suffix"):
+            suffix = validation_result.log_suffix()
+            if suffix:
+                self.validation_suffix = f", {suffix}"
+
+    def set_extra_info(self, info: str):
+        """Set extra information to display."""
+        self.extra_info = info
+
+    def log_cache_hit(self, season: str = None, cache_age_minutes: float = None):
+        """Log cache hit (no updates needed)."""
+        duration = time.time() - self.start_time
+        parts = [f"[{self.stage_name}]"]
+
+        if season:
+            parts.append(f"{season}:")
+
+        if cache_age_minutes is not None:
+            parts.append(f"cached ({cache_age_minutes:.0f}m ago)")
+        else:
+            parts.append("cached")
+
+        parts.append(f"| {duration:.1f}s")
+        self.logger.info(" ".join(parts))
+
+    def log_skip(self, season: str, reason: str):
+        """Log skipped stage."""
+        self.logger.info(f"[{self.stage_name}] {season}: skipped - {reason}")
+
+    def log_complete(self, season: str = None):
+        """Log stage completion with all metrics in ONE line."""
+        duration = time.time() - self.start_time
+
+        # Build the log line
+        parts = [f"[{self.stage_name}]"]
+
+        if season:
+            parts.append(f"{season}:")
+
+        # Update counts - always show if set (even if zero)
+        if (
+            self.added is not None
+            or self.updated is not None
+            or self.removed is not None
+        ):
+            # Only show non-zero counts to save space
+            count_parts = []
+            if self.added > 0:
+                count_parts.append(f"+{self.added}")
+            if self.updated > 0:
+                count_parts.append(f"~{self.updated}")
+            if self.removed > 0:
+                count_parts.append(f"-{self.removed}")
+
+            if count_parts:
+                parts.append(" ".join(count_parts))
+            else:
+                parts.append("no changes")
+
+        # Total count (compact format)
+        if self.total:
+            parts.append(f"({self.total}{self.validation_suffix})")
+
+        # Extra info
+        if self.extra_info:
+            parts.append(self.extra_info)
+
+        # Duration and API calls combined
+        metrics = [f"{duration:.1f}s"]
+        if self.api_calls > 0:
+            metrics.append(f"{self.api_calls} api")
+        parts.append("| " + " | ".join(metrics))
+
+        self.logger.info(" ".join(parts))
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - auto-log if not already logged."""
+        # If exception occurred, log error instead
+        if exc_type is not None:
+            duration = time.time() - self.start_time
+            self.logger.error(
+                f"[{self.stage_name}] FAILED: {exc_val} | {duration:.1f}s"
+            )
+        return False  # Don't suppress exceptions
 
 
 def requests_retry_session(

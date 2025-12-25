@@ -11,6 +11,7 @@ Enhanced with features from database_updater_CM:
 - Optional JSON structured logging for easier parsing
 - Configurable console/file output
 - Better default formatting with full timestamps
+- Level-based formatting (clean for INFO, detailed for DEBUG/WARNING/ERROR)
 
 Functions:
 - setup_logging(log_level, log_file, structured, log_to_console, max_file_size, backup_count):
@@ -38,6 +39,30 @@ Example:
 
 import logging
 from logging.handlers import RotatingFileHandler
+
+
+class LevelBasedFormatter(logging.Formatter):
+    """
+    Custom formatter that shows minimal output for INFO level,
+    but full details (timestamp, file, level) for DEBUG/WARNING/ERROR/CRITICAL.
+    """
+
+    def __init__(self):
+        super().__init__()
+        # Detailed format for DEBUG/WARNING/ERROR/CRITICAL
+        self.detailed_formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        # Clean format for INFO (just the message)
+        self.clean_formatter = logging.Formatter("%(message)s")
+
+    def format(self, record):
+        """Choose formatter based on log level."""
+        if record.levelno == logging.INFO:
+            return self.clean_formatter.format(record)
+        else:
+            return self.detailed_formatter.format(record)
 
 
 def setup_logging(
@@ -100,10 +125,7 @@ def setup_logging(
                 structured = False
 
         if not structured:
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
+            formatter = LevelBasedFormatter()
 
         # Create handlers
         handlers = []
