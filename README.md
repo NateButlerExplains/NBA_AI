@@ -31,7 +31,7 @@ The project is built around a few key components:
     * `schedule.py`: Fetches the schedule from the NBA API and updates the database.
     * `players.py`: Fetches and updates player reference data.
     * `nba_official_injuries.py`: Fetches injury reports from NBA's official injury report PDFs.
-    * `betting_data.py`: Scrapes betting lines (spreads/totals) from Covers.com.
+    * `betting.py`: Fetches betting lines (spreads/totals) from ESPN API and Covers.com.
     * `pbp.py`: Fetches play-by-play data for games and updates the database.
     * `game_states.py`: Parses play-by-play data to generate game states and updates the database.
     * `boxscores.py`: Fetches traditional boxscore stats (PlayerBox and TeamBox).
@@ -163,7 +163,7 @@ The core data pipeline and prediction engines are functional. The focus is now o
 
 ### Historical Data
 
-The default setup downloads only the current season (2025-2026, 1,297 games). A development database with seasons 2023-2024 through 2025-2026 (4,094 games total) is available from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases) as `NBA_AI_dev.sqlite`.
+The default setup downloads only the current season (2025-2026, ~1,300 games). A development database with seasons 2023-2024 through 2025-2026 (~4,100 games total) is available from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases) as `NBA_AI_dev.sqlite`.
 
 To use it, update your `.env`:
 
@@ -189,7 +189,6 @@ api:
 
 - Default focus: 2025-2026 season (current season for public release)
 - Database: SQLite with complete pipeline (Schedule → Players → Injuries → Betting → PBP → GameStates → Boxscores → Features → Predictions)
-- Validation: Comprehensive database evaluator checks data quality and integrity
 - Built with Python, Flask, SQLite, PyTorch, scikit-learn, XGBoost, and nba_api
 
 

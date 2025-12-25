@@ -1,5 +1,5 @@
 # NBA AI Data Model Reference
-**Last Updated**: December 6, 2025  
+**Last Updated**: December 25, 2025  
 **Purpose**: Comprehensive reference for all data structures, schemas, and API endpoints used in the project. This is the single source of truth for the database schema.
 
 ---
@@ -16,26 +16,36 @@
 
 ## Database Strategy
 
-### Two-Database Architecture
+### Three-Database Architecture
 
-The project maintains two SQLite databases:
+The project maintains three SQLite databases with proper subsetting relationships:
 
-| Database | Size | Seasons | Purpose |
-|----------|------|---------|--------|
-| `NBA_AI_dev.sqlite` | 2.8 GB | 2023-2026 | Active development (3 seasons) |
-| `NBA_AI_ALL_SEASONS.sqlite` | 25 GB | 1999-2026 | Master archive (27 seasons) |
+| Database | Size | Games | Seasons | Purpose |
+|----------|------|-------|---------|--------|
+| `NBA_AI_current.sqlite` | 516 MB | 1,302 | 2025-2026 | Production (current season only) |
+| `NBA_AI_dev.sqlite` | 3.0 GB | 4,098 | 2023-2026 | Active development (3 seasons) |
+| `NBA_AI_full.sqlite` | 25 GB | 37,366 | 1999-2026 | Master archive (27 seasons) |
+
+**Database Subsetting**: `current ⊂ dev ⊂ full` (all tables verified)
+
+**Current Database** (`NBA_AI_current.sqlite`):
+- Production database for web app
+- Contains only 2025-2026 season
+- Lightweight for fast queries and deployment
+- Perfect subset of dev database
 
 **Dev Database** (`NBA_AI_dev.sqlite`):
 - Primary working database for all development
 - Contains 3 seasons: 2023-2024, 2024-2025, 2025-2026
-- **Strict subset of ALL_SEASONS** - all DEV data exists in ALL_SEASONS
+- **Strict subset of full** - all dev data exists in full
 - Set via `.env`: `DATABASE_PATH=data/NBA_AI_dev.sqlite`
 
-**ALL_SEASONS Database** (`NBA_AI_ALL_SEASONS.sqlite`):
+**Full Database** (`NBA_AI_full.sqlite`):
 - 27 seasons of historical data (1999-2000 through 2025-2026)
-- Unified schema matching DEV (consolidated Dec 2025)
-- Contains all DEV data plus historical seasons
+- Unified schema matching dev (consolidated Dec 2025)
+- Contains all dev data plus historical seasons
 - Use for GenAI training on full historical dataset
+- Backup stored compressed: `data/backups/NBA_AI_full_backup_YYYYMMDD.sqlite.gz` (~1.4GB)
 
 ### Data Availability by Season
 
@@ -48,7 +58,7 @@ The project maintains two SQLite databases:
 
 ### Schema (Unified)
 
-Both databases now share identical schema (13 tables):
+All three databases share identical schema (16 tables):
 
 | Table | Description |
 |-------|-------------|
@@ -65,6 +75,9 @@ Both databases now share identical schema (13 tables):
 | InjuryReports | NBA Official injury data |
 | ESPNGameMapping | NBA→ESPN game ID mapping |
 | Betting | Unified betting lines (single row per game) |
+| InjuryCache | Tracks fetched injury report dates |
+| PlayersCache | Tracks player data updates per season |
+| CoversAttempts | Tracks Covers.com scraping attempts |
 
 ---
 
@@ -72,40 +85,41 @@ Both databases now share identical schema (13 tables):
 
 ### Overview
 - **Database**: SQLite
-- **Active DB**: `data/NBA_AI_dev.sqlite` (~2.8GB, 3 seasons)
-- **Master Archive**: `data/NBA_AI_ALL_SEASONS.sqlite` (~25GB, 27 seasons)
+- **Production DB**: `data/NBA_AI_current.sqlite` (~516MB, 1 season)
+- **Dev DB**: `data/NBA_AI_dev.sqlite` (~3.0GB, 3 seasons)
+- **Master Archive**: `data/NBA_AI_full.sqlite` (~25GB, 27 seasons)
 - **Key Design**: TEXT-based (game_id, team tricodes) for simplicity
-- **Relationship**: DEV is strict subset of ALL_SEASONS
+- **Relationship**: `current ⊂ dev ⊂ full` (verified for all tables)
 
 ### Current Data Volumes (DEV - as of Dec 2025)
 | Table | Rows | Notes |
 |-------|------|-------|
-| Games | 4,093 | 3 seasons (2023-2026) |
-| PbP_Logs | 1,583,268 | ~492 plays/game |
-| GameStates | 1,583,268 | 1:1 with PbP_Logs |
-| PlayerBox | 78,492 | ~26 players/game |
-| TeamBox | 5,932 | 2 per game |
-| Features | 3,057 | Games with prior data |
-| Predictions | 7,138 | Multiple predictors/game |
-| Players | 5,115 | All-time NBA players |
+| Games | 4,098 | 3 seasons (2023-2026) |
+| PbP_Logs | 1,693,116 | ~492 plays/game |
+| GameStates | 1,693,116 | 1:1 with PbP_Logs |
+| PlayerBox | 81,473 | ~26 players/game |
+| TeamBox | 6,162 | 2 per game |
+| Features | 3,100 | Games with prior data |
+| Predictions | 15,014 | Multiple predictors/game |
+| Players | 5,118 | All-time NBA players |
 | Teams | 30 | Current NBA teams |
-| ScheduleCache | 3 | Per-season cache |
-| InjuryReports | 15,587 | NBA Official injury data (2023-2026) |
-| ESPNGameMapping | 2,987 | NBA→ESPN game ID mapping |
-| Betting | 2,887 | Single-row betting data (ESPN + Covers) |
+| ScheduleCache | 27 | Per-season cache |
+| InjuryReports | 26,235 | NBA Official injury data |
+| ESPNGameMapping | 3,157 | NBA→ESPN game ID mapping |
+| Betting | 3,080 | Single-row betting data (ESPN + Covers) |
 
-### ALL_SEASONS Data Volumes (as of Dec 2025)
+### Full Database Volumes (as of Dec 2025)
 | Table | Rows | Notes |
 |-------|------|-------|
-| Games | 37,362 | 27 seasons (1999-2026) |
+| Games | 37,366 | 27 seasons (1999-2026) |
 | PbP_Logs | ~18M | Available 2000-2001 onwards |
 | GameStates | ~18M | 1:1 with PbP_Logs |
-| Betting | 21,169 | 2007-2008 onwards (~93% coverage) |
-| PlayerBox | 78,492 | 2023-2026 only (backfill deferred) |
-| TeamBox | 5,932 | 2023-2026 only (backfill deferred) |
-| InjuryReports | 15,587 | Dec 2018 onwards (backfill deferred) |
+| Betting | ~21,000 | 2007-2008 onwards (~93% coverage) |
+| PlayerBox | 81,473 | 2023-2026 only (backfill deferred) |
+| TeamBox | 6,162 | 2023-2026 only (backfill deferred) |
+| InjuryReports | 26,235 | Dec 2018 onwards |
 
-### Tables (13 total)
+### Tables (16 total)
 
 #### 1. Games (Master Schedule Table)
 **Purpose**: Central table tracking all NBA games and their collection status
@@ -113,33 +127,65 @@ Both databases now share identical schema (13 tables):
 ```sql
 CREATE TABLE IF NOT EXISTS "Games" (
     game_id TEXT PRIMARY KEY,              -- Format: 00223XXXXX (season/type/game#)
-    date_time_est TEXT NOT NULL,           -- ISO 8601: "2024-10-22T19:30:00Z"
+    date_time_utc TEXT NOT NULL,           -- ISO 8601 UTC: "2024-10-23T00:30:00Z"
     home_team TEXT NOT NULL,               -- 3-letter abbreviation: "BOS", "LAL"
     away_team TEXT NOT NULL,               -- 3-letter abbreviation: "NYK", "MIA"
-    status TEXT NOT NULL,                  -- "Scheduled", "In Progress", "Completed", "Final"
+    status INTEGER NOT NULL,               -- 1=Not Started, 2=In Progress, 3=Final
+    status_text TEXT,                      -- Human-readable: "Final", "5:00 pm ET", "In Progress"
     season TEXT NOT NULL,                  -- "2023-2024", "2024-2025"
     season_type TEXT NOT NULL,             -- "Regular Season", "Post Season", "Pre Season", "All-Star"
-    game_data_finalized BOOLEAN NOT NULL DEFAULT 0,       -- PBP/GameStates complete
-    boxscore_data_finalized BOOLEAN NOT NULL DEFAULT 0,   -- PlayerBox/TeamBox complete
-    pre_game_data_finalized BOOLEAN NOT NULL DEFAULT 0    -- Features/predictions ready
+    pre_game_data_finalized BOOLEAN DEFAULT 0,            -- Features/predictions ready
+    game_data_finalized BOOLEAN DEFAULT 0,                -- PBP/GameStates complete
+    boxscore_data_finalized BOOLEAN DEFAULT 0,            -- PlayerBox/TeamBox complete
+    pbp_last_fetched_at TEXT,              -- ISO 8601: Last PBP fetch timestamp (for refetch logic)
+    gamestates_last_created_at TEXT,       -- ISO 8601: Last GameStates creation timestamp
+    boxscore_last_fetched_at TEXT          -- ISO 8601: Last boxscore fetch timestamp (for refetch logic)
 );
 ```
+
+**Timezone Strategy**:
+- **Database**: All times stored as UTC (actual UTC from NBA API `gameDateTimeUTC`)
+- **Display**: Convert to user's local timezone using `src/utils.py` helpers
+- **Why UTC?**: Consistent comparisons, no DST confusion, easy conversion to any timezone
 
 **Key Fields**:
 - `game_id`: Encodes season (chars 2-5) and game type (char 1)
   - `002` = Regular Season, `004` = Playoffs, `001` = Pre-Season, `003` = All-Star
+- `pbp_last_fetched_at`: Timestamp of last PBP fetch (enables smart refetch logic)
+  - In-progress games: Refetch if >5 minutes old or NULL
+  - Completed games: Refetch if NULL and within 48-hour window
+  - Used to avoid redundant API calls while keeping live data fresh
+- `gamestates_last_created_at`: Timestamp of last GameStates creation
+  - GameStates update whenever `pbp_last_fetched_at > gamestates_last_created_at`
+  - Ensures GameStates always catch up to latest PBP data
+- `boxscore_last_fetched_at`: Timestamp of last boxscore fetch (enables smart refetch logic)
+  - In-progress games: Refetch if >5 minutes old or NULL
+  - Completed but not finalized: Refetch if >5 minutes old until finalized
+  - Used to avoid redundant API calls while keeping live data fresh
 - `game_data_finalized`: Set to 1 when **core PBP data** is collected:
   - PbP_Logs (at least one play)
   - GameStates (with is_final_state=1)
 - `boxscore_data_finalized`: Set to 1 when **boxscore data** is collected:
-  - PlayerBox (at least one player)
+  - PlayerBox (>=16 players total)
   - TeamBox (both teams present)
+  - Total team minutes >=240 per team (indicates complete game)
+  - Game status = 3 (Final) in Games table
   - Note: Boxscores collected separately and can fail independently of PBP
 - `pre_game_data_finalized`: Set to 1 when Features created (requires game_data_finalized=1)
 - Note: Betting and InjuryReports are supplemental and do NOT gate any flags
 
-**Status Values**: 
-- "Scheduled" → "In Progress" → "Completed"/"Final"
+**Status Values** (stored as INTEGER from NBA API gameStatus):
+- `1` = Not Started (pre-game) - `status_text` shows game time (e.g., "5:00 pm ET")
+- `2` = In Progress (live game) - `status_text` shows current period/time or "In Progress"
+- `3` = Final (completed) - `status_text` shows "Final", "Final/OT", "Final/OT2", etc.
+
+**Why numeric codes?**
+- Direct 1:1 mapping with NBA API `gameStatus` field (no translation layer)
+- Simpler queries: `status = 3` instead of `status IN ('Completed', 'Final')`
+- `status_text` provides human-readable display pulled from NBA API `gameStatusText`
+- Eliminates mapping bugs and maintenance overhead
+
+**Status Flow**: 1 (Not Started) → 2 (In Progress) → 3 (Final)
 
 ---
 
@@ -434,8 +480,53 @@ CREATE TABLE ScheduleCache (
 );
 ```
 
-**Data Volume**: 1 row per season  
+**Data Volume**: 1 row per season (27 in dev)  
 **Purpose**: Avoid redundant API calls for schedule data
+
+**Note**: The `schedule_finalized` column (INTEGER) tracks whether a season's schedule is complete (no more games to be added).
+
+---
+
+#### 14. InjuryCache (Injury Report Tracking)
+**Purpose**: Track which injury report dates have been fetched
+
+```sql
+CREATE TABLE IF NOT EXISTS InjuryCache (
+    report_date TEXT PRIMARY KEY,          -- "2024-12-25"
+    last_fetched_at TEXT NOT NULL          -- ISO 8601 timestamp
+);
+```
+
+**Purpose**: Avoid re-fetching injury PDFs that have already been processed.
+
+---
+
+#### 15. PlayersCache (Player Data Tracking)
+**Purpose**: Track when player data was last updated per season
+
+```sql
+CREATE TABLE IF NOT EXISTS PlayersCache (
+    season TEXT PRIMARY KEY,               -- "2024-2025"
+    last_update_datetime TEXT NOT NULL     -- ISO 8601 timestamp
+);
+```
+
+**Purpose**: Avoid redundant API calls for player data.
+
+---
+
+#### 16. CoversAttempts (Covers.com Scraping Tracking)
+**Purpose**: Track Covers.com scraping attempts to avoid redundant fetches
+
+```sql
+CREATE TABLE IF NOT EXISTS CoversAttempts (
+    date_str TEXT PRIMARY KEY,             -- "2024-12-25"
+    last_attempt_datetime TEXT NOT NULL,   -- ISO 8601 timestamp
+    match_count INTEGER                    -- Number of games matched
+);
+```
+
+**Purpose**: Track which dates have been attempted for Covers betting data collection.
 
 ---
 
@@ -481,14 +572,15 @@ CREATE TABLE IF NOT EXISTS InjuryReports (
     body_part TEXT,                        -- e.g., "Knee", "Ankle", "Hand"
     injury_location TEXT,                  -- e.g., "Leg", "Arm" (broader category)
     injury_side TEXT,                      -- "Left", "Right", or NULL
-    category TEXT DEFAULT 'Injury',        -- "Injury" or "Non-Injury" (Rest, Personal, etc.)
     
     -- Timing
     report_timestamp TEXT,                 -- Report date (YYYY-MM-DD)
     
     -- Metadata
     source TEXT DEFAULT 'NBA_Official',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    category TEXT DEFAULT 'Injury',        -- "Injury" or "Non-Injury" (Rest, Personal, etc.)
+    season TEXT                            -- "2023-2024", "2024-2025" (derived from report_timestamp)
 );
 
 -- Indexes
@@ -500,7 +592,7 @@ CREATE INDEX idx_injury_nba_player_id ON InjuryReports(nba_player_id);
 
 **Data Source**: NBA Official daily injury PDFs  
 **URL Pattern**: `https://ak-static.cms.nba.com/referee/injury/Injury-Report_{YYYY-MM-DD}_05PM.pdf`  
-**Historical Coverage**: 2023-2024 season to present (15,511 records)  
+**Historical Coverage**: Dec 2018 to present (26,235 records in dev)  
 **Module**: `src/database_updater/nba_official_injuries.py`
 
 **Key Fields**:
@@ -554,7 +646,7 @@ CREATE INDEX idx_espn_mapping_espn_id ON ESPNGameMapping(espn_event_id);
 ---
 
 #### 13. Betting (Unified Betting Data - Single Row Per Game)
-**Purpose**: Store closing betting lines (spreads, totals, results) for NBA games
+**Purpose**: Track betting lines (opening, current, closing) from ESPN and Covers with proper data provenance
 
 ```sql
 CREATE TABLE IF NOT EXISTS Betting (
@@ -564,21 +656,43 @@ CREATE TABLE IF NOT EXISTS Betting (
     -- ESPN mapping (for Tier 1 fetches)
     espn_event_id TEXT,                       -- ESPN event ID for reference
     
-    -- Closing Spread (from home team perspective, negative = home favored)
-    spread REAL,                              -- Home team spread: -10.5 means home favored by 10.5
+    -- ESPN Opening Lines (set days before game)
+    espn_opening_spread REAL,                 -- Opening spread from ESPN 'open' field
+    espn_opening_spread_home_odds INTEGER,    -- Opening home odds
+    espn_opening_spread_away_odds INTEGER,    -- Opening away odds
+    espn_opening_total REAL,                  -- Opening total from ESPN 'open' field
+    espn_opening_over_odds INTEGER,           -- Opening over odds
+    espn_opening_under_odds INTEGER,          -- Opening under odds
+    espn_opening_home_moneyline INTEGER,      -- Opening home moneyline
+    espn_opening_away_moneyline INTEGER,      -- Opening away moneyline
+    
+    -- ESPN Current Lines (from 'close' field for not-yet-completed games)
+    espn_current_spread REAL,                 -- Current spread (updates until tipoff)
+    espn_current_spread_home_odds INTEGER,    -- Current home odds
+    espn_current_spread_away_odds INTEGER,    -- Current away odds
+    espn_current_total REAL,                  -- Current total (updates until tipoff)
+    espn_current_over_odds INTEGER,           -- Current over odds
+    espn_current_under_odds INTEGER,          -- Current under odds
+    espn_current_home_moneyline INTEGER,      -- Current home moneyline
+    espn_current_away_moneyline INTEGER,      -- Current away moneyline
+    
+    -- ESPN Closing Lines (from 'close' field ONLY after game completion)
+    espn_closing_spread REAL,                 -- Closing spread (locked at tipoff)
+    espn_closing_spread_home_odds INTEGER,    -- Closing home odds
+    espn_closing_spread_away_odds INTEGER,    -- Closing away odds
+    espn_closing_total REAL,                  -- Closing total (locked at tipoff)
+    espn_closing_over_odds INTEGER,           -- Closing over odds
+    espn_closing_under_odds INTEGER,          -- Closing under odds
+    espn_closing_home_moneyline INTEGER,      -- Closing home moneyline
+    espn_closing_away_moneyline INTEGER,      -- Closing away moneyline
+    
+    -- Covers Closing Lines (always closing, no opening/current)
+    covers_closing_spread REAL,              -- Closing spread from Covers (no odds)
+    covers_closing_total REAL,               -- Closing total from Covers (no odds)
+    
+    -- Results (populated after game completion)
     spread_result TEXT,                       -- 'W', 'L', 'P' (home team perspective)
-    spread_home_odds INTEGER,                 -- Spread odds for home: -110 (ESPN only)
-    spread_away_odds INTEGER,                 -- Spread odds for away: -110 (ESPN only)
-    
-    -- Closing Total (Over/Under)
-    total REAL,                               -- Over/under line: 224.5
     ou_result TEXT,                           -- 'O', 'U', 'P' (over/under/push)
-    over_odds INTEGER,                        -- Over odds: -105 (ESPN only)
-    under_odds INTEGER,                       -- Under odds: -115 (ESPN only)
-    
-    -- Moneylines (ESPN only, Covers doesn't provide these)
-    home_moneyline INTEGER,                   -- Home ML: -485 (favored) or +150 (underdog)
-    away_moneyline INTEGER,                   -- Away ML: +370 (underdog) or -200 (favored)
     
     -- Metadata
     source TEXT NOT NULL DEFAULT 'ESPN',      -- 'ESPN', 'Covers', 'Manual'
@@ -596,36 +710,54 @@ CREATE INDEX IF NOT EXISTS idx_betting_lines_finalized ON Betting(lines_finalize
 CREATE INDEX IF NOT EXISTS idx_betting_source ON Betting(source);
 ```
 
-**3-Tier Fetching Strategy**:
+**3-Tier Fetching Strategy with Opening/Current/Closing Tracking**:
 
-| Tier | Source | Window | Use Case |
-|------|--------|--------|----------|
-| 1 | ESPN API | -7 to +2 days | Live/recent data, full odds |
-| 2 | Covers Matchups | >7 days old | On-demand finalization by date |
-| 3 | Covers Team Schedules | Historical | Bulk backfill via CLI |
+| Tier | Source | Window | Use Case | Lines Captured |
+|------|--------|--------|----------|----------------|
+| 1 | ESPN API | -7 to +2 days | Live/recent data, full odds | Opening + Current (pre-game) / Closing (post-game) |
+| 2 | Covers Matchups | >7 days old | On-demand finalization by date | Closing only |
+| 3 | Covers Team Schedules | Historical | Bulk backfill via CLI | Closing only |
 
 **Data Sources**:
 - **ESPN API**: `http://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={espn_id}`
-  - Provides: spread, total, moneylines with odds (-110, etc.)
+  - Provides: `pointSpread`, `total`, `moneyline` with `open` and `close` objects
+  - Each has: `{line, homeOdds, awayOdds}` (spread/moneyline) or `{line, overOdds, underOdds}` (total)
   - Window: ~7 days before to ~2 days after game
+  - Opening lines: From `*.open` field (set days before)
+  - Current lines: From `*.close` field for not-yet-completed games (updates until tipoff)
+  - Closing lines: From `*.close` field ONLY after game completion (locked at tipoff)
   
 - **Covers.com Matchups**: `https://www.covers.com/sports/NBA/matchups?selectedDate=YYYY-MM-DD`
-  - Provides: closing spread, total (no odds)
+  - Provides: closing spread, total (no odds, no opening/current)
   - Used for: dates with unfinalized games outside ESPN window
   
 - **Covers.com Team Schedules**: `https://www.covers.com/sport/basketball/nba/teams/main/{slug}/{season}`
-  - Provides: spread, spread_result, total, ou_result
+  - Provides: spread, spread_result, total, ou_result (closing only)
   - Used for: historical season backfill (30 API calls per season)
 
-**Module**: `src/database_updater/betting.py`, `src/database_updater/covers.py`
+**Module**: `src/database_updater/betting.py`
+
+**Key Design Decisions**:
+- **NULL Semantics**: NULL in `espn_closing_*` = never fetched post-game (cleaner than boolean flags)
+- **Field Mapping**: Save logic uses `game_status` to determine closing vs current:
+  - ESPN + not completed → `espn_current_*`
+  - ESPN + completed → `espn_closing_*`
+  - ESPN opening → `espn_opening_*` (always saved)
+  - Covers → `covers_closing_*` (always closing)
+- **Caching Strategy**:
+  - Scheduled games: 1 hour (fresh day-of updates)
+  - In-progress games: 6 hours (lines lock at tipoff)
+  - Completed games: Forever once closing lines fetched
+- **Spread Convention**: Negative = home favored (e.g., -10.5 = home favored by 10.5 points)
 
 **Key Fields**:
-- `spread`: Home team closing spread (negative = favored)
-- `spread_result`: 'W' (covered), 'L' (didn't cover), 'P' (push)
-- `total`: Over/under closing line
+- `espn_opening_spread`: Opening spread from ESPN (set days before)
+- `espn_current_spread`: Current spread before game starts (updates until tipoff)
+- `espn_closing_spread`: Closing spread after game completion (locked at tipoff)
+- `covers_closing_spread`: Closing spread from Covers (no opening/current available)
+- `spread_result`: 'W' (covered), 'L' (didn't cover), 'P' (push) - home team perspective
 - `ou_result`: 'O' (over), 'U' (under), 'P' (push)
-- `source`: Data source ('ESPN', 'Covers', 'Manual')
-- `lines_finalized`: 1 when we have confirmed closing lines
+- `lines_finalized`: 1 when we have confirmed closing lines (ESPN or Covers)
 
 **CLI Usage**:
 ```bash
@@ -637,6 +769,9 @@ python -m src.database_updater.betting --backfill --season=2023-2024
 
 # Force re-fetch finalized games
 python -m src.database_updater.betting --force --season=2024-2025
+
+# Migrate old schema to new opening/current/closing schema
+python scripts/migrate_betting_schema.py --database data/NBA_AI_dev.sqlite --execute
 ```
 
 ---
@@ -903,10 +1038,11 @@ GET /api/games?date=2024-10-22&update_predictions=false
 ```json
 {
     "0022400061": {
-        "date_time_est": "2024-10-22T19:30:00Z",
+        "date_time_utc": "2024-10-23T00:30:00Z",
         "home_team": "BOS",
         "away_team": "NYK",
-        "status": "Final",
+        "status": 3,
+        "status_text": "Final",
         "season": "2024-2025",
         "season_type": "Regular Season",
         "pre_game_data_finalized": true,
@@ -1156,22 +1292,59 @@ When game in progress or completed:
 ## Key Relationships
 
 ```
-Games (1) ──< (N) PbP_Logs
-Games (1) ──< (N) GameStates
-Games (1) ──< (N) PlayerBox
-Games (1) ──< (2) TeamBox
-Games (1) ──< (1) Features
-Games (1) ──< (N) Predictions
+                        ┌──────────────┐
+                        │    Teams     │
+                        │  (30 teams)  │
+                        └──────┬───────┘
+                               │
+          ┌────────────────────┼────────────────────┐
+          │ home_team          │          away_team │
+          ▼                    ▼                    ▼
+     ┌─────────────────────────────────────────────────┐
+     │                      Games                       │
+     │  (1,302 current / 4,098 dev / 37,366 full)      │
+     └─────────────┬───────────────────────────────────┘
+                   │ game_id (PK)
+    ┌──────────────┼──────────────┬──────────────┬──────────────┬──────────────┐
+    │              │              │              │              │              │
+    ▼              ▼              ▼              ▼              ▼              ▼
+┌─────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐  ┌──────────┐  ┌─────────┐
+│PbP_Logs │  │GameStates│  │PlayerBox │  │TeamBox  │  │Features  │  │Betting  │
+│  (N)    │  │   (N)    │  │   (N)    │  │  (2)    │  │   (1)    │  │   (1)   │
+└─────────┘  └──────────┘  └────┬─────┘  └─────────┘  └──────────┘  └─────────┘
+                                │
+                                │ player_id (FK)
+                                ▼
+                         ┌────────────┐
+                         │  Players   │
+                         │ (5,118)    │
+                         └────────────┘
 
-Teams (1) ──< (N) Games (as home_team or away_team)
-Players (1) ──< (N) PlayerBox
+Additional Tables (no FK relationships):
+- Predictions: game_id + predictor (composite key)
+- InjuryReports: injury tracking with season column
+- ESPNGameMapping: game_id → espn_id mapping
+- ScheduleCache, InjuryCache, PlayersCache, CoversAttempts: API caching
 ```
+
+**Cardinality**:
+| Parent | Child | Relationship | Notes |
+|--------|-------|--------------|-------|
+| Games | PbP_Logs | 1:N | ~492 plays per game average |
+| Games | GameStates | 1:N | ~492 states per game (1 per play) |
+| Games | PlayerBox | 1:N | ~26 players per game (13 per team) |
+| Games | TeamBox | 1:2 | Always exactly 2 (home + away) |
+| Games | Features | 1:1 | One feature set per game |
+| Games | Betting | 1:1 | One betting line row per game |
+| Games | Predictions | 1:N | Multiple predictors per game |
+| Teams | Games | 1:N | 82+ games per team per season |
+| Players | PlayerBox | 1:N | Multiple games per player |
 
 ---
 
 ## Notes & Gotchas
 
-1. **TEXT vs INTEGER IDs**: This project uses TEXT for game_id and team_id for simplicity, unlike the Custom_Model branch which used INTEGER foreign keys.
+1. **TEXT vs INTEGER IDs**: This project uses TEXT for game_id and team_id for simplicity.
 
 2. **Two PbP Sources**: Always try CDN first (faster, more reliable), fallback to Stats API for historical games.
 
@@ -1179,17 +1352,20 @@ Players (1) ──< (N) PlayerBox
 
 4. **Minutes Played**: Stored as REAL (float) in minutes. Convert from "MM:SS" format: `36:24` → `36.4` minutes.
 
-5. **game_data_finalized Flag**: Only set to 1 when ALL of PbP_Logs, GameStates, PlayerBox, TeamBox are complete. Prevents partial updates.
+5. **Status Codes (INTEGER)**: Games.status uses integer codes: 1=Not Started, 2=In Progress, 3=Final.
 
-6. **Features Dependency**: Cannot create features until both teams have prior game data. New season starts require games to complete first.
+6. **Finalization Flags**:
+   - `game_data_finalized=1`: PbP_Logs + GameStates (with is_final_state=1) collected
+   - `boxscore_data_finalized=1`: PlayerBox + TeamBox collected
+   - `pre_game_data_finalized=1`: Features created (requires both teams have prior games)
 
-7. **Prediction Blending**: Live predictions blend pre-game prediction with current score based on time remaining. Formula: `blend_factor = (time_remaining / total_time)^2`
+7. **Features Dependency**: Cannot create features until both teams have prior game data. New season starts require games to complete first.
 
-8. **Rate Limiting**: 0.6s sleep between BoxScore API calls to avoid connection pool warnings.
+8. **Prediction Blending**: Live predictions blend pre-game prediction with current score based on time remaining. Formula: `blend_factor = (time_remaining / total_time)^2`
 
-9. **Season Format**: APIs use abbreviated (`"2023-24"`) but database stores full (`"2023-2024"`).
+9. **Rate Limiting**: 0.6s sleep between BoxScore API calls to avoid connection pool warnings.
 
-10. **Status Values**: Games progress: `Scheduled` → `In Progress` → `Completed`/`Final`. Collection only happens when status is `Completed` or `Final`.
+10. **Season Format**: APIs use abbreviated (`"2023-24"`) but database stores full (`"2023-2024"`).
 
 ---
 
