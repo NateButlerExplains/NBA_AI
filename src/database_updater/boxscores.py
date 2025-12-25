@@ -4,10 +4,12 @@ boxscores.py
 This module collects player and team boxscore statistics from NBA API.
 Adapted from database_updater_CM to work with TEXT game_id schema.
 
-Enhanced with CM features:
+Enhanced with Sprint 15 standardization:
+- ThreadPoolExecutor for concurrent API calls
+- StageLogger integration for tracking
 - Live endpoint support for in-progress games
 - Better error handling and retry logic
-- CSV error logging for tracking failed collections
+- Standardized logging format
 
 Functions:
 - get_boxscores(game_ids): Fetch boxscore data for a list of game IDs
@@ -15,22 +17,25 @@ Functions:
 - parse_live_boxscore(live_data, game_id): Parse live endpoint response
 """
 
-import csv
 import logging
+import os
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Suppress urllib3 connection pool warnings for cleaner output
+logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from nba_api.live.nba.endpoints import boxscore as LiveBoxScore
 from nba_api.stats.endpoints import BoxScoreTraditionalV3
 from tqdm import tqdm
 
 from src.config import config
-from src.utils import log_execution_time
+from src.utils import StageLogger, log_execution_time, requests_retry_session
 
 DB_PATH = config["database"]["path"]
-SLEEP_DURATION = 0.6  # Rate limiting
 
 
 def convert_minutes_to_float(min_str):
@@ -289,28 +294,24 @@ def get_boxscore_with_fallback(
 
 @log_execution_time(average_over="game_ids")
 def get_boxscores(
-    game_ids: List[str], check_game_status: bool = False, db_path=DB_PATH
+    game_ids: List[str],
+    check_game_status: bool = False,
+    stage_logger: Optional[StageLogger] = None,
+    db_path=DB_PATH,
 ) -> Dict[str, Tuple[List[dict], List[dict]]]:
     """
-    Fetch boxscore data for multiple games from NBA API.
-
-    Enhanced with:
-    - Automatic endpoint selection (live vs stats) based on game status
-    - Retry logic with exponential backoff
-    - CSV error logging
+    Fetch boxscore data for multiple games from NBA API using concurrent requests.
 
     Args:
         game_ids (list): List of game IDs to fetch
         check_game_status (bool): If True, checks game status to determine endpoint
+        stage_logger (StageLogger): Optional logger for tracking API calls
         db_path (str): Database path to check game status
 
     Returns:
         dict: {game_id: (player_records, team_records)}
     """
     logging.info(f"Fetching boxscores for {len(game_ids)} games...")
-
-    boxscore_data = {}
-    errors = []
 
     # Get game statuses if requested
     game_statuses = {}
@@ -323,50 +324,60 @@ def get_boxscores(
                 if row:
                     game_statuses[game_id] = row[0]
 
-    with tqdm(total=len(game_ids), desc="Fetching boxscores", unit="game") as pbar:
-        for i, game_id in enumerate(game_ids):
-            try:
-                # Determine which endpoint to use
-                use_live = game_statuses.get(game_id) == "In Progress"
+    # Limit concurrent connections to avoid pool warnings (NBA API has 10 connection limit)
+    thread_pool_size = min(8, os.cpu_count() * 2)
+    results = {}
 
-                # Fetch with fallback logic
-                player_records, team_records = get_boxscore_with_fallback(
-                    game_id, use_live=use_live
+    with requests_retry_session() as session:
+        with ThreadPoolExecutor(max_workers=thread_pool_size) as executor:
+            futures = [
+                executor.submit(
+                    fetch_single_boxscore,
+                    game_id,
+                    game_statuses.get(game_id) == 2,  # In Progress
                 )
-                boxscore_data[game_id] = (player_records, team_records)
+                for game_id in game_ids
+            ]
 
-                # Rate limiting
-                if i < len(game_ids) - 1:
-                    time.sleep(SLEEP_DURATION)
+            with tqdm(
+                total=len(futures), desc="Fetching boxscores", unit="game", leave=False
+            ) as pbar:
+                for future in as_completed(futures):
+                    game_id, player_records, team_records = future.result()
+                    results[game_id] = (player_records, team_records)
+                    if stage_logger:
+                        stage_logger.log_api_call()  # Track each API call
+                    pbar.update(1)
 
-            except Exception as e:
-                logging.warning(f"Error fetching boxscore for game {game_id}: {e}")
-                errors.append((game_id, str(e)))
-            finally:
-                pbar.update(1)
+    successful_count = sum(1 for data in results.values() if data[0] or data[1])
+    failed_count = len(game_ids) - successful_count
 
-    # Log errors to CSV if any occurred
-    if errors:
-        error_file = "boxscore_errors.csv"
-        try:
-            with open(error_file, mode="a", newline="") as csv_file:
-                writer = csv.writer(csv_file)
-                # Write header if file is new
-                csv_file.seek(0, 2)  # Go to end
-                if csv_file.tell() == 0:
-                    writer.writerow(["timestamp", "game_id", "error"])
-                # Write errors
-                timestamp = datetime.now().isoformat()
-                for game_id, error in errors:
-                    writer.writerow([timestamp, game_id, error])
-            logging.info(f"Logged {len(errors)} errors to {error_file}")
-        except Exception as e:
-            logging.error(f"Failed to write error CSV: {e}")
+    logging.info(f"Fetched {successful_count} boxscores ({failed_count} failed)")
+    return results
 
-    logging.info(
-        f"Successfully fetched {len(boxscore_data)} boxscores ({len(errors)} errors)"
-    )
-    return boxscore_data
+
+def fetch_single_boxscore(
+    game_id: str, use_live: bool = False
+) -> Tuple[str, List[dict], List[dict]]:
+    """
+    Fetch boxscore data for a single game with fallback logic.
+
+    Args:
+        game_id (str): Game ID to fetch
+        use_live (bool): Whether to try live endpoint first
+
+    Returns:
+        tuple: (game_id, player_records, team_records)
+    """
+    try:
+        # Fetch with fallback logic
+        player_records, team_records = get_boxscore_with_fallback(
+            game_id, use_live=use_live
+        )
+        return game_id, player_records, team_records
+    except Exception as e:
+        logging.warning(f"Error fetching boxscore for game {game_id}: {e}")
+        return game_id, [], []
 
 
 @log_execution_time(average_over="boxscore_data")
@@ -374,11 +385,14 @@ def save_boxscores(
     boxscore_data: Dict[str, Tuple[List[dict], List[dict]]], db_path=DB_PATH
 ):
     """
-    Save boxscore data to PlayerBox and TeamBox tables.
+    Save boxscore data to PlayerBox and TeamBox tables and update fetch timestamps.
 
     Args:
         boxscore_data (dict): {game_id: (player_records, team_records)}
         db_path (str): Path to database
+
+    Returns:
+        dict: Dictionary with counts {"added": X, "updated": Y}
     """
     import sqlite3
 
@@ -387,11 +401,27 @@ def save_boxscores(
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
+        # Auto-migration: Add boxscore_last_fetched_at column if it doesn't exist
+        try:
+            cursor.execute("ALTER TABLE Games ADD COLUMN boxscore_last_fetched_at TEXT")
+            logging.debug("Added boxscore_last_fetched_at column to Games table")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
         total_players = 0
         total_teams = 0
+        added_games = 0
+        updated_games = 0
 
         try:
             for game_id, (player_records, team_records) in boxscore_data.items():
+                # Check if this game already has boxscore data
+                cursor.execute(
+                    "SELECT COUNT(*) FROM PlayerBox WHERE game_id = ?", (game_id,)
+                )
+                existing_count = cursor.fetchone()[0]
+
                 # Save player records
                 for player in player_records:
                     cursor.execute(
@@ -469,10 +499,24 @@ def save_boxscores(
                     )
                     total_teams += 1
 
+                # Update boxscore_last_fetched_at timestamp
+                cursor.execute(
+                    "UPDATE Games SET boxscore_last_fetched_at = datetime('now') WHERE game_id = ?",
+                    (game_id,),
+                )
+
+                # Track added vs updated
+                if existing_count == 0:
+                    added_games += 1
+                else:
+                    updated_games += 1
+
             conn.commit()
-            logging.info(
+            logging.debug(
                 f"Saved {total_players} player records and {total_teams} team records"
             )
+
+            return {"added": added_games, "updated": updated_games}
 
         except Exception as e:
             conn.rollback()

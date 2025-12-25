@@ -32,6 +32,7 @@ from src.config import config
 from src.database_updater.pbp import get_pbp, save_pbp
 from src.logging_config import setup_logging
 from src.utils import (
+    StageLogger,
     log_execution_time,
     lookup_basic_game_info,
     validate_date_format,
@@ -51,7 +52,7 @@ def create_game_states(games_info):
     games_info (dict): A dictionary where keys are game IDs and values are dictionaries with the keys:
                        - 'home': Home team's tricode
                        - 'away': Away team's tricode
-                       - 'date_time_est': Game date in 'YYYY-MM-DDTHH:MM:SS' format
+                       - 'date_time_utc': Game date in 'YYYY-MM-DDTHH:MM:SS' format
                        - 'pbp_logs': List of dictionaries representing play-by-play logs for the game
 
     Returns:
@@ -68,17 +69,17 @@ def create_game_states(games_info):
         seconds = float(duration_str.split("M")[1][:-1])
         return minutes * 60 + seconds
 
-    logging.info(f"Creating game states for {len(games_info)} games")
+    logging.debug(f"Creating game states for {len(games_info)} games")
 
     game_states = {}
 
     try:
         for game_id, game_info in tqdm(
-            games_info.items(), desc="Creating game states", unit="game"
+            games_info.items(), desc="Creating game states", unit="game", leave=False
         ):
             home = game_info["home"]
             away = game_info["away"]
-            game_date = game_info["date_time_est"].split("T")[0]
+            game_date = game_info["date_time_utc"].split("T")[0]
             logs = game_info["pbp_logs"]
 
             validate_game_ids(game_id)
@@ -90,17 +91,26 @@ def create_game_states(games_info):
                 continue
 
             # Sort play-by-play logs by period, remaining time (clock), and play ID
+            # Use .get() with defaults to handle missing fields gracefully
             logs = sorted(
                 logs,
                 key=lambda x: (
-                    x["period"],
-                    -duration_to_seconds(x["clock"]),
-                    x.get("orderNumber", x.get("actionId")),
+                    x.get("period", 1),
+                    -duration_to_seconds(x.get("clock", "PT00M00.00S")),
+                    x.get("orderNumber", x.get("actionId", 0)),
                 ),
             )
 
             # Filter out logs where 'description' is not a key
             logs = [log for log in logs if "description" in log]
+
+            # Check if logs are empty after filtering
+            if not logs:
+                logging.warning(
+                    f"Game ID {game_id} - No valid logs after filtering (all missing 'description' field)"
+                )
+                game_states[game_id] = []
+                continue
 
             game_states[game_id] = []
             players = {"home": {}, "away": {}}
@@ -113,19 +123,21 @@ def create_game_states(games_info):
                         row.get("personId") is not None
                         and row.get("playerNameI") is not None
                     ):
-                        team = "home" if row["teamTricode"] == home else "away"
-                        player_id = row["personId"]
-                        player_name = row["playerNameI"]
+                        team_tricode = row.get("teamTricode")
+                        if team_tricode:
+                            team = "home" if team_tricode == home else "away"
+                            player_id = row["personId"]
+                            player_name = row["playerNameI"]
 
-                        if player_id not in players[team]:
-                            players[team][player_id] = {
-                                "name": player_name,
-                                "points": 0,
-                            }
+                            if player_id not in players[team]:
+                                players[team][player_id] = {
+                                    "name": player_name,
+                                    "points": 0,
+                                }
 
-                        if row.get("pointsTotal") is not None:
-                            points = int(row["pointsTotal"])
-                            players[team][player_id]["points"] = points
+                            if row.get("pointsTotal") is not None:
+                                points = int(row["pointsTotal"])
+                                players[team][player_id]["points"] = points
 
                     # Only mark as final if this is the last play AND it's a 'Game End' action
                     # This prevents marking in-progress games as final
@@ -135,18 +147,22 @@ def create_game_states(games_info):
                         and row.get("subType") == "end"
                     )
 
+                    # Get scores with defaults to handle missing values
+                    home_score = int(row.get("scoreHome", 0))
+                    away_score = int(row.get("scoreAway", 0))
+
                     current_game_state = {
                         "game_id": game_id,
                         "play_id": int(row["orderNumber"]),
                         "game_date": game_date,
                         "home": home,
                         "away": away,
-                        "clock": row["clock"],
-                        "period": int(row["period"]),
-                        "home_score": int(row["scoreHome"]),
-                        "away_score": int(row["scoreAway"]),
-                        "total": int(row["scoreHome"]) + int(row["scoreAway"]),
-                        "home_margin": int(row["scoreHome"]) - int(row["scoreAway"]),
+                        "clock": row.get("clock", "PT00M00.00S"),
+                        "period": int(row.get("period", 1)),
+                        "home_score": home_score,
+                        "away_score": away_score,
+                        "total": home_score + away_score,
+                        "home_margin": home_score - away_score,
                         "is_final_state": is_final,
                         "players_data": deepcopy(players),
                     }
@@ -159,20 +175,24 @@ def create_game_states(games_info):
 
                 for i, row in enumerate(logs):
                     if row.get("personId") and row.get("playerNameI"):
-                        team = "home" if row["teamTricode"] == home else "away"
-                        player_id = row["personId"]
-                        player_name = row["playerNameI"]
+                        team_tricode = row.get("teamTricode")
+                        if team_tricode:
+                            team = "home" if team_tricode == home else "away"
+                            player_id = row["personId"]
+                            player_name = row["playerNameI"]
 
-                        if player_id not in players[team]:
-                            players[team][player_id] = {
-                                "name": player_name,
-                                "points": 0,
-                            }
+                            if player_id not in players[team]:
+                                players[team][player_id] = {
+                                    "name": player_name,
+                                    "points": 0,
+                                }
 
-                        match = re.search(r"\((\d+) PTS\)", row.get("description", ""))
-                        if match:
-                            points = int(match.group(1))
-                            players[team][player_id]["points"] = points
+                            match = re.search(
+                                r"\((\d+) PTS\)", row.get("description", "")
+                            )
+                            if match:
+                                points = int(match.group(1))
+                                players[team][player_id]["points"] = points
 
                     if row.get("scoreHome"):
                         current_home_score = int(row["scoreHome"])
@@ -185,8 +205,8 @@ def create_game_states(games_info):
                         "game_date": game_date,
                         "home": home,
                         "away": away,
-                        "clock": row["clock"],
-                        "period": int(row["period"]),
+                        "clock": row.get("clock", "PT00M00.00S"),
+                        "period": int(row.get("period", 1)),
                         "home_score": current_home_score,
                         "away_score": current_away_score,
                         "total": current_home_score + current_away_score,
@@ -205,13 +225,7 @@ def create_game_states(games_info):
         logging.error(f"An error occurred while creating game states: {e}")
         return {}
 
-    logging.info(f"Game states created for {len(game_states)} games")
-
-    for game in game_states:
-        logging.debug(f"Game ID: {game} - Number of states: {len(game_states[game])}")
-        if game_states[game]:
-            logging.debug(f"Game ID: {game} - First state: {game_states[game][0]}")
-            logging.debug(f"Game ID: {game} - Last state: {game_states[game][-1]}")
+    logging.debug(f"Game states created for {len(game_states)} games")
 
     return game_states
 
@@ -232,7 +246,7 @@ def save_game_states(game_states, db_path=DB_PATH):
     Returns:
     bool: True if the operation was successful for all game IDs, False otherwise.
     """
-    logging.info(f"Saving game states to database: {db_path}")
+    logging.debug(f"Saving game states to database")
     overall_success = True
     data_to_insert = None  # Initialize to avoid NameError in debug logging
 
@@ -240,7 +254,7 @@ def save_game_states(game_states, db_path=DB_PATH):
         with sqlite3.connect(db_path) as conn:
             for game_id, states in game_states.items():
                 if not states:
-                    logging.info(
+                    logging.debug(
                         f"Game ID {game_id} - No game states to save. Skipping."
                     )
                     continue
@@ -279,6 +293,12 @@ def save_game_states(game_states, db_path=DB_PATH):
                         data_to_insert,
                     )
 
+                    # Update gamestates_last_created_at timestamp
+                    conn.execute(
+                        "UPDATE Games SET gamestates_last_created_at = datetime('now') WHERE game_id = ?",
+                        (game_id,),
+                    )
+
                     conn.commit()
                 except Exception as e:
                     conn.rollback()  # Roll back the transaction if an error occurred
@@ -290,9 +310,9 @@ def save_game_states(game_states, db_path=DB_PATH):
         return False
 
     if overall_success:
-        logging.info("Game states saved successfully")
+        logging.debug("Game states saved successfully")
     else:
-        logging.error("Some game states were not saved successfully")
+        logging.warning("Some game states were not saved successfully")
 
     if game_states and data_to_insert:
         logging.debug(f"Example record (First): {data_to_insert[0]}")
@@ -340,7 +360,7 @@ def main():
         game_state_inputs[game_id] = {
             "home": basic_game_info[game_id]["home"],
             "away": basic_game_info[game_id]["away"],
-            "date_time_est": basic_game_info[game_id]["date_time_est"],
+            "date_time_utc": basic_game_info[game_id]["date_time_utc"],
             "pbp_logs": game_info,
         }
 

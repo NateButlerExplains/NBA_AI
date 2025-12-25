@@ -32,7 +32,12 @@ from tqdm import tqdm
 
 from src.config import config
 from src.logging_config import setup_logging
-from src.utils import log_execution_time, requests_retry_session, validate_game_ids
+from src.utils import (
+    StageLogger,
+    log_execution_time,
+    requests_retry_session,
+    validate_game_ids,
+)
 
 # Configuration values
 DB_PATH = config["database"]["path"]
@@ -120,13 +125,14 @@ def fetch_game_data(
 
 
 @log_execution_time(average_over="game_ids")
-def get_pbp(game_ids, pbp_endpoint="both"):
+def get_pbp(game_ids, pbp_endpoint="both", stage_logger=None):
     """
     Fetches play-by-play data for a list of games concurrently.
 
     Parameters:
     game_ids (list or str): A list of game IDs to fetch data for, or a single game ID.
     pbp_endpoint (str): The endpoint to use for fetching play-by-play data ("both", "live", "stats").
+    stage_logger (StageLogger): Optional logger for tracking API calls.
 
     Returns:
     dict: A dictionary mapping game IDs to lists of sorted actions. If an error occurs when fetching data for a game, the list of actions will be empty.
@@ -183,19 +189,20 @@ def get_pbp(game_ids, pbp_endpoint="both"):
                 )
                 for game_id in game_ids
             ]
-            with tqdm(total=len(futures), desc="Fetching PBP", unit="game") as pbar:
+            with tqdm(
+                total=len(futures), desc="Fetching PBP", unit="game", leave=False
+            ) as pbar:
                 for future in as_completed(futures):
                     game_id, actions_sorted = future.result()
                     results[game_id] = actions_sorted if actions_sorted else []
+                    if stage_logger:
+                        stage_logger.log_api_call()  # Track each API call
                     pbar.update(1)
 
-    logging.info(f"Fetched play-by-play data for {len(results)} games.")
+    logging.debug(f"Fetched play-by-play data for {len(results)} games.")
     for game in results:
-        first_action = results[game][0] if results[game] else "No actions"
-        last_action = results[game][-1] if results[game] else "No actions"
-        logging.debug(f"Game ID: {game} - Number of actions: {len(results[game])}")
-        logging.debug(f"Game ID: {game} - First action: {first_action}")
-        logging.debug(f"Game ID: {game} - Last action: {last_action}")
+        if results[game]:
+            logging.debug(f"Game ID: {game} - {len(results[game])} actions")
 
     return results
 
@@ -203,28 +210,41 @@ def get_pbp(game_ids, pbp_endpoint="both"):
 @log_execution_time(average_over="pbp_data")
 def save_pbp(pbp_data, db_path=DB_PATH):
     """
-    Saves the play-by-play logs to the database. Each game_id is processed in a separate transaction to ensure all-or-nothing behavior.
+    Saves the play-by-play logs to the database and updates pbp_last_fetched_at timestamp.
+    Each game_id is processed in a separate transaction to ensure all-or-nothing behavior.
 
     Parameters:
     pbp_data (dict): A dictionary with game IDs as keys and sorted lists of play-by-play logs as values.
     db_path (str): The path to the SQLite database file.
 
     Returns:
-    bool: True if the operation was successful for all game IDs, False otherwise.
+    dict: Dictionary with counts of added/updated/unchanged games.
     """
-    logging.info(f"Saving play-by-play logs to database: {db_path}")
-    overall_success = True
-    data_to_insert = None  # Initialize to avoid NameError in debug logging
+    logging.debug(f"Saving play-by-play logs to database")
+
+    added_count = 0
+    updated_count = 0
+    unchanged_count = 0
+    failed_count = 0
 
     try:
         with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+
             for game_id, pbp_logs_sorted in pbp_data.items():
                 if not pbp_logs_sorted:
-                    logging.info(f"Game ID {game_id} - No logs to save.")
+                    logging.debug(f"Game ID {game_id} - No logs to save.")
+                    unchanged_count += 1
                     continue
 
                 try:
                     conn.execute("BEGIN")
+
+                    # Check if game already has PBP data
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM PbP_Logs WHERE game_id = ?", (game_id,)
+                    )
+                    existing_count = cursor.fetchone()[0]
 
                     # Delete existing logs for the game_id
                     conn.execute("DELETE FROM PbP_Logs WHERE game_id = ?", (game_id,))
@@ -242,27 +262,53 @@ def save_pbp(pbp_data, db_path=DB_PATH):
                         "INSERT INTO PbP_Logs (game_id, play_id, log_data) VALUES (?, ?, ?)",
                         data_to_insert,
                     )
+
+                    # Update pbp_last_fetched_at timestamp
+                    cursor.execute(
+                        "UPDATE Games SET pbp_last_fetched_at = datetime('now') WHERE game_id = ?",
+                        (game_id,),
+                    )
+
                     conn.commit()
+
+                    # Track whether this was an add or update
+                    if existing_count == 0:
+                        added_count += 1
+                        logging.debug(
+                            f"Game ID {game_id} - Added {len(pbp_logs_sorted)} plays"
+                        )
+                    else:
+                        updated_count += 1
+                        logging.debug(
+                            f"Game ID {game_id} - Updated from {existing_count} to {len(pbp_logs_sorted)} plays"
+                        )
+
                 except sqlite3.Error as e:
                     conn.rollback()
                     logging.error(f"Game ID {game_id} - DB error: {e}")
-                    overall_success = False
+                    failed_count += 1
                     continue
 
     except sqlite3.Error as e:
         logging.error(f"Database connection error: {e}")
-        return False
+        return {"added": 0, "updated": 0, "unchanged": 0, "failed": len(pbp_data)}
 
-    if overall_success:
-        logging.info("Play-by-play logs saved successfully.")
+    total_success = added_count + updated_count + unchanged_count
+    if total_success == len(pbp_data):
+        logging.debug(
+            f"PBP saved: {added_count} added, {updated_count} updated, {unchanged_count} unchanged"
+        )
     else:
-        logging.warning("Some play-by-play logs were not saved successfully.")
+        logging.warning(
+            f"Some play-by-play logs failed: {failed_count} failures out of {len(pbp_data)} games"
+        )
 
-    if pbp_data and data_to_insert:
-        logging.debug(f"Example record (First): {data_to_insert[0]}")
-        logging.debug(f"Example record (Last): {data_to_insert[-1]}")
-
-    return overall_success
+    return {
+        "added": added_count,
+        "updated": updated_count,
+        "unchanged": unchanged_count,
+        "failed": failed_count,
+    }
 
 
 def main():
