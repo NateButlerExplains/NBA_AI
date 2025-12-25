@@ -1,44 +1,86 @@
 # NBA AI TODO
 
-> **Last Updated**: December 7, 2025  
-> **Current Sprint**: Sprint 14 - GenAI Predictor Design
+> **Last Updated**: December 25, 2025  
+> **Current Sprint**: Sprint 16 - GenAI Predictor Design (Planning)
 
 ---
 
 ## 🎯 Active Sprint
 
-### Sprint 14: GenAI Predictor Design
+### Sprint 16: Frontend API Optimization (Dec 25, 2025)
 
-**Goal**: Design and prototype the GenAI prediction engine using PBP data as the primary source.
+**Goal**: Optimize and add logging to frontend API endpoints to reduce page load times.
 
-**Status**: 🔄 IN PROGRESS
+**Status**: 🚧 IN PROGRESS
+
+**Current Issue**: Page load takes ~9 seconds, but only ~2s is logged by pipeline stages. Missing time is in:
+- Database query (`get_normal_data()`) - complex CTE with JOINs, JSON parsing - estimated 6-7s
+- Current predictions blending - logged at DEBUG only
+- Overhead between stages
 
 **Tasks**:
-- [ ] Research transformer architectures for sports prediction (sequence modeling)
-- [ ] Design PBP tokenization strategy (event types, players, teams, scores)
-- [ ] Define sequence representation format (game-level, season-level)
-- [ ] Prototype embedding layer for basketball events
-- [ ] Evaluate pre-training vs fine-tuning approaches
-- [ ] Design output head for score/win probability prediction
+- [ ] Add logging/timing to `get_normal_data()` query execution
+- [ ] Add logging to current predictions generation
+- [ ] Analyze database query performance (EXPLAIN QUERY PLAN)
+- [ ] Consider query optimizations:
+  - [ ] Add indexes if missing (game_id, predictor, play_id)
+  - [ ] Simplify CTE (LatestGameStates using MAX subquery)
+  - [ ] Limit PBP data returned (only last N plays vs all plays)
+- [ ] Consider architectural changes:
+  - [ ] Lazy-load full PBP data (send only summary initially)
+  - [ ] Cache serialized game data response
+  - [ ] Async load non-critical data (betting lines, full PBP)
 
-**Key Decisions**:
-- Input: Raw PBP sequences or GameStates snapshots?
-- Architecture: Encoder-only (BERT-style) vs Decoder-only (GPT-style)?
-- Training: Per-game prediction vs next-event prediction?
+**Completed**:
+- ✅ Fixed date selector to use Eastern Time (NBA schedule timezone)
+- ✅ Fixed string comparison for UTC datetimes (ISO format with T separator)
+- ✅ Removed duplicate schedule update call
+- ✅ Changed verbose logs from INFO to DEBUG level (7 locations)
 
 ---
 
 ## 📋 Backlog
 
-- **Core Pipeline Optimization**: Improve chunking strategy, memory management, and explore parallel processing opportunities in database_update_manager.py. See [Core Flowchart](diagrams/core_flowchart.drawio) for pipeline structure.
+- **GenAI Predictor Design**: Research transformer architectures for sports sequence data, PBP tokenization strategy, embedding layer design
 - **Historical Data Backfill**: PlayerBox/TeamBox (2000-2022, ~30K games), InjuryReports (Dec 2018-2023, ~900 PDFs/season)
 - **Player Props Model**: Player-level predictions using PlayerBox data
-- **Web App UX**: Auto-refresh for live games, mobile responsive, confidence intervals
-- **Logging & Monitoring**: Structured logging, performance metrics, error alerting
 
 ---
 
 ## ✅ Completed Sprints
+
+### Sprint 15: Pipeline Optimization & Database Consolidation (Dec 19-25, 2025)
+**Summary**: Comprehensive database optimization, schema unification, and documentation update.
+
+**Database Architecture**:
+- Established 3-database architecture: `current ⊂ dev ⊂ full`
+- Current: 516MB, 1,302 games (2025-2026 production)
+- Dev: 3.0GB, 4,098 games (3 seasons for development)
+- Full: 25GB, 37,366 games (27 seasons master archive)
+- Created compressed backup: 1.4GB (94% compression ratio)
+
+**Schema Unification**:
+- Migrated all databases to unified schema (16 tables)
+- Updated Games.status to INTEGER (1=Not Started, 2=In Progress, 3=Final)
+- Added Games.status_text for human-readable display
+- Fixed InjuryReports season derivation logic
+- Synced all data to ensure proper subsetting
+
+**Pipeline Stages Completed**:
+- ✅ Stage 1: Schedule - Standardized logging, cache strategy, clean output
+- ✅ Stage 2: Players - Standardized logging, cache strategy, clean output
+- ✅ Stage 3: Injuries - Standardized logging, 1-hour cache, placeholder rows
+- ✅ Stage 4: Betting - Standardized logging, 1-hour cache, 29 tests passing
+- ✅ Stage 5: PBP - Standardized logging, leave=False tqdm, 14 tests passing
+- ✅ Stage 6: GameStates - Standardized logging, leave=False tqdm, 7 tests passing
+- ✅ Stage 7-9: Boxscores, Prior States, Features - Already optimized
+
+**Cleanup**:
+- Deleted 5 migration scripts (sync_current_database.py, migrate_full_database.py, etc.)
+- Fixed Tier 2 betting log message (uses tqdm only, no duplicate logging)
+- Updated DATA_MODEL.md with current schemas and architecture
+- Updated copilot-instructions.md with current state
+- 210 tests passing, 2 expected failures
 
 ### Sprint 13: Cleanup & Testing (Dec 6, 2025)
 - Consolidated 3 CLI tools → single database_evaluator.py
