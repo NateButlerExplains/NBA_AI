@@ -24,6 +24,27 @@ Tier 3 - Covers.com Team Schedules (Historical Backfill):
   - Rate-limited to respect Covers.com
 
 =============================================================================
+SMART CACHING STRATEGY
+=============================================================================
+
+Tier 1 ESPN fetches use intelligent caching based on game status:
+
+1. Scheduled Games (not started):
+   - Cache for 1 hour
+   - Rationale: Lines update slowly pre-game, but we want fresh data
+   - Balances freshness with API efficiency for day-of games
+
+2. In-Progress Games (live):
+   - Cache for 6 hours
+   - Rationale: Closing lines LOCK at tipoff - no more changes during game
+   - One fetch per game captures final closing line
+
+3. Completed Games (final):
+   - Cache permanently once closing lines fetched (lines_finalized=1)
+   - Rationale: Closing lines never change after game ends
+   - Verify once post-game, then cache forever
+
+=============================================================================
 SINGLE ROW PER GAME DESIGN
 =============================================================================
 
@@ -45,6 +66,7 @@ import requests
 from tqdm import tqdm
 
 from src.config import config
+from src.utils import NBATeamConverter, StageLogger, log_execution_time
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +82,101 @@ ESPN_SUMMARY_URL = "http://site.api.espn.com/apis/site/v2/sports/basketball/nba/
 FUTURE_CUTOFF_DAYS = 2  # Don't fetch for games more than 2 days out
 ESPN_LOOKBACK_DAYS = 7  # ESPN API has data for ~7 days back
 COVERS_FINALIZATION_DELAY_DAYS = 1  # Wait 1 day after ESPN window before using Covers
+
+# Caching thresholds
+CACHE_HOURS = 1  # Cache all non-finalized games for 1 hour, then re-check for new lines
+
+
+def _filter_failed_covers_dates(
+    dates: list[str], conn: sqlite3.Connection
+) -> list[str]:
+    """
+    Filter out dates that were recently attempted but had no matches to avoid repeated API calls.
+
+    Args:
+        dates: List of date strings to potentially fetch from Covers
+        conn: Database connection
+
+    Returns:
+        Filtered list of dates that should be attempted
+    """
+    # Create table to track failed attempts if it doesn't exist
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS CoversAttempts (
+            date_str TEXT PRIMARY KEY,
+            last_attempt_datetime TEXT NOT NULL,
+            match_count INTEGER DEFAULT 0
+        )
+    """
+    )
+
+    # Filter out dates attempted recently:
+    # - Zero matches: cache for 6 hours (date mismatch, try again later)
+    # - Successful matches: cache for 24 hours (data collected, avoid redundant calls)
+    filtered_dates = []
+    for date_str in dates:
+        cursor = conn.execute(
+            """
+            SELECT match_count, last_attempt_datetime 
+            FROM CoversAttempts 
+            WHERE date_str = ?
+        """,
+            (date_str,),
+        )
+
+        result = cursor.fetchone()
+        if result:
+            match_count = result[0]
+            last_attempt = result[1]
+
+            # Cache successful attempts (>0 matches) for 24 hours
+            if match_count > 0:
+                cursor = conn.execute(
+                    """
+                    SELECT 1 FROM CoversAttempts 
+                    WHERE date_str = ? 
+                    AND last_attempt_datetime > datetime('now', '-24 hours')
+                """,
+                    (date_str,),
+                )
+                if cursor.fetchone():
+                    logger.debug(
+                        f"Skipping Covers fetch for {date_str} - {match_count} matches found in recent attempt"
+                    )
+                    continue
+
+            # Cache failed attempts (0 matches) for 6 hours
+            elif match_count == 0:
+                cursor = conn.execute(
+                    """
+                    SELECT 1 FROM CoversAttempts 
+                    WHERE date_str = ? 
+                    AND last_attempt_datetime > datetime('now', '-6 hours')
+                """,
+                    (date_str,),
+                )
+                if cursor.fetchone():
+                    logger.debug(
+                        f"Skipping Covers fetch for {date_str} - no matches found in recent attempt"
+                    )
+                    continue
+
+        filtered_dates.append(date_str)
+
+    return filtered_dates
+
+
+def _record_covers_attempt(date_str: str, match_count: int, conn: sqlite3.Connection):
+    """Record a Covers fetch attempt with match count for future filtering."""
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO CoversAttempts (date_str, last_attempt_datetime, match_count)
+        VALUES (?, datetime('now'), ?)
+    """,
+        (date_str, match_count),
+    )
+    conn.commit()
 
 
 def _get_current_season(now: datetime) -> str:
@@ -85,48 +202,67 @@ def _get_current_season(now: datetime) -> str:
 
 
 # =============================================================================
-# Schema Definition - Single Row Per Game
+# Schema Definition - Opening/Current/Closing Separation
 # =============================================================================
 
 BETTING_SCHEMA = """
 CREATE TABLE IF NOT EXISTS Betting (
-    -- Primary key = one row per game
-    game_id TEXT PRIMARY KEY,                 -- NBA game_id (FK to Games)
+    -- Primary key
+    game_id TEXT PRIMARY KEY,
     
-    -- ESPN mapping (for Tier 1 fetches)
-    espn_event_id TEXT,                       -- ESPN event ID for reference
+    -- ESPN mapping
+    espn_event_id TEXT,
     
-    -- Closing Spread (from home team perspective, negative = home favored)
-    spread REAL,                              -- Home team spread: -10.5 means home favored by 10.5
-    spread_result TEXT,                       -- 'W', 'L', 'P' (home team perspective)
-    spread_home_odds INTEGER,                 -- Spread odds for home: -110 (ESPN only)
-    spread_away_odds INTEGER,                 -- Spread odds for away: -110 (ESPN only)
+    -- ESPN Opening Lines (from ESPN 'open' field)
+    espn_opening_spread REAL,
+    espn_opening_spread_home_odds INTEGER,
+    espn_opening_spread_away_odds INTEGER,
+    espn_opening_total REAL,
+    espn_opening_over_odds INTEGER,
+    espn_opening_under_odds INTEGER,
+    espn_opening_ml_home INTEGER,
+    espn_opening_ml_away INTEGER,
     
-    -- Closing Total (Over/Under)
-    total REAL,                               -- Over/under line: 224.5
-    ou_result TEXT,                           -- 'O', 'U', 'P' (over/under/push)
-    over_odds INTEGER,                        -- Over odds: -105 (ESPN only)
-    under_odds INTEGER,                       -- Under odds: -115 (ESPN only)
+    -- ESPN Current Lines (from ESPN 'close' field when game not completed)
+    espn_current_spread REAL,
+    espn_current_spread_home_odds INTEGER,
+    espn_current_spread_away_odds INTEGER,
+    espn_current_total REAL,
+    espn_current_over_odds INTEGER,
+    espn_current_under_odds INTEGER,
+    espn_current_ml_home INTEGER,
+    espn_current_ml_away INTEGER,
     
-    -- Moneylines (ESPN only, Covers doesn't provide these)
-    home_moneyline INTEGER,                   -- Home ML: -485 (favored) or +150 (underdog)
-    away_moneyline INTEGER,                   -- Away ML: +370 (underdog) or -200 (favored)
+    -- ESPN Closing Lines (from ESPN 'close' field ONLY when game completed)
+    espn_closing_spread REAL,
+    espn_closing_spread_home_odds INTEGER,
+    espn_closing_spread_away_odds INTEGER,
+    espn_closing_total REAL,
+    espn_closing_over_odds INTEGER,
+    espn_closing_under_odds INTEGER,
+    espn_closing_ml_home INTEGER,
+    espn_closing_ml_away INTEGER,
+    
+    -- Covers Closing Lines (always closing, from Covers.com)
+    covers_closing_spread REAL,
+    covers_closing_total REAL,
+    
+    -- Results (from Covers or calculated)
+    spread_result TEXT,  -- 'W', 'L', 'P' (home team perspective)
+    ou_result TEXT,      -- 'O', 'U', 'P'
     
     -- Metadata
-    source TEXT NOT NULL DEFAULT 'ESPN',      -- 'ESPN', 'Covers', 'Manual'
-    lines_finalized INTEGER NOT NULL DEFAULT 0,  -- 1 = closing lines confirmed, won't update
+    lines_finalized INTEGER NOT NULL DEFAULT 0,  -- 1 = have verified closing lines
     
     -- Timestamps
-    created_at TEXT NOT NULL,                 -- When this row was created (ISO 8601)
-    updated_at TEXT NOT NULL,                 -- When this row was last updated (ISO 8601)
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
     
-    -- Constraints
     FOREIGN KEY (game_id) REFERENCES Games(game_id)
 );
 
--- Indexes for common queries
+-- Indexes
 CREATE INDEX IF NOT EXISTS idx_betting_lines_finalized ON Betting(lines_finalized);
-CREATE INDEX IF NOT EXISTS idx_betting_source ON Betting(source);
 """
 
 
@@ -140,7 +276,7 @@ def create_betting_tables(conn: Optional[sqlite3.Connection] = None) -> None:
     try:
         conn.executescript(BETTING_SCHEMA)
         conn.commit()
-        logger.info("Betting table created/verified")
+        logger.debug("Betting table created/verified")
     finally:
         if close_conn:
             conn.close()
@@ -218,26 +354,15 @@ def get_espn_event_id(
 
 
 def _teams_match(nba_code: str, espn_code: str) -> bool:
-    """Check if team codes match (handles ESPN abbreviation differences)."""
-    # Normalize both codes to a common format
-    # NBA uses: GSW, SAS, NYK, NOP, UTA, WAS, PHX
-    # ESPN uses: GS, SA, NY, NO, UTAH, WSH, PHX (usually same as NBA)
-
-    # Map ESPN codes to NBA standard
-    espn_to_nba = {
-        "GS": "GSW",
-        "SA": "SAS",
-        "NY": "NYK",
-        "NO": "NOP",
-        "UTAH": "UTA",
-        "WSH": "WAS",
-        "PHO": "PHX",  # ESPN sometimes uses PHO
-    }
-
-    nba_normalized = nba_code.upper()
-    espn_normalized = espn_to_nba.get(espn_code.upper(), espn_code.upper())
-
-    return nba_normalized == espn_normalized
+    """Check if team codes match using comprehensive NBATeamConverter."""
+    try:
+        # Use NBATeamConverter for comprehensive team normalization
+        nba_normalized = NBATeamConverter.get_abbreviation(nba_code)
+        espn_normalized = NBATeamConverter.get_abbreviation(espn_code)
+        return nba_normalized == espn_normalized
+    except ValueError:
+        # Fallback to simple string comparison if normalization fails
+        return nba_code.upper() == espn_code.upper()
 
 
 def _cache_espn_mapping(
@@ -263,12 +388,21 @@ def fetch_espn_betting_data(espn_event_id: str, home_team: str) -> Optional[dict
     """
     Fetch betting data from ESPN summary endpoint.
 
+    ESPN API provides structured opening and closing/current lines:
+    - 'open' field: Historical opening line (set days before game)
+    - 'close' field: Context-dependent (current for future games, closing for completed)
+
     Args:
         espn_event_id: ESPN event ID
-        home_team: Home team tricode (for spread conversion)
+        home_team: Home team tricode (for spread conversion to home perspective)
 
     Returns:
-        Dict with betting data or None if unavailable
+        Dict with opening and current/closing lines, or None if unavailable
+        Example:
+        {
+            "opening": {"spread": -7.5, "spread_home_odds": -110, ...},
+            "current_or_closing": {"spread": -8.0, "spread_home_odds": -115, ...}
+        }
     """
     url = f"{ESPN_SUMMARY_URL}?event={espn_event_id}"
 
@@ -292,38 +426,92 @@ def fetch_espn_betting_data(espn_event_id: str, home_team: str) -> Optional[dict
         )
         odds_data = dk_odds if dk_odds else pickcenter[0]
 
-        # Extract betting data
-        # NOTE: ESPN returns spread in 'details' field as string (e.g., 'BOS -8.5')
-        # NOT as numeric 'spread' field - must parse and convert to home perspective
-        result = {
-            "source": odds_data.get("provider", {}).get("name", "unknown"),
-            "spread": _parse_spread_from_details(odds_data.get("details"), home_team),
-            "total": odds_data.get("overUnder"),
-            "over_odds": _convert_odds(odds_data.get("overOdds")),
-            "under_odds": _convert_odds(odds_data.get("underOdds")),
-            "home_moneyline": None,
-            "away_moneyline": None,
-            "spread_home_odds": None,
-            "spread_away_odds": None,
-        }
+        result = {}
 
-        # Extract team-specific odds
-        home_odds = odds_data.get("homeTeamOdds", {})
-        away_odds = odds_data.get("awayTeamOdds", {})
+        # Extract OPENING lines (from 'open' field)
+        opening = _extract_espn_lines(odds_data, home_team, line_type="open")
+        if opening:
+            result["opening"] = opening
 
-        if home_odds:
-            result["home_moneyline"] = home_odds.get("moneyLine")
-            result["spread_home_odds"] = _convert_odds(home_odds.get("spreadOdds"))
+        # Extract CURRENT/CLOSING lines (from 'close' field)
+        # Note: 'close' means current for future games, closing for completed games
+        current_or_closing = _extract_espn_lines(
+            odds_data, home_team, line_type="close"
+        )
+        if current_or_closing:
+            result["current_or_closing"] = current_or_closing
 
-        if away_odds:
-            result["away_moneyline"] = away_odds.get("moneyLine")
-            result["spread_away_odds"] = _convert_odds(away_odds.get("spreadOdds"))
-
-        return result
+        return result if result else None
 
     except requests.RequestException as e:
         logger.error(f"ESPN summary request failed for event {espn_event_id}: {e}")
         return None
+
+
+def _extract_espn_lines(
+    odds_data: dict, home_team: str, line_type: str
+) -> Optional[dict]:
+    """
+    Extract betting lines from ESPN odds data for a specific line type (open or close).
+
+    ESPN structure:
+    {
+        "pointSpread": {
+            "home": {"open": {...}, "close": {...}},
+            "away": {"open": {...}, "close": {...}}
+        },
+        "total": {
+            "home": {"open": {...}, "close": {...}},
+            "away": {"open": {...}, "close": {...}}
+        },
+        "moneyline": {
+            "home": {"open": {...}, "close": {...}},
+            "away": {"open": {...}, "close": {...}}
+        }
+    }
+
+    Args:
+        odds_data: ESPN pickcenter odds object
+        home_team: Home team tricode for spread conversion
+        line_type: "open" or "close"
+
+    Returns:
+        Dict with spread, total, moneyline, and odds, or None
+    """
+    lines = {}
+
+    # Extract spread
+    point_spread = odds_data.get("pointSpread", {})
+    home_spread_data = point_spread.get("home", {}).get(line_type, {})
+    away_spread_data = point_spread.get("away", {}).get(line_type, {})
+
+    if home_spread_data.get("line") is not None:
+        # ESPN provides spread from home perspective (negative = favored)
+        lines["spread"] = float(home_spread_data["line"])
+        lines["spread_home_odds"] = _convert_odds(home_spread_data.get("odds"))
+        lines["spread_away_odds"] = _convert_odds(away_spread_data.get("odds"))
+
+    # Extract total
+    total_data = odds_data.get("total", {})
+    over_data = total_data.get("home", {}).get(line_type, {})  # home = over
+    under_data = total_data.get("away", {}).get(line_type, {})  # away = under
+
+    if over_data.get("line") is not None:
+        lines["total"] = float(over_data["line"])
+        lines["over_odds"] = _convert_odds(over_data.get("odds"))
+        lines["under_odds"] = _convert_odds(under_data.get("odds"))
+
+    # Extract moneylines
+    moneyline = odds_data.get("moneyline", {})
+    home_ml_data = moneyline.get("home", {}).get(line_type, {})
+    away_ml_data = moneyline.get("away", {}).get(line_type, {})
+
+    if home_ml_data.get("odds") is not None:
+        lines["ml_home"] = _convert_odds(home_ml_data.get("odds"))
+    if away_ml_data.get("odds") is not None:
+        lines["ml_away"] = _convert_odds(away_ml_data.get("odds"))
+
+    return lines if lines else None
 
 
 def _parse_spread_from_details(
@@ -428,12 +616,12 @@ def should_fetch_betting(
         return False, "too_far_future"
 
     # Game is too old - ESPN no longer has data (Covers.com scraping implemented separately)
-    if game_status in ("Final", "Completed") and days_away < -ESPN_LOOKBACK_DAYS:
+    if game_status == 3 and days_away < -ESPN_LOOKBACK_DAYS:  # Final
         return False, "too_old"
 
     # Game is within ESPN's data window
     if (
-        game_status in ("Final", "Completed", "In Progress")
+        game_status in (2, 3)  # In Progress or Final
         or days_away >= -ESPN_LOOKBACK_DAYS
     ):
         return True, "espn"
@@ -453,9 +641,14 @@ def fetch_betting_for_game(
     """
     Fetch betting data for a single game from ESPN API (Tier 1).
 
+    Returns structured data with opening and current/closing lines.
+    The 'current_or_closing' field contains:
+    - Current lines (for scheduled/in-progress games)
+    - Closing lines (for completed games)
+
     Data availability:
     - Upcoming games (1-2 days): Opening/current lines
-    - Recent completed games (< 7 days): Closing lines
+    - Recent completed games (< 7 days): Opening/closing lines
     - Older games (> 7 days): Returns None (use Tier 2/3 Covers)
 
     Args:
@@ -464,10 +657,10 @@ def fetch_betting_for_game(
         home_team: Home team tricode
         away_team: Away team tricode
         game_datetime: Game start time (UTC)
-        game_status: Game status
+        game_status: Game status (used to determine if 'close' = current or closing)
 
     Returns:
-        Dict with betting data or None
+        Dict with game_id, espn_event_id, game_status, opening, current_or_closing
     """
     # Check if we should fetch from ESPN
     should_fetch, source = should_fetch_betting(game_datetime, game_status)
@@ -482,37 +675,56 @@ def fetch_betting_for_game(
         return None
 
     # Fetch from ESPN
-    betting_data = fetch_espn_betting_data(espn_id, home_team)
+    espn_lines = fetch_espn_betting_data(espn_id, home_team)
 
-    if not betting_data:
+    if not espn_lines:
         logger.debug(f"No betting data available for {game_id} (ESPN: {espn_id})")
         return None
 
-    # Add metadata
-    betting_data["game_id"] = game_id
-    betting_data["espn_event_id"] = espn_id
-    betting_data["source"] = betting_data.get("source", "ESPN")
+    # Build result with metadata
+    result = {
+        "game_id": game_id,
+        "espn_event_id": espn_id,
+        "game_status": game_status,  # Used by save logic to determine field mapping
+    }
+
+    # Add opening lines if available
+    if "opening" in espn_lines:
+        result["opening"] = espn_lines["opening"]
+
+    # Add current/closing lines if available
+    if "current_or_closing" in espn_lines:
+        result["current_or_closing"] = espn_lines["current_or_closing"]
 
     # Determine if lines should be finalized
-    # Finalized when game is completed and we have closing line
-    if game_status in ("Final", "Completed") and betting_data.get("spread") is not None:
-        betting_data["lines_finalized"] = 1
+    # Only finalized when game completed AND we have closing lines
+    if game_status == 3 and "current_or_closing" in result:  # Final
+        result["lines_finalized"] = 1
     else:
-        betting_data["lines_finalized"] = 0
+        result["lines_finalized"] = 0
 
-    return betting_data
+    return result
 
 
+@log_execution_time(average_over="betting_data_list")
 def save_betting_data(
     betting_data_list: list[dict], conn: Optional[sqlite3.Connection] = None
 ) -> int:
     """
-    Save betting data to Betting table (single row per game).
+    Save betting data to Betting table with opening/current/closing separation.
+
+    Logic:
+    - ESPN data with 'opening' → espn_opening_* fields
+    - ESPN data with 'current_or_closing' + game not completed → espn_current_* fields
+    - ESPN data with 'current_or_closing' + game completed → espn_closing_* fields
+    - Covers data → covers_closing_* fields
 
     Uses UPSERT pattern: inserts new rows, updates existing ones.
 
     Args:
         betting_data_list: List of betting data dicts
+          ESPN format: {game_id, espn_event_id, game_status, opening: {...}, current_or_closing: {...}}
+          Covers format: {game_id, covers_closing_spread, covers_closing_total, spread_result, ou_result}
         conn: Optional database connection
 
     Returns:
@@ -533,92 +745,141 @@ def save_betting_data(
         for data in betting_data_list:
             game_id = data["game_id"]
 
-            # Check if row exists and if it's finalized
+            # Check if row exists
             cursor = conn.execute(
-                "SELECT lines_finalized, spread FROM Betting WHERE game_id = ?",
+                "SELECT lines_finalized FROM Betting WHERE game_id = ?",
                 (game_id,),
             )
             existing = cursor.fetchone()
 
-            if existing:
-                # Don't update if already finalized (unless new data also finalized with better spread)
-                if existing[0] == 1 and existing[1] is not None:
-                    # Already have finalized data with spread, skip
-                    continue
+            # Determine data source and build field mappings
+            is_espn = "espn_event_id" in data
+            is_covers = (
+                "covers_closing_spread" in data or "covers_closing_total" in data
+            )
+            is_placeholder = (
+                not is_espn and not is_covers
+            )  # No data found, just timestamp
 
-                # Update existing row
-                conn.execute(
-                    """
-                    UPDATE Betting SET
-                        espn_event_id = COALESCE(?, espn_event_id),
-                        spread = COALESCE(?, spread),
-                        spread_result = COALESCE(?, spread_result),
-                        spread_home_odds = COALESCE(?, spread_home_odds),
-                        spread_away_odds = COALESCE(?, spread_away_odds),
-                        total = COALESCE(?, total),
-                        ou_result = COALESCE(?, ou_result),
-                        over_odds = COALESCE(?, over_odds),
-                        under_odds = COALESCE(?, under_odds),
-                        home_moneyline = COALESCE(?, home_moneyline),
-                        away_moneyline = COALESCE(?, away_moneyline),
-                        source = ?,
-                        lines_finalized = MAX(lines_finalized, ?),
-                        updated_at = ?
-                    WHERE game_id = ?
-                """,
-                    (
-                        data.get("espn_event_id"),
-                        data.get("spread"),
-                        data.get("spread_result"),
-                        data.get("spread_home_odds"),
-                        data.get("spread_away_odds"),
-                        data.get("total"),
-                        data.get("ou_result"),
-                        data.get("over_odds"),
-                        data.get("under_odds"),
-                        data.get("home_moneyline"),
-                        data.get("away_moneyline"),
-                        data.get("source", "ESPN"),
-                        data.get("lines_finalized", 0),
-                        now,
-                        game_id,
-                    ),
-                )
+            if is_espn:
+                # ESPN data - separate opening, current, closing
+                game_status = data.get("game_status", 0)
+                is_completed = game_status == 3  # Final
+
+                # Build UPDATE/INSERT fields
+                fields = {}
+                fields["espn_event_id"] = data.get("espn_event_id")
+
+                # Opening lines
+                if "opening" in data:
+                    opening = data["opening"]
+                    fields["espn_opening_spread"] = opening.get("spread")
+                    fields["espn_opening_spread_home_odds"] = opening.get(
+                        "spread_home_odds"
+                    )
+                    fields["espn_opening_spread_away_odds"] = opening.get(
+                        "spread_away_odds"
+                    )
+                    fields["espn_opening_total"] = opening.get("total")
+                    fields["espn_opening_over_odds"] = opening.get("over_odds")
+                    fields["espn_opening_under_odds"] = opening.get("under_odds")
+                    fields["espn_opening_ml_home"] = opening.get("ml_home")
+                    fields["espn_opening_ml_away"] = opening.get("ml_away")
+
+                # Current or Closing lines
+                if "current_or_closing" in data:
+                    lines = data["current_or_closing"]
+
+                    if is_completed:
+                        # Game completed → save to espn_closing_* fields
+                        fields["espn_closing_spread"] = lines.get("spread")
+                        fields["espn_closing_spread_home_odds"] = lines.get(
+                            "spread_home_odds"
+                        )
+                        fields["espn_closing_spread_away_odds"] = lines.get(
+                            "spread_away_odds"
+                        )
+                        fields["espn_closing_total"] = lines.get("total")
+                        fields["espn_closing_over_odds"] = lines.get("over_odds")
+                        fields["espn_closing_under_odds"] = lines.get("under_odds")
+                        fields["espn_closing_ml_home"] = lines.get("ml_home")
+                        fields["espn_closing_ml_away"] = lines.get("ml_away")
+                    else:
+                        # Game not completed → save to espn_current_* fields
+                        fields["espn_current_spread"] = lines.get("spread")
+                        fields["espn_current_spread_home_odds"] = lines.get(
+                            "spread_home_odds"
+                        )
+                        fields["espn_current_spread_away_odds"] = lines.get(
+                            "spread_away_odds"
+                        )
+                        fields["espn_current_total"] = lines.get("total")
+                        fields["espn_current_over_odds"] = lines.get("over_odds")
+                        fields["espn_current_under_odds"] = lines.get("under_odds")
+                        fields["espn_current_ml_home"] = lines.get("ml_home")
+                        fields["espn_current_ml_away"] = lines.get("ml_away")
+
+                fields["lines_finalized"] = data.get("lines_finalized", 0)
+                fields["spread_result"] = data.get("spread_result")
+                fields["ou_result"] = data.get("ou_result")
+                fields["updated_at"] = now
+
+            elif is_covers:
+                # Covers data - always closing
+                fields = {}
+                fields["covers_closing_spread"] = data.get("covers_closing_spread")
+                fields["covers_closing_total"] = data.get("covers_closing_total")
+                fields["spread_result"] = data.get("spread_result")
+                fields["ou_result"] = data.get("ou_result")
+                fields["lines_finalized"] = data.get("lines_finalized", 1)
+                fields["updated_at"] = now
+
+            elif is_placeholder:
+                # Placeholder row - no data found, just update timestamp for cache
+                fields = {}
+                fields["updated_at"] = data.get("updated_at", now)
+
             else:
-                # Insert new row
-                conn.execute(
-                    """
-                    INSERT INTO Betting (
-                        game_id, espn_event_id, spread, spread_result,
-                        spread_home_odds, spread_away_odds, total, ou_result,
-                        over_odds, under_odds, home_moneyline, away_moneyline,
-                        source, lines_finalized, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        game_id,
-                        data.get("espn_event_id"),
-                        data.get("spread"),
-                        data.get("spread_result"),
-                        data.get("spread_home_odds"),
-                        data.get("spread_away_odds"),
-                        data.get("total"),
-                        data.get("ou_result"),
-                        data.get("over_odds"),
-                        data.get("under_odds"),
-                        data.get("home_moneyline"),
-                        data.get("away_moneyline"),
-                        data.get("source", "ESPN"),
-                        data.get("lines_finalized", 0),
-                        now,
-                        now,
-                    ),
-                )
+                logger.warning(f"Unknown data format for {game_id}")
+                continue
+
+            if existing:
+                # UPDATE existing row - use COALESCE to keep existing non-NULL values
+                set_clauses = []
+                values = []
+                for field, value in fields.items():
+                    if field == "updated_at":
+                        set_clauses.append(f"{field} = ?")
+                        values.append(value)
+                    elif field == "lines_finalized":
+                        set_clauses.append(f"{field} = MAX({field}, ?)")
+                        values.append(value)
+                    else:
+                        set_clauses.append(f"{field} = COALESCE(?, {field})")
+                        values.append(value)
+
+                values.append(game_id)
+
+                query = f"UPDATE Betting SET {', '.join(set_clauses)} WHERE game_id = ?"
+                conn.execute(query, values)
+
+            else:
+                # INSERT new row
+                fields["game_id"] = game_id
+                fields["created_at"] = now
+                if "updated_at" not in fields:
+                    fields["updated_at"] = now
+
+                columns = list(fields.keys())
+                placeholders = ["?" * len(columns)]
+                values = [fields[col] for col in columns]
+
+                query = f"INSERT INTO Betting ({', '.join(columns)}) VALUES ({', '.join(['?'] * len(columns))})"
+                conn.execute(query, values)
+
             saved += 1
 
         conn.commit()
-        logger.debug(f"Saved {saved} betting records")
-
     finally:
         if close_conn:
             conn.close()
@@ -635,12 +896,14 @@ save_betting_lines = save_betting_data
 # =============================================================================
 
 
+@log_execution_time()
 def update_betting_data(
     game_ids: Optional[list[str]] = None,
     date_range: Optional[tuple[str, str]] = None,
     season: Optional[str] = None,
     skip_finalized: bool = True,
     use_covers: bool = True,
+    stage_logger=None,
 ) -> dict:
     """
     Update betting data using 3-tier strategy.
@@ -667,16 +930,18 @@ def update_betting_data(
                 If None, uses current season (automatic mode for web app)
         skip_finalized: If True, skip games with finalized lines (default: True)
         use_covers: If True, use Tier 2 Covers for games outside ESPN window
+        stage_logger: Optional StageLogger for tracking API calls
 
     Returns:
         Dict with stats: {"espn_fetched": int, "covers_fetched": int,
-                         "saved": int, "skipped": int, "errors": int}
+                         "saved": int, "skipped": int, "cached": int, "errors": int}
     """
     stats = {
         "espn_fetched": 0,
         "covers_fetched": 0,
         "saved": 0,
         "skipped": 0,
+        "cached": 0,
         "already_finalized": 0,
         "errors": 0,
     }
@@ -703,10 +968,10 @@ def update_betting_data(
         )
 
         if not games:
-            logger.info("No games need betting data updates")
+            logger.debug("No games need betting data updates")
             return stats
 
-        logger.info(
+        logger.debug(
             f"Processing betting data for {len(games)} games "
             f"(season: {target_season or 'mixed'})"
         )
@@ -715,7 +980,9 @@ def update_betting_data(
         existing_finalized = set()
         if skip_finalized:
             cursor = conn.execute(
-                "SELECT game_id FROM Betting WHERE lines_finalized = 1 AND spread IS NOT NULL"
+                """SELECT game_id FROM Betting 
+                   WHERE lines_finalized = 1 
+                   AND (espn_closing_spread IS NOT NULL OR covers_closing_spread IS NOT NULL)"""
             )
             existing_finalized = {row[0] for row in cursor.fetchall()}
 
@@ -731,7 +998,7 @@ def update_betting_data(
                 continue
 
             game_datetime = datetime.strptime(
-                game["date_time_est"], "%Y-%m-%dT%H:%M:%SZ"
+                game["date_time_utc"], "%Y-%m-%dT%H:%M:%SZ"
             )
             days_ago = (now - game_datetime.replace(tzinfo=timezone.utc)).days
 
@@ -740,31 +1007,40 @@ def update_betting_data(
                 espn_games.append(game)
             elif (
                 use_covers
-                and game["status"] in ("Final", "Completed")
+                and game["status"] == 3  # Final
                 and days_ago > ESPN_LOOKBACK_DAYS
             ):
                 # Game is outside ESPN window, use Covers
-                game_date = game["date_time_est"].split("T")[0]
+                game_date = game["date_time_utc"].split("T")[0]
                 covers_dates_needed.add(game_date)
 
         # TIER 1: Fetch from ESPN
         if espn_games:
-            espn_stats = _fetch_espn_batch(espn_games, conn)
+            espn_stats = _fetch_espn_batch(espn_games, conn, stage_logger)
             stats["espn_fetched"] += espn_stats["fetched"]
             stats["saved"] += espn_stats["saved"]
             stats["skipped"] += espn_stats["skipped"]
+            stats["cached"] += espn_stats.get("cached", 0)
             stats["errors"] += espn_stats["errors"]
 
         # TIER 2: Fetch from Covers for dates outside ESPN window
+        covers_stats = {"fetched": 0, "saved": 0, "errors": 0}  # Initialize
         if covers_dates_needed and use_covers:
-            covers_stats = _fetch_covers_batch(
-                list(covers_dates_needed), conn, target_season
+            # Filter out dates that were recently attempted but had no successful matches
+            # to avoid repeated API calls for mismatched dates
+            filtered_dates = _filter_failed_covers_dates(
+                list(covers_dates_needed), conn
             )
-            stats["covers_fetched"] += covers_stats["fetched"]
-            stats["saved"] += covers_stats["saved"]
-            stats["errors"] += covers_stats["errors"]
 
-    logger.info(f"Betting update complete: {stats}")
+            if filtered_dates:
+                covers_stats = _fetch_covers_batch(
+                    filtered_dates, conn, target_season, stage_logger
+                )
+                stats["covers_fetched"] += covers_stats["fetched"]
+                stats["saved"] += covers_stats["saved"]
+        stats["errors"] += covers_stats["errors"]
+
+    logger.debug(f"Betting update complete: {stats}")
     return stats
 
 
@@ -785,7 +1061,7 @@ def _get_games_needing_betting_data(
     if game_ids:
         placeholders = ",".join(["?"] * len(game_ids))
         query = f"""
-            SELECT g.game_id, g.date_time_est, g.home_team, g.away_team, g.status
+            SELECT g.game_id, g.date_time_utc, g.home_team, g.away_team, g.status
             FROM Games g
             WHERE g.game_id IN ({placeholders})
         """
@@ -793,11 +1069,11 @@ def _get_games_needing_betting_data(
 
     if date_range:
         query = """
-            SELECT g.game_id, g.date_time_est, g.home_team, g.away_team, g.status
+            SELECT g.game_id, g.date_time_utc, g.home_team, g.away_team, g.status
             FROM Games g
-            WHERE date(g.date_time_est) BETWEEN ? AND ?
+            WHERE date(g.date_time_utc) BETWEEN ? AND ?
               AND g.season_type IN ('Regular Season', 'Post Season')
-            ORDER BY g.date_time_est
+            ORDER BY g.date_time_utc
         """
         return conn.execute(query, date_range).fetchall()
 
@@ -807,33 +1083,114 @@ def _get_games_needing_betting_data(
     )
 
     query = """
-        SELECT g.game_id, g.date_time_est, g.home_team, g.away_team, g.status
+        SELECT g.game_id, g.date_time_utc, g.home_team, g.away_team, g.status
         FROM Games g
         LEFT JOIN Betting b ON g.game_id = b.game_id
         WHERE g.season = ?
           AND g.season_type IN ('Regular Season', 'Post Season')
-          AND (g.status IN ('Final', 'Completed') OR g.date_time_est <= ?)
-          AND (b.lines_finalized IS NULL OR b.lines_finalized = 0 OR b.spread IS NULL)
-        ORDER BY g.date_time_est
+          AND (g.status = 3 OR g.date_time_utc <= ?)  -- Final or upcoming
+          AND (b.lines_finalized IS NULL OR b.lines_finalized = 0 
+               OR (b.espn_closing_spread IS NULL AND b.covers_closing_spread IS NULL))
+        ORDER BY g.date_time_utc
     """
     return conn.execute(query, (season, future_cutoff)).fetchall()
 
 
-def _fetch_espn_batch(games: list, conn: sqlite3.Connection) -> dict:
+def _should_use_cache(existing: dict, game_status: str, now: datetime) -> bool:
+    """
+    Determine if we should use cached betting data instead of re-fetching.
+
+    Caching rules:
+    1. Finalized games (closing lines exist + lines_finalized=1): Cache forever, never re-check
+    2. All other games: Cache for 1 hour, then re-check regardless of whether previous check found data
+
+    This ensures we actively check for newly-posted lines every hour until games are finalized.
+
+    Args:
+        existing: Dict with keys: updated_at, lines_finalized, espn_closing_spread, covers_closing_spread
+        game_status: Current game status (not used anymore, kept for API compatibility)
+        now: Current datetime (UTC)
+
+    Returns:
+        True if cached data should be used, False if we should re-fetch
+    """
+    # No existing data = can't use cache (first fetch)
+    if not existing or not existing.get("updated_at"):
+        return False
+
+    # Parse last update time
+    try:
+        updated_at = datetime.fromisoformat(
+            existing["updated_at"].replace("Z", "+00:00")
+        )
+    except (ValueError, AttributeError):
+        return False  # Invalid timestamp = re-fetch
+
+    # Rule 1: Finalized games = cache forever, never re-check
+    # Must have BOTH lines_finalized flag AND actual closing line data
+    has_closing = (
+        existing.get("espn_closing_spread") is not None
+        or existing.get("covers_closing_spread") is not None
+    )
+    if existing.get("lines_finalized") == 1 and has_closing:
+        return True  # Cache forever
+
+    # Rule 2: All non-finalized games = cache for 1 hour
+    # This includes:
+    # - Scheduled games (checking for opening/current lines)
+    # - In-progress games (checking for closing lines as they lock)
+    # - Completed games without closing lines yet (waiting for final lines)
+    # - Games with no data from previous checks (re-checking for new posts)
+    hours_since_update = (now - updated_at).total_seconds() / 3600
+    return hours_since_update < CACHE_HOURS
+
+
+@log_execution_time(average_over="games")
+def _fetch_espn_batch(games: list, conn: sqlite3.Connection, stage_logger=None) -> dict:
     """
     Fetch betting data from ESPN API for a batch of games (Tier 1).
+
+    Caching strategy:
+    - Scheduled games: Cache for 1 hour (fresh day-of updates)
+    - In-progress games: Cache for 6 hours (closing lines lock at tipoff)
+    - Completed games: Cache permanently if closing lines already fetched
     """
-    stats = {"fetched": 0, "saved": 0, "skipped": 0, "errors": 0}
+    stats = {"fetched": 0, "saved": 0, "skipped": 0, "errors": 0, "cached": 0}
     betting_data_batch = []
     BATCH_SIZE = 50
+    now = datetime.now(timezone.utc)
 
-    pbar = tqdm(games, desc="Tier 1: ESPN API", unit="game")
+    # Get existing betting data with timestamps for cache checks
+    game_ids = [g["game_id"] for g in games]
+    placeholders = ",".join(["?"] * len(game_ids))
+    cursor = conn.execute(
+        f"""
+        SELECT game_id, updated_at, lines_finalized, 
+               espn_closing_spread, covers_closing_spread
+        FROM Betting
+        WHERE game_id IN ({placeholders})
+        """,
+        game_ids,
+    )
+    existing_betting = {row[0]: dict(row) for row in cursor.fetchall()}
+
+    pbar = tqdm(games, desc="Tier 1: ESPN API", unit="game", leave=False)
     for game in pbar:
         game_id = game["game_id"]
-        pbar.set_postfix(fetched=stats["fetched"], errors=stats["errors"])
+        game_status = game["status"]
+        pbar.set_postfix(
+            fetched=stats["fetched"], cached=stats["cached"], errors=stats["errors"]
+        )
 
         try:
-            game_datetime_str = game["date_time_est"]
+            # Check cache before fetching
+            existing = existing_betting.get(game_id)
+            if existing and _should_use_cache(existing, game_status, now):
+                stats["cached"] += 1
+                stats["skipped"] += 1
+                continue
+
+            game_datetime_str = game["date_time_utc"]
             game_datetime = datetime.strptime(game_datetime_str, "%Y-%m-%dT%H:%M:%SZ")
             game_date = game_datetime_str.split("T")[0]
 
@@ -843,8 +1200,12 @@ def _fetch_espn_batch(games: list, conn: sqlite3.Connection) -> dict:
                 home_team=game["home_team"],
                 away_team=game["away_team"],
                 game_datetime=game_datetime,
-                game_status=game["status"],
+                game_status=game_status,
             )
+
+            # Track API call if stage_logger provided
+            if stage_logger:
+                stage_logger.log_api_call()
 
             if betting_data:
                 betting_data_batch.append(betting_data)
@@ -854,7 +1215,18 @@ def _fetch_espn_batch(games: list, conn: sqlite3.Connection) -> dict:
                     stats["saved"] += save_betting_data(betting_data_batch, conn)
                     betting_data_batch = []
             else:
+                # No data found - save placeholder row with updated_at timestamp
+                # This enables cache to work: we won't re-check for 1 hour
+                placeholder = {
+                    "game_id": game_id,
+                    "updated_at": now.isoformat().replace("+00:00", "Z"),
+                }
+                betting_data_batch.append(placeholder)
                 stats["skipped"] += 1
+
+                if len(betting_data_batch) >= BATCH_SIZE:
+                    stats["saved"] += save_betting_data(betting_data_batch, conn)
+                    betting_data_batch = []
 
         except Exception as e:
             logger.error(f"ESPN error for {game_id}: {e}")
@@ -868,8 +1240,9 @@ def _fetch_espn_batch(games: list, conn: sqlite3.Connection) -> dict:
     return stats
 
 
+@log_execution_time(average_over="dates")
 def _fetch_covers_batch(
-    dates: list[str], conn: sqlite3.Connection, season: Optional[str]
+    dates: list[str], conn: sqlite3.Connection, season: Optional[str], stage_logger=None
 ) -> dict:
     """
     Fetch betting data from Covers.com matchups pages (Tier 2).
@@ -878,30 +1251,55 @@ def _fetch_covers_batch(
         dates: List of dates (YYYY-MM-DD) to fetch
         conn: Database connection
         season: Season string for context
+        stage_logger: Optional StageLogger for tracking
     """
     from src.database_updater.covers import fetch_matchups_for_date
+    from src.utils import NBATeamConverter
 
     stats = {"fetched": 0, "saved": 0, "errors": 0}
 
-    logger.info(f"Tier 2: Fetching Covers data for {len(dates)} dates")
-
-    # Get mapping of (date, home_team, away_team) -> game_id
+    # Get mapping with fuzzy date matching (±1 day) to handle timezone differences
     game_lookup = {}
+    games_by_teams = {}  # For team-based fuzzy matching
+
     for date_str in dates:
+        # Query games within ±1 day window to handle timezone differences
         cursor = conn.execute(
             """
-            SELECT game_id, home_team, away_team
+            SELECT game_id, home_team, away_team, date(date_time_utc) as game_date
             FROM Games
-            WHERE date(date_time_est) = ?
+            WHERE date(date_time_utc) BETWEEN date(?, '-1 day') AND date(?, '+1 day')
               AND season_type IN ('Regular Season', 'Post Season')
         """,
-            (date_str,),
+            (date_str, date_str),
         )
         for row in cursor.fetchall():
-            key = (date_str, row["home_team"], row["away_team"])
+            # Normalize team names using comprehensive NBATeamConverter
+            try:
+                home_team = NBATeamConverter.get_abbreviation(row["home_team"])
+                away_team = NBATeamConverter.get_abbreviation(row["away_team"])
+            except ValueError:
+                # Fallback to original if normalization fails
+                home_team = row["home_team"]
+                away_team = row["away_team"]
+
+            # Primary lookup: exact date match
+            key = (date_str, home_team, away_team)
             game_lookup[key] = row["game_id"]
 
-    pbar = tqdm(dates, desc="Tier 2: Covers matchups", unit="date")
+            # Secondary lookup: team-based for fuzzy matching
+            team_key = (home_team, away_team)
+            if team_key not in games_by_teams:
+                games_by_teams[team_key] = []
+            games_by_teams[team_key].append(
+                {
+                    "game_id": row["game_id"],
+                    "date": row["game_date"],
+                    "target_date": date_str,
+                }
+            )
+
+    pbar = tqdm(dates, desc="Tier 2: Covers matchups", unit="date", leave=False)
     for date_str in pbar:
         pbar.set_postfix(fetched=stats["fetched"], errors=stats["errors"])
 
@@ -909,25 +1307,70 @@ def _fetch_covers_batch(
             game_date = date.fromisoformat(date_str)
             covers_games = fetch_matchups_for_date(game_date)
 
+            # Track API call if stage_logger provided
+            if stage_logger:
+                stage_logger.log_api_call()
+
             betting_data_batch = []
             for cg in covers_games:
-                key = (date_str, cg.home_team, cg.away_team)
+                # Normalize team names using comprehensive NBATeamConverter
+                try:
+                    home_team = NBATeamConverter.get_abbreviation(cg.home_team)
+                    away_team = NBATeamConverter.get_abbreviation(cg.away_team)
+                except ValueError:
+                    # Fallback to original if normalization fails
+                    home_team = cg.home_team
+                    away_team = cg.away_team
+
+                # Try exact match first
+                key = (date_str, home_team, away_team)
                 game_id = game_lookup.get(key)
+
+                # If no exact match, try fuzzy matching by teams within date window
+                if not game_id:
+                    team_key = (home_team, away_team)
+                    candidates = games_by_teams.get(team_key, [])
+
+                    if candidates:
+                        # Find closest date match within ±1 day
+                        from datetime import datetime, timedelta
+
+                        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                        best_candidate = None
+                        min_date_diff = float("inf")
+
+                        for candidate in candidates:
+                            candidate_date = datetime.strptime(
+                                candidate["date"], "%Y-%m-%d"
+                            ).date()
+                            date_diff = abs((candidate_date - target_date).days)
+                            if date_diff <= 1 and date_diff < min_date_diff:
+                                min_date_diff = date_diff
+                                best_candidate = candidate
+
+                        if best_candidate:
+                            game_id = best_candidate["game_id"]
+                            if min_date_diff > 0:
+                                logger.debug(
+                                    f"Fuzzy match for Covers game: {cg.away_team}@{cg.home_team} "
+                                    f"on {date_str} -> DB date {best_candidate['date']} (±{min_date_diff} days)"
+                                )
 
                 if not game_id:
                     logger.debug(
-                        f"No DB match for Covers game: {cg.away_team}@{cg.home_team} on {date_str}"
+                        f"No DB match for Covers game: {cg.away_team}@{cg.home_team} on {date_str} "
+                        f"(normalized: {away_team}@{home_team})"
                     )
                     continue
 
                 # Use results from Covers directly (already parsed from page)
+                # Covers only provides closing lines (no opening, no current)
                 betting_data = {
                     "game_id": game_id,
-                    "spread": cg.spread,
+                    "covers_closing_spread": cg.spread,
+                    "covers_closing_total": cg.total,
                     "spread_result": cg.spread_result,
-                    "total": cg.total,
                     "ou_result": cg.ou_result,
-                    "source": "Covers",
                     "lines_finalized": 1 if cg.spread is not None else 0,
                 }
                 betting_data_batch.append(betting_data)
@@ -936,9 +1379,14 @@ def _fetch_covers_batch(
             if betting_data_batch:
                 stats["saved"] += save_betting_data(betting_data_batch, conn)
 
+            # Record the attempt with match count for future caching
+            _record_covers_attempt(date_str, len(betting_data_batch), conn)
+
         except Exception as e:
             logger.error(f"Covers error for {date_str}: {e}")
             stats["errors"] += 1
+            # Record failed attempt to prevent immediate retry
+            _record_covers_attempt(date_str, 0, conn)
 
     pbar.close()
     return stats
@@ -974,7 +1422,7 @@ def update_betting_backfill(season: str) -> dict:
         # Build lookup: (date, home_team, away_team) -> game_id
         cursor = conn.execute(
             """
-            SELECT game_id, date(date_time_est) as game_date, 
+            SELECT game_id, date(date_time_utc) as game_date, 
                    home_team, away_team
             FROM Games
             WHERE season = ?
@@ -995,6 +1443,7 @@ def update_betting_backfill(season: str) -> dict:
             NBA_TO_COVERS_SLUG.items(),
             desc="Tier 3: Covers team schedules",
             unit="team",
+            leave=False,
         )
         for tricode, slug in pbar:
             pbar.set_postfix(team=tricode, fetched=stats["fetched"])
@@ -1024,13 +1473,13 @@ def update_betting_backfill(season: str) -> dict:
                     stats["matched"] += 1
 
                     # Use results from Covers directly (already parsed from page)
+                    # Covers only provides closing lines
                     betting_data = {
                         "game_id": game_id,
-                        "spread": cg.spread,
+                        "covers_closing_spread": cg.spread,
+                        "covers_closing_total": cg.total,
                         "spread_result": cg.spread_result,
-                        "total": cg.total,
                         "ou_result": cg.ou_result,
-                        "source": "Covers",
                         "lines_finalized": 1 if cg.spread is not None else 0,
                     }
                     betting_data_batch.append(betting_data)

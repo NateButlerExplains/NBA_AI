@@ -27,9 +27,11 @@ import sqlite3
 import requests
 
 from src.config import config
+from src.database_updater.validators import PlayerValidator
 from src.logging_config import setup_logging
 from src.utils import (
     NBATeamConverter,
+    StageLogger,
     determine_current_season,
     log_execution_time,
     requests_retry_session,
@@ -40,6 +42,119 @@ DB_PATH = config["database"]["path"]
 NBA_API_PLAYERS_ENDPOINT = config["nba_api"]["players_endpoint"]
 NBA_API_STATS_HEADERS = config["nba_api"]["pbp_stats_headers"]
 
+# Cache configuration
+PLAYERS_CACHE_CURRENT_MINUTES = 60  # Cache duration for current season (1 hour)
+PLAYERS_CACHE_HISTORICAL_DAYS = 365  # Cache duration for historical seasons (1 year)
+
+
+def _ensure_players_cache_table(db_path):
+    """Create PlayersCache table if it doesn't exist."""
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS PlayersCache (
+                season TEXT PRIMARY KEY,
+                last_update_datetime TEXT NOT NULL
+            )
+        """
+        )
+        conn.commit()
+
+
+def _get_last_players_update(db_path):
+    """
+    Get the last update datetime from the cache.
+
+    Returns:
+        datetime or None: The last update datetime, or None if not cached.
+    """
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT last_update_datetime FROM PlayersCache ORDER BY last_update_datetime DESC LIMIT 1"
+            )
+            result = cursor.fetchone()
+            if result:
+                from datetime import datetime
+
+                return datetime.fromisoformat(result[0])
+            return None
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet
+        return None
+
+
+def _should_update_players(db_path):
+    """
+    Determine if players should be updated based on cache.
+
+    Cache strategy:
+    - Current season: 60-minute cache (rosters change less frequently than schedule)
+    - Historical seasons: 365-day cache (rosters essentially immutable)
+
+    Returns:
+        bool: True if players should be updated, False otherwise.
+    """
+    current_season = determine_current_season()
+
+    # Check cache
+    last_update = _get_last_players_update(db_path)
+    if last_update is None:
+        logging.debug("No cache entry for players - updating")
+        return True
+
+    # Calculate time since last update
+    from datetime import datetime, timedelta
+
+    time_since_update = datetime.now() - last_update
+    minutes_since_update = time_since_update.total_seconds() / 60
+
+    # Check if cache expired (always use current season threshold since we fetch all players)
+    cache_threshold_minutes = PLAYERS_CACHE_CURRENT_MINUTES
+
+    if minutes_since_update > cache_threshold_minutes:
+        logging.debug(
+            f"Cache expired for players ({minutes_since_update:.1f} minutes old, "
+            f"threshold: {cache_threshold_minutes:.0f} minutes)"
+        )
+        return True
+
+    logging.debug(
+        f"Using cached players (updated {minutes_since_update:.1f} minutes ago)"
+    )
+    return False
+
+
+def _update_players_cache(db_path):
+    """
+    Update the players cache with current timestamp.
+    """
+    from datetime import datetime
+
+    _ensure_players_cache_table(db_path)
+
+    current_season = determine_current_season()
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO PlayersCache (season, last_update_datetime)
+            VALUES (?, ?)
+        """,
+            (current_season, datetime.now().isoformat()),
+        )
+        conn.commit()
+
+
+def _get_player_count(db_path):
+    """Get total player count from database."""
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM Players")
+        return cursor.fetchone()[0]
+
 
 @log_execution_time()
 def update_players(db_path=DB_PATH):
@@ -48,203 +163,281 @@ def update_players(db_path=DB_PATH):
     from the NBA API and saving it to the SQLite database.
 
     Only updates players with changes (from_year, to_year, roster_status, team)
-    or new players not yet in the database.
+    or new players not in the database.
 
-    Args:
-        db_path (str): Path to the SQLite database file. Defaults to the path specified
-                       in the configuration file.
+    Returns:
+        dict: {"added": int, "updated": int, "total": int}
     """
-    logging.info("Starting player data update process...")
+    stage_logger = StageLogger("Players")
 
-    # Get existing players from database
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT person_id, from_year, to_year, roster_status, team FROM Players"
-        )
-        db_players = {
-            row[0]: {
-                "from_year": row[1],
-                "to_year": row[2],
-                "roster_status": row[3],
-                "team": row[4],
-            }
-            for row in cursor.fetchall()
-        }
+    # Check cache before fetching
+    if not _should_update_players(db_path):
+        total_count = _get_player_count(db_path)
+        stage_logger.set_counts(added=0, updated=0, total=total_count)
+        stage_logger.log_complete()
+        return {"added": 0, "updated": 0, "total": total_count}
 
-    # Fetch latest player metadata from NBA API
-    players_data = fetch_players()
+    # Fetch from NBA API
+    logging.debug("Fetching player data from NBA API...")
+    players_data = fetch_players(stage_logger)
 
     if not players_data:
-        logging.warning("No player data fetched from API.")
-        return
+        logging.warning("No player data fetched")
+        stage_logger.log_complete()
+        return {"added": 0, "updated": 0, "total": 0}
 
-    # Determine which players need updating
-    players_to_update = []
-    for player in players_data:
-        person_id = player["person_id"]
-        if person_id not in db_players:
-            # New player
-            players_to_update.append(player)
-        else:
-            # Check if any fields changed
-            db_data = db_players[person_id]
-            if (
-                player["from_year"] != db_data["from_year"]
-                or player["to_year"] != db_data["to_year"]
-                or player["roster_status"] != db_data["roster_status"]
-                or player["team"] != db_data["team"]
-            ):
-                players_to_update.append(player)
+    # Save to database and get counts
+    counts = save_players(players_data, db_path, stage_logger)
 
-    if not players_to_update:
-        logging.info("No players require updates.")
-        return
+    # Log completion
+    stage_logger.set_counts(
+        added=counts["added"], updated=counts["updated"], total=counts["total"]
+    )
+    stage_logger.log_complete()
 
-    logging.info(f"{len(players_to_update)} players to update (new or changed).")
-
-    # Save to database
-    save_players(players_to_update, db_path)
-
-    logging.info("Player data update complete.")
+    return counts
 
 
 @log_execution_time(average_over="output")
-def fetch_players():
+def fetch_players(stage_logger: StageLogger):
     """
-    Fetches the players data from the NBA API and processes it into a list of dictionaries.
+    Fetches the players data from the NBA API and processes it into a list.
+
+    Args:
+        stage_logger: StageLogger instance for tracking API calls
 
     Returns:
-        list: A list of dictionaries, where each dictionary contains information about
-              a player. If an error occurs during the API request or data processing,
-              an empty list is returned.
+        list: List of player dictionaries with keys: person_id, first_name, last_name,
+              full_name, from_year, to_year, roster_status, team
     """
-    logging.info("Fetching players data from the NBA API...")
-
-    # Determine the current NBA season
     current_season = determine_current_season()
-    api_season = (
-        current_season[:5] + current_season[-2:]
-    )  # Format the season for API request
+    # Convert "2025-2026" to "2025-26" for NBA API
+    api_season = current_season[:5] + current_season[-2:]
 
-    # Format the endpoint with the current season
-    endpoint = NBA_API_PLAYERS_ENDPOINT.format(season=api_season)
-    logging.debug(f"Endpoint URL: {endpoint}")
+    # Construct the request URL
+    url = NBA_API_PLAYERS_ENDPOINT.format(season=api_season)
 
-    try:
-        # Retry session setup with timeout
-        session = requests_retry_session(timeout=10)
-        response = session.get(endpoint, headers=NBA_API_STATS_HEADERS)
-        logging.debug(f"Response status code: {response.status_code}")
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error occurred while fetching the players data: {e}")
+    # Fetch the data with retry logic
+    session = requests_retry_session()
+    response = session.get(url, headers=NBA_API_STATS_HEADERS, timeout=30)
+    response.raise_for_status()
+    stage_logger.log_api_call()  # Track API call
+
+    data = response.json()
+
+    # Extract the player data from the response
+    headers = data.get("resultSets", [{}])[0].get("headers", [])
+    rows = data.get("resultSets", [{}])[0].get("rowSet", [])
+
+    # Build a mapping from header names to indices
+    header_indices = {header: idx for idx, header in enumerate(headers)}
+
+    # Define the required fields
+    required_fields = [
+        "PERSON_ID",
+        "DISPLAY_LAST_COMMA_FIRST",
+        "FROM_YEAR",
+        "TO_YEAR",
+        "ROSTERSTATUS",
+        "TEAM_ABBREVIATION",
+    ]
+
+    # Check if all required fields are present
+    missing_fields = [field for field in required_fields if field not in header_indices]
+    if missing_fields:
+        logging.error(f"Missing required fields in API response: {missing_fields}")
         return []
 
-    try:
-        data = response.json()
-        players_data = data["resultSets"][0]["rowSet"]
+    # Process each row into a player dictionary
+    players_list = []
+    for row in rows:
+        try:
+            team_abbr = row[header_indices["TEAM_ABBREVIATION"]]
+            # Convert NBA team abbreviations to our standard format
+            team = NBATeamConverter.get_abbreviation(team_abbr) if team_abbr else None
 
-        # Process the data to create a list of player dictionaries
-        players_list = []
-        for player in players_data:
-            try:
-                person_id = player[0]
-                name_parts = player[1].split(", ")
-
-                # Handle different name formats
-                if len(name_parts) > 2:
-                    last_name, first_name = name_parts[0], name_parts[1]
-                elif len(name_parts) == 2:
-                    last_name, first_name = name_parts
+            # Parse name from "Last, First" format
+            full_name = row[header_indices["DISPLAY_LAST_COMMA_FIRST"]]
+            name_parts = full_name.split(", ")
+            if len(name_parts) == 2:
+                last_name, first_name = name_parts
+            else:
+                # Fallback for unusual name formats
+                name_parts = full_name.split()
+                if len(name_parts) > 1:
+                    last_name, first_name = name_parts[-1], " ".join(name_parts[:-1])
                 else:
-                    name_parts = player[1].split(" ")
-                    if len(name_parts) > 1:
-                        last_name, first_name = name_parts[-1], " ".join(
-                            name_parts[:-1]
-                        )
-                    else:
-                        last_name, first_name = name_parts[0], ""
+                    last_name, first_name = name_parts[0], ""
 
-                full_name = player[2]
-                roster_status = player[3]
-                from_year = player[4]
-                to_year = player[5]
-                team_name = player[11]
+            player = {
+                "person_id": row[header_indices["PERSON_ID"]],
+                "first_name": first_name,
+                "last_name": last_name,
+                "full_name": full_name,
+                "from_year": (
+                    int(row[header_indices["FROM_YEAR"]])
+                    if row[header_indices["FROM_YEAR"]]
+                    else None
+                ),
+                "to_year": (
+                    int(row[header_indices["TO_YEAR"]])
+                    if row[header_indices["TO_YEAR"]]
+                    else None
+                ),
+                "roster_status": row[header_indices["ROSTERSTATUS"]],
+                "team": team,
+            }
+            players_list.append(player)
+        except (KeyError, IndexError) as e:
+            logging.error(f"Error processing player row: {e}")
+            continue
 
-                # Convert team name to abbreviation
-                if team_name:
-                    team_abbr = NBATeamConverter.get_abbreviation(team_name)
-                else:
-                    team_abbr = None
-
-                # Create a dictionary for the player
-                player_dict = {
-                    "person_id": person_id,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "full_name": full_name,
-                    "from_year": from_year,
-                    "to_year": to_year,
-                    "roster_status": roster_status,
-                    "team": team_abbr,
-                }
-                players_list.append(player_dict)
-            except (KeyError, TypeError, ValueError) as e:
-                logging.error(f"Error processing the player record {player}: {e}")
-
-    except (KeyError, TypeError) as e:
-        logging.error(f"Error processing the players data: {e}")
-        return []
-
-    logging.info(f"Successfully fetched players data for {len(players_list)} players.")
-    logging.debug(f"Sample player data: {players_list[0]}")
+    logging.debug(f"Fetched {len(players_list)} players from NBA API")
 
     return players_list
 
 
 @log_execution_time(average_over="players_data")
-def save_players(players_data, db_path=DB_PATH):
+def save_players(players_data, db_path=DB_PATH, stage_logger=None):
     """
-    Saves the fetched players data into the SQLite database.
+    Saves player data to database with selective updates and validation.
+
+    Only updates players that are new or have changed fields.
 
     Args:
-        players_data (list): A list of dictionaries containing player information.
-        db_path (str): Path to the SQLite database file. Defaults to the path specified
-                       in the configuration file.
+        players_data: List of player dictionaries
+        db_path: Path to database
+        stage_logger: Optional StageLogger for tracking counts
+
+    Returns:
+        dict: {"added": int, "updated": int, "total": int}
     """
-    logging.info(f"Saving {len(players_data)} players to the database...")
+    if not players_data:
+        return {"added": 0, "updated": 0, "total": 0}
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
-        # Prepare the data for bulk insert as tuples
-        players_tuples = [
-            (
-                player["person_id"],
-                player["first_name"],
-                player["last_name"],
-                player["full_name"],
-                player["from_year"],
-                player["to_year"],
-                player["roster_status"],
-                player["team"],
-            )
-            for player in players_data
-        ]
-
-        # Insert or replace records based on person_id
-        cursor.executemany(
-            """
-            INSERT OR REPLACE INTO Players (
-                person_id, first_name, last_name, full_name, from_year, to_year, 
-                roster_status, team
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        # Get existing players to compare
+        person_ids = [p["person_id"] for p in players_data]
+        placeholders = ",".join("?" * len(person_ids))
+        cursor.execute(
+            f"""
+            SELECT person_id, first_name, last_name, full_name, from_year, to_year, roster_status, team
+            FROM Players WHERE person_id IN ({placeholders})
         """,
-            players_tuples,
+            person_ids,
         )
 
-    logging.info(f"Successfully saved {len(players_data)} players to the database.")
+        # Build lookup of existing players
+        existing_players = {
+            row[0]: {
+                "first_name": row[1],
+                "last_name": row[2],
+                "full_name": row[3],
+                "from_year": row[4],
+                "to_year": row[5],
+                "roster_status": row[6],
+                "team": row[7],
+            }
+            for row in cursor.fetchall()
+        }
+
+        # Filter to only changed or new players
+        players_to_update = []
+        for player in players_data:
+            person_id = player["person_id"]
+            if person_id not in existing_players:
+                # New player
+                players_to_update.append(player)
+            else:
+                # Check if any fields changed
+                existing = existing_players[person_id]
+                if (
+                    player["first_name"] != existing["first_name"]
+                    or player["last_name"] != existing["last_name"]
+                    or player["full_name"] != existing["full_name"]
+                    or player["from_year"] != existing["from_year"]
+                    or player["to_year"] != existing["to_year"]
+                    or player["roster_status"] != existing["roster_status"]
+                    or player["team"] != existing["team"]
+                ):
+                    players_to_update.append(player)
+
+        # Count changes
+        added_count = sum(
+            1 for p in players_to_update if p["person_id"] not in existing_players
+        )
+        updated_count = len(players_to_update) - added_count
+
+        # Only execute UPDATE if there are changes
+        if players_to_update:
+            # Prepare data for bulk insert
+            players_tuples = [
+                (
+                    player["person_id"],
+                    player["first_name"],
+                    player["last_name"],
+                    player["full_name"],
+                    player["from_year"],
+                    player["to_year"],
+                    player["roster_status"],
+                    player["team"],
+                )
+                for player in players_to_update
+            ]
+
+            # Insert or replace records
+            cursor.executemany(
+                """
+                INSERT OR REPLACE INTO Players (
+                    person_id, first_name, last_name, full_name, from_year, to_year, 
+                    roster_status, team
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                players_tuples,
+            )
+
+            logging.debug(
+                f"Updated {len(players_to_update)} players (out of {len(players_data)} fetched)"
+            )
+        else:
+            logging.debug(
+                f"No player changes detected (checked {len(players_data)} players)"
+            )
+
+        conn.commit()
+
+        # Validate saved data
+        validator = PlayerValidator()
+        validation_result = validator.validate(person_ids, cursor)
+
+        # Also validate total count
+        total_count_result = validator.validate_total_count(cursor)
+        validation_result.issues.extend(total_count_result.issues)
+
+        # Set validation suffix in stage logger
+        if stage_logger:
+            stage_logger.set_validation(validation_result)
+
+        # Log validation issues
+        if validation_result.has_critical_issues:
+            logging.error(f"Critical validation issues: {validation_result.summary()}")
+        elif validation_result.has_warnings:
+            logging.warning(f"Validation warnings: {validation_result.summary()}")
+
+        # Get total count from DB
+        cursor.execute("SELECT COUNT(*) FROM Players")
+        total_count = cursor.fetchone()[0]
+
+        logging.debug(
+            f"Saved players: +{added_count} ~{updated_count} (total: {total_count})"
+        )
+
+    # Update cache after successful save
+    _update_players_cache(db_path)
+
+    return {"added": added_count, "updated": updated_count, "total": total_count}
 
 
 def main():
