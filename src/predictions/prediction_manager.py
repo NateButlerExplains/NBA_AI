@@ -69,7 +69,7 @@ def make_pre_game_predictions(game_ids, predictor_name=None, save=True):
     # Determine the predictor class based on the provided name
     predictor_class, predictor_name = determine_predictor_class(predictor_name)
 
-    logging.info(
+    logging.debug(
         f"Generating pre-game predictions for {len(game_ids)} games using predictor '{predictor_name}'."
     )
 
@@ -82,7 +82,7 @@ def make_pre_game_predictions(game_ids, predictor_name=None, save=True):
     # Create the predictions
     pre_game_predictions = predictor_instance.make_pre_game_predictions(game_ids)
 
-    logging.info(
+    logging.debug(
         f"Pre-game predictions generated successfully for {len(pre_game_predictions)} games using predictor '{predictor_name}'."
     )
     logging.debug(f"Pre-Game Predictions: {pre_game_predictions}")
@@ -135,7 +135,7 @@ def make_current_predictions(game_ids, predictor_name=None):
             f"Predictor '{predictor_name}' not found in PREDICTOR_MAP. Current options include: {PREDICTOR_MAP.keys()}"
         )
 
-    logging.info(
+    logging.debug(
         f"Generating current predictions for {len(game_ids)} games using predictor '{predictor_name}'."
     )
 
@@ -148,7 +148,7 @@ def make_current_predictions(game_ids, predictor_name=None):
     # Blend pre-game predictions with current state using formula
     current_predictions = update_predictions(games)
 
-    logging.info(
+    logging.debug(
         f"Current predictions generated successfully for {len(current_predictions)} games using predictor '{predictor_name}'."
     )
     logging.debug(f"Current Predictions: {current_predictions}")
@@ -174,10 +174,10 @@ def save_predictions(predictions, predictor_name, db_path=DB_PATH):
     ValueError: If prediction is made after game start time.
     """
     if not predictions:
-        logging.info("No predictions to save.")
+        logging.debug("No predictions to save.")
         return
 
-    logging.info(
+    logging.debug(
         f"Saving {len(predictions)} predictions for predictor '{predictor_name}'..."
     )
     prediction_datetime = pd.Timestamp.now(tz="UTC")
@@ -190,7 +190,7 @@ def save_predictions(predictions, predictor_name, db_path=DB_PATH):
         game_ids = list(predictions.keys())
         placeholders = ",".join("?" * len(game_ids))
         cursor.execute(
-            f"SELECT game_id, date_time_est FROM Games WHERE game_id IN ({placeholders})",
+            f"SELECT game_id, date_time_utc FROM Games WHERE game_id IN ({placeholders})",
             game_ids,
         )
         game_times = {
@@ -251,7 +251,7 @@ def save_predictions(predictions, predictor_name, db_path=DB_PATH):
 
         conn.commit()
 
-    logging.info("Predictions saved successfully.")
+    logging.debug("Predictions saved successfully.")
     if data:
         logging.debug(f"Example record: {data[0]}")
 

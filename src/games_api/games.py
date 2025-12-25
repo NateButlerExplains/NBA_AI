@@ -28,7 +28,6 @@ import sqlite3
 
 from src.config import config
 from src.database_updater.database_update_manager import update_database
-from src.database_updater.schedule import update_schedule
 from src.logging_config import setup_logging
 from src.predictions.prediction_manager import make_current_predictions
 from src.utils import (
@@ -69,7 +68,7 @@ def get_normal_data(conn, game_ids, predictor_name):
         )
     )
     SELECT
-        g.game_id, g.date_time_est, g.home_team, g.away_team, g.status, g.season, g.season_type, g.pre_game_data_finalized, g.game_data_finalized,
+        g.game_id, g.date_time_utc, g.home_team, g.away_team, g.status, g.season, g.season_type, g.pre_game_data_finalized, g.game_data_finalized,
         p.play_id, p.log_data,
         s.play_id AS state_play_id, s.game_date, s.home, s.away, s.clock, s.period, s.home_score, s.away_score, s.total, s.home_margin, s.is_final_state, s.players_data,
         pr.predictor, pr.prediction_datetime, pr.prediction_set
@@ -92,7 +91,7 @@ def get_normal_data(conn, game_ids, predictor_name):
         game_id = row["game_id"]
         if game_id not in result:
             result[game_id] = {
-                "date_time_est": row["date_time_est"],
+                "date_time_utc": row["date_time_utc"],
                 "home_team": row["home_team"],
                 "away_team": row["away_team"],
                 "status": row["status"],
@@ -166,7 +165,7 @@ def get_games(
     Returns:
         dict: Dictionary containing game data including predictions and game states.
     """
-    logging.info(f"Getting game info for {len(game_ids)} games.")
+    logging.debug(f"Getting game info for {len(game_ids)} games.")
     logging.debug(f"Game IDs: {game_ids}")
 
     # Validate inputs
@@ -192,7 +191,7 @@ def get_games(
             if game_id in data:
                 data[game_id]["predictions"]["current"] = current_prediction_dict
 
-    logging.info(f"Game info retrieval complete for {len(data)} games.")
+    logging.debug(f"Game info retrieval complete for {len(data)} games.")
 
     return data
 
@@ -210,27 +209,43 @@ def get_games_for_date(date, predictor=DEFAULT_PREDICTOR, update_predictions=Tru
     Returns:
         dict: Dictionary containing game data for the specified date.
     """
-    logging.info(f"Getting games for date: {date}")
+    logging.debug(f"Getting games for date: {date}")
 
     # Validate inputs
     validate_date_format(date)
     if predictor not in VALID_PREDICTORS:
         raise ValueError(f"Invalid predictor: {predictor}")
 
-    # Update the schedule
-    season = date_to_season(date)
-    update_schedule(season, DB_PATH)
-
     # Get game_ids for the given date
+    # The date parameter represents the NBA schedule date (which uses Eastern Time)
+    # We need to find all games scheduled for that date in ET
+    # Convert the date to a UTC datetime range covering the entire ET day
+    from datetime import datetime, timedelta, timezone
+
+    import pytz
+
+    eastern = pytz.timezone("US/Eastern")
+
+    # Start of day in ET (00:00:00 ET)
+    start_of_day_et = eastern.localize(datetime.strptime(date, "%Y-%m-%d"))
+    # End of day in ET (next day at 00:00:00 ET)
+    end_of_day_et = start_of_day_et + timedelta(days=1)
+
+    # Convert to UTC for database query (use ISO format with T separator to match DB format)
+    start_utc = start_of_day_et.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    end_utc = end_of_day_et.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT game_id FROM games WHERE date(date_time_est) = ?",
-            (date,),
+            "SELECT game_id FROM games WHERE date_time_utc >= ? AND date_time_utc < ?",
+            (start_utc, end_utc),
         )
         game_ids = [row[0] for row in cursor.fetchall()]
 
-    logging.info(f"Found {len(game_ids)} games for date: {date}. Fetching game info...")
+    logging.debug(
+        f"Found {len(game_ids)} games for date: {date}. Fetching game info..."
+    )
     logging.debug(f"Game IDs: {game_ids}")
 
     # Use the get_games function to get the games
@@ -240,7 +255,7 @@ def get_games_for_date(date, predictor=DEFAULT_PREDICTOR, update_predictions=Tru
         update_predictions=update_predictions,
     )
 
-    logging.info(f"Game retrieval complete for {len(games)} games from date: {date}.")
+    logging.debug(f"Game retrieval complete for {len(games)} games from date: {date}.")
 
     return games
 
