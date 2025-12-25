@@ -65,14 +65,21 @@ def process_game_data(games):
     outbound_games = []
 
     for game_id, game in games.items():
+        # Parse UTC datetime and convert to local for display
+        from src.utils import parse_utc_datetime, utc_to_local
+
+        utc_dt = parse_utc_datetime(game["date_time_utc"])
+        local_dt = utc_to_local(utc_dt)
+
         # Basic game information
         outbound_game_data = {
             "game_id": game_id,
-            "game_date": game["date_time_est"].split("T")[0],
-            "game_time_est": game["date_time_est"].split("T")[1],
+            "game_date": local_dt.strftime("%Y-%m-%d"),
+            "game_time_local": local_dt.strftime("%H:%M:%S"),
             "home": game["home_team"],
             "away": game["away_team"],
-            "game_status": game["status"],
+            "game_status": game.get("status_text", ""),  # Human-readable status
+            "game_status_code": game["status"],  # Numeric code (1, 2, 3)
         }
 
         # Current scores if available
@@ -228,7 +235,7 @@ def _format_date_time_display(game):
     has_game_states = game.get("game_states") and len(game["game_states"]) > 0
 
     if has_game_states and (
-        game["status"] == "In Progress"
+        game["status"] == 2  # In Progress
         or not game["game_states"][-1].get("is_final_state", False)
     ):
         period = game["game_states"][-1]["period"]
@@ -254,18 +261,13 @@ def _format_date_time_display(game):
         return {"datetime_display": datetime_display}
 
     # Handle cases for not started or completed games
-    game_date_time_est = game["date_time_est"]
-    # Parse as Eastern Time (despite the Z suffix, NBA API returns ET)
-    # Remove the Z suffix and parse as naive datetime
-    game_date_time_naive = datetime.strptime(
-        game_date_time_est.rstrip("Z"), "%Y-%m-%dT%H:%M:%S"
-    )
-    # Localize to Eastern timezone
-    eastern_tz = pytz.timezone("America/New_York")
-    game_date_time_eastern = eastern_tz.localize(game_date_time_naive)
+    # Data is now stored as actual UTC
+    from src.utils import parse_utc_datetime, utc_to_local
+
+    game_date_time_utc = game["date_time_utc"]
+    utc_dt = parse_utc_datetime(game_date_time_utc)
     # Convert to user's local timezone
-    user_timezone = get_localzone()
-    game_date_time_local = game_date_time_eastern.astimezone(user_timezone)
+    game_date_time_local = utc_to_local(utc_dt)
 
     game_date = game_date_time_local.date()
     current_date = datetime.now().date()
@@ -283,7 +285,7 @@ def _format_date_time_display(game):
 
     time_display = game_date_time_local.strftime("%I:%M %p").lstrip("0")
 
-    if game["status"] == "Completed":
+    if game["status"] == 3:  # Final
         datetime_display = f"{date_display} - Final"
     else:
         datetime_display = f"{date_display} - {time_display}"

@@ -67,7 +67,7 @@ def load_featurized_modeling_data(seasons, db_path=DB_PATH):
     # Timing the database loading step
     start_time = time.time()
     query = """
-        SELECT g.game_id, g.date_time_est, g.home_team, g.away_team, g.season, g.season_type, 
+        SELECT g.game_id, g.date_time_utc, g.home_team, g.away_team, g.season, g.season_type, 
                gs.home_score, gs.away_score, gs.total, gs.home_margin, gs.players_data, f.feature_set
         FROM (
             SELECT game_id, home_score, away_score, total, home_margin, players_data

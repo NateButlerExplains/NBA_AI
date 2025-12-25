@@ -186,7 +186,7 @@ def load_and_prepare_data(train_season, test_season):
     # Define columns to exclude from features
     exclude_cols = [
         "game_id",
-        "date_time_est",
+        "date_time_utc",
         "home_team",
         "away_team",
         "season",
