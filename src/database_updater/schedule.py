@@ -282,7 +282,9 @@ def sync_live_game_status(db_path=DB_PATH):
             conn.commit()
 
         if updated_count > 0:
-            logging.debug(f"Synced live status for {updated_count} games from scoreboard")
+            logging.debug(
+                f"Synced live status for {updated_count} games from scoreboard"
+            )
 
         return updated_count
 
