@@ -236,6 +236,61 @@ def _validate_schedule(season: str, db_path: str = DB_PATH):
                 logging.debug(f"Schedule validation: PASS ({len(game_ids)} games)")
 
 
+def sync_live_game_status(db_path=DB_PATH):
+    """
+    Sync game status from the live scoreboard API for today's games.
+
+    The Schedule API doesn't update game status in real-time. This function
+    checks the live scoreboard and updates the status for any in-progress
+    or recently completed games.
+
+    Parameters:
+    db_path (str): The path to the SQLite database file.
+
+    Returns:
+    int: Number of games updated.
+    """
+    try:
+        from nba_api.live.nba.endpoints import scoreboard
+
+        board = scoreboard.ScoreBoard()
+        games_data = board.get_dict()
+        live_games = games_data.get("scoreboard", {}).get("games", [])
+
+        if not live_games:
+            return 0
+
+        updates = []
+        for game in live_games:
+            game_id = game.get("gameId")
+            status = game.get("gameStatus")  # 1=Not Started, 2=In Progress, 3=Final
+            status_text = game.get("gameStatusText", "")
+
+            if game_id and status:
+                updates.append((status, status_text, game_id))
+
+        if not updates:
+            return 0
+
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                "UPDATE Games SET status = ?, status_text = ? WHERE game_id = ?",
+                updates,
+            )
+            updated_count = cursor.rowcount
+            conn.commit()
+
+        if updated_count > 0:
+            logging.debug(f"Synced live status for {updated_count} games from scoreboard")
+
+        return updated_count
+
+    except Exception as e:
+        logging.debug(f"Could not sync live scoreboard: {e}")
+        return 0
+
+
 @log_execution_time()
 def update_schedule(season="Current", db_path=DB_PATH, force=False):
     """
@@ -253,6 +308,11 @@ def update_schedule(season="Current", db_path=DB_PATH, force=False):
         validate_season_format(season, abbreviated=False)
 
     stage_logger = StageLogger("Schedule")
+
+    # Always sync live game status for current season (fast, no caching issues)
+    current_season = determine_current_season()
+    if season == current_season:
+        sync_live_game_status(db_path)
 
     # Check if update is needed (unless forced)
     if not force and not _should_update_schedule(season, db_path):
@@ -416,6 +476,8 @@ def save_schedule(games, season, db_path=DB_PATH, stage_logger=None):
                 existing_games[row[0]] = row
 
             # Insert or replace new and updated game records
+            # Note: status uses MAX() to never decrease - this preserves live status updates
+            # (e.g., if sync_live_game_status set status=2, don't let stale Schedule API reset to 1)
             insert_sql = """
             INSERT INTO Games (game_id, date_time_utc, home_team, away_team, status, status_text, season, season_type, 
                 pre_game_data_finalized, game_data_finalized, boxscore_data_finalized)
@@ -427,7 +489,7 @@ def save_schedule(games, season, db_path=DB_PATH, stage_logger=None):
                 date_time_utc=excluded.date_time_utc,
                 home_team=excluded.home_team,
                 away_team=excluded.away_team,
-                status=excluded.status,
+                status=MAX(Games.status, excluded.status),
                 status_text=excluded.status_text,
                 season=excluded.season,
                 season_type=excluded.season_type

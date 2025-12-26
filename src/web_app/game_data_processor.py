@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 import pytz
 from tzlocal import get_localzone
 
-from src.utils import NBATeamConverter, get_player_image
+from src.utils import NBATeamConverter, get_player_image, log_execution_time
 
 
 def get_user_datetime(as_eastern_tz=False):
@@ -51,6 +51,7 @@ def get_user_datetime(as_eastern_tz=False):
     return utc_now.astimezone(user_timezone)
 
 
+@log_execution_time(average_over="games")
 def process_game_data(games):
     """
     Processes game data for display, including team names, logos, date and time display,

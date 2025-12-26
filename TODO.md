@@ -1,53 +1,77 @@
 # NBA AI TODO
 
 > **Last Updated**: December 25, 2025  
-> **Current Sprint**: Sprint 16 - GenAI Predictor Design (Planning)
+> **Current Sprint**: Sprint 17 - GenAI Predictor Design (Planning)
 
 ---
 
 ## 🎯 Active Sprint
 
-### Sprint 16: Frontend API Optimization (Dec 25, 2025)
+### Sprint 17: GenAI Predictor Design (Planning)
 
-**Goal**: Optimize and add logging to frontend API endpoints to reduce page load times.
+**Goal**: Research and design the GenAI-based prediction engine using PBP data as primary source.
 
-**Status**: 🚧 IN PROGRESS
+**Status**: 📋 PLANNING
 
-**Current Issue**: Page load takes ~9 seconds, but only ~2s is logged by pipeline stages. Missing time is in:
-- Database query (`get_normal_data()`) - complex CTE with JOINs, JSON parsing - estimated 6-7s
-- Current predictions blending - logged at DEBUG only
-- Overhead between stages
-
-**Tasks**:
-- [ ] Add logging/timing to `get_normal_data()` query execution
-- [ ] Add logging to current predictions generation
-- [ ] Analyze database query performance (EXPLAIN QUERY PLAN)
-- [ ] Consider query optimizations:
-  - [ ] Add indexes if missing (game_id, predictor, play_id)
-  - [ ] Simplify CTE (LatestGameStates using MAX subquery)
-  - [ ] Limit PBP data returned (only last N plays vs all plays)
-- [ ] Consider architectural changes:
-  - [ ] Lazy-load full PBP data (send only summary initially)
-  - [ ] Cache serialized game data response
-  - [ ] Async load non-critical data (betting lines, full PBP)
-
-**Completed**:
-- ✅ Fixed date selector to use Eastern Time (NBA schedule timezone)
-- ✅ Fixed string comparison for UTC datetimes (ISO format with T separator)
-- ✅ Removed duplicate schedule update call
-- ✅ Changed verbose logs from INFO to DEBUG level (7 locations)
+**Research Areas**:
+- [ ] Transformer architectures for sports sequence data
+- [ ] PBP tokenization strategy (events, time, scores as tokens)
+- [ ] Embedding layer design for game state representation
+- [ ] Training data preparation (sequence formatting)
 
 ---
 
 ## 📋 Backlog
 
-- **GenAI Predictor Design**: Research transformer architectures for sports sequence data, PBP tokenization strategy, embedding layer design
 - **Historical Data Backfill**: PlayerBox/TeamBox (2000-2022, ~30K games), InjuryReports (Dec 2018-2023, ~900 PDFs/season)
 - **Player Props Model**: Player-level predictions using PlayerBox data
 
 ---
 
 ## ✅ Completed Sprints
+
+### Sprint 16: Frontend API Optimization (Dec 25, 2025)
+**Summary**: Comprehensive logging, query optimization, and live game status sync for frontend API.
+
+**Performance Improvements**:
+- Reduced page load from ~9s to <0.4s for 5 games (95%+ improvement)
+- Query time per game: ~0.07s (down from ~1.5s)
+
+**Logging Added**:
+- `@log_execution_time` decorators on 5 functions:
+  - `get_normal_data()` - main game data query
+  - `load_current_game_data()` - predictions + game state query
+  - `update_predictions()` - formula-based blending
+  - `make_current_predictions()` - current predictions orchestration
+  - `process_game_data()` - data transformation for display
+- `[Frontend]` summary logging at INFO level:
+  - Date requests: `[Frontend] 2025-01-15: 12 games | 1.23s`
+  - Game ID requests: `[Frontend] 0022500012 | 0.45s`
+
+**Query Optimizations**:
+- Replaced correlated subquery with ROW_NUMBER() OVER pattern in CTE
+- Separated PBP query from main query (avoids row multiplication)
+- Limited PBP to 50 most recent plays per game (configurable)
+- Added 3 database indexes:
+  - `idx_gamestates_game_play` on GameStates(game_id, play_id DESC)
+  - `idx_pbp_game_id` on PbP_Logs(game_id)
+  - `idx_predictions_game_predictor` on Predictions(game_id, predictor)
+
+**Architectural Changes**:
+- Removed internal HTTP request in `app.py::get_game_data()`
+- Now calls `get_games()` / `get_games_for_date()` directly
+- Eliminated JSON serialization/deserialization overhead
+
+**Live Game Status Fix**:
+- Added `sync_live_game_status()` - syncs from NBA Scoreboard API (real-time)
+- Fixed `save_schedule()` to never decrease status: `MAX(Games.status, excluded.status)`
+- Schedule API returns stale status=1 for in-progress games; now properly preserved
+- In-progress games now correctly fetch and display PBP data
+
+**Testing**:
+- Added 3 new tests for game_id path (valid, invalid, empty)
+- Added empty game_id validation in `get_game_data()` route
+- 23 API/schedule tests passing
 
 ### Sprint 15: Pipeline Optimization & Database Consolidation (Dec 19-25, 2025)
 **Summary**: Comprehensive database optimization, schema unification, and documentation update.

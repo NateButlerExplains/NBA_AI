@@ -44,68 +44,119 @@ VALID_PREDICTORS = list(config["predictors"].keys()) + [None]
 DEFAULT_PREDICTOR = config["default_predictor"]
 
 
-def get_normal_data(conn, game_ids, predictor_name):
+@log_execution_time(average_over="game_ids")
+def get_normal_data(conn, game_ids, predictor_name, pbp_limit=50):
     """
     Fetch detailed game data, including play-by-play logs, for the given game IDs.
+
+    Uses optimized queries:
+    - ROW_NUMBER() pattern for latest game states (avoids correlated subquery)
+    - Separate PBP query with configurable limit (avoids row multiplication)
 
     Args:
         conn (sqlite3.Connection): Database connection object.
         game_ids (list): List of game IDs to fetch data for.
         predictor_name (str): Name of the predictor to use.
+        pbp_limit (int): Maximum number of PBP entries per game (default 50).
 
     Returns:
         dict: Dictionary containing detailed game data including play-by-play logs, game states, and predictions.
     """
-    query = """
+    placeholders = ",".join("?" * len(game_ids))
+
+    # Query 1: Games, LatestGameStates, and Predictions (no PBP join)
+    # Uses ROW_NUMBER() instead of correlated subquery for better performance
+    main_query = f"""
     WITH LatestGameStates AS (
         SELECT
-            s.game_id, s.play_id, s.game_date, s.home, s.away, s.clock, s.period, s.home_score, s.away_score, s.total, s.home_margin, s.is_final_state, s.players_data
-        FROM GameStates s
-        WHERE s.play_id = (
-            SELECT MAX(inner_s.play_id)
-            FROM GameStates inner_s
-            WHERE inner_s.game_id = s.game_id
-        )
+            game_id, play_id, game_date, home, away, clock, period,
+            home_score, away_score, total, home_margin, is_final_state, players_data,
+            ROW_NUMBER() OVER (PARTITION BY game_id ORDER BY play_id DESC) AS rn
+        FROM GameStates
+        WHERE game_id IN ({placeholders})
     )
     SELECT
-        g.game_id, g.date_time_utc, g.home_team, g.away_team, g.status, g.season, g.season_type, g.pre_game_data_finalized, g.game_data_finalized,
-        p.play_id, p.log_data,
-        s.play_id AS state_play_id, s.game_date, s.home, s.away, s.clock, s.period, s.home_score, s.away_score, s.total, s.home_margin, s.is_final_state, s.players_data,
+        g.game_id, g.date_time_utc, g.home_team, g.away_team, g.status, g.season,
+        g.season_type, g.pre_game_data_finalized, g.game_data_finalized,
+        s.play_id AS state_play_id, s.game_date, s.home, s.away, s.clock, s.period,
+        s.home_score, s.away_score, s.total, s.home_margin, s.is_final_state, s.players_data,
         pr.predictor, pr.prediction_datetime, pr.prediction_set
     FROM Games g
-    LEFT JOIN PbP_Logs p ON g.game_id = p.game_id
-    LEFT JOIN LatestGameStates s ON g.game_id = s.game_id
+    LEFT JOIN LatestGameStates s ON g.game_id = s.game_id AND s.rn = 1
     LEFT JOIN Predictions pr ON g.game_id = pr.game_id AND pr.predictor = ?
-    WHERE g.game_id IN ({})
-    ORDER BY p.play_id
-    """.format(
-        ",".join("?" * len(game_ids))
-    )
+    WHERE g.game_id IN ({placeholders})
+    """
 
     cursor = conn.cursor()
-    cursor.execute(query, [predictor_name] + game_ids)
+    cursor.execute(main_query, game_ids + [predictor_name] + game_ids)
     rows = cursor.fetchall()
 
     result = {}
     for row in rows:
         game_id = row["game_id"]
-        if game_id not in result:
-            result[game_id] = {
-                "date_time_utc": row["date_time_utc"],
-                "home_team": row["home_team"],
-                "away_team": row["away_team"],
-                "status": row["status"],
-                "season": row["season"],
-                "season_type": row["season_type"],
-                "pre_game_data_finalized": row["pre_game_data_finalized"],
-                "game_data_finalized": row["game_data_finalized"],
-                "play_by_play": [],
-                "game_states": [],
-                "predictions": {"pre_game": {}},
+        result[game_id] = {
+            "date_time_utc": row["date_time_utc"],
+            "home_team": row["home_team"],
+            "away_team": row["away_team"],
+            "status": row["status"],
+            "season": row["season"],
+            "season_type": row["season_type"],
+            "pre_game_data_finalized": row["pre_game_data_finalized"],
+            "game_data_finalized": row["game_data_finalized"],
+            "play_by_play": [],
+            "game_states": [],
+            "predictions": {"pre_game": {}},
+        }
+
+        # Add the latest game state (only one per game from CTE)
+        if row["state_play_id"] is not None:
+            game_state = {
+                "play_id": row["state_play_id"],
+                "game_date": row["game_date"],
+                "home": row["home"],
+                "away": row["away"],
+                "clock": row["clock"],
+                "period": row["period"],
+                "home_score": row["home_score"],
+                "away_score": row["away_score"],
+                "total": row["total"],
+                "home_margin": row["home_margin"],
+                "is_final_state": row["is_final_state"],
+                "players_data": (
+                    json.loads(row["players_data"]) if row["players_data"] else {}
+                ),
+            }
+            result[game_id]["game_states"].append(game_state)
+
+        # Add prediction data for the specified predictor
+        if row["predictor"] == predictor_name and row["prediction_set"] is not None:
+            result[game_id]["predictions"]["pre_game"] = {
+                "prediction_datetime": row["prediction_datetime"],
+                "prediction_set": json.loads(row["prediction_set"]),
             }
 
-        # Extracting specific fields from log_data
-        if row["log_data"]:
+    # Query 2: PBP logs (separate query, limited per game)
+    # Uses ROW_NUMBER() to get only the most recent N plays per game
+    pbp_query = f"""
+    WITH RankedPbP AS (
+        SELECT
+            game_id, play_id, log_data,
+            ROW_NUMBER() OVER (PARTITION BY game_id ORDER BY play_id DESC) AS rn
+        FROM PbP_Logs
+        WHERE game_id IN ({placeholders})
+    )
+    SELECT game_id, play_id, log_data
+    FROM RankedPbP
+    WHERE rn <= ?
+    ORDER BY game_id, play_id DESC
+    """
+
+    cursor.execute(pbp_query, game_ids + [pbp_limit])
+    pbp_rows = cursor.fetchall()
+
+    for row in pbp_rows:
+        game_id = row["game_id"]
+        if game_id in result and row["log_data"]:
             log_data = json.loads(row["log_data"])
             play_log = {
                 "play_id": row["play_id"],
@@ -116,34 +167,6 @@ def get_normal_data(conn, game_ids, predictor_name):
                 "description": log_data.get("description"),
             }
             result[game_id]["play_by_play"].append(play_log)
-
-        # Adding the latest game state (only one per game)
-        if row["state_play_id"] is not None:
-            if not result[game_id]["game_states"]:
-                game_state = {
-                    "play_id": row["state_play_id"],
-                    "game_date": row["game_date"],
-                    "home": row["home"],
-                    "away": row["away"],
-                    "clock": row["clock"],
-                    "period": row["period"],
-                    "home_score": row["home_score"],
-                    "away_score": row["away_score"],
-                    "total": row["total"],
-                    "home_margin": row["home_margin"],
-                    "is_final_state": row["is_final_state"],
-                    "players_data": (
-                        json.loads(row["players_data"]) if row["players_data"] else {}
-                    ),
-                }
-                result[game_id]["game_states"].append(game_state)
-
-        # Adding prediction data for the specified predictor
-        if row["predictor"] == predictor_name and row["prediction_set"] is not None:
-            result[game_id]["predictions"]["pre_game"] = {
-                "prediction_datetime": row["prediction_datetime"],
-                "prediction_set": json.loads(row["prediction_set"]),
-            }
 
     return result
 

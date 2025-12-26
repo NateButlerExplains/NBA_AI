@@ -147,3 +147,24 @@ class TestWebAppRoutes:
         """get-game-data without params should return 400."""
         response = flask_test_client.get("/get-game-data")
         assert response.status_code == 400
+
+    def test_get_game_data_with_valid_game_id(self, flask_test_client):
+        """get-game-data with valid game_id should return 200."""
+        # Use a known game_id from 2024-2025 season
+        response = flask_test_client.get("/get-game-data?game_id=0022400415")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+
+    def test_get_game_data_with_invalid_game_id(self, flask_test_client):
+        """get-game-data with invalid game_id should return 400."""
+        response = flask_test_client.get("/get-game-data?game_id=invalid")
+        assert response.status_code == 400
+        data = response.get_json()
+        assert "error" in data
+
+    def test_get_game_data_with_empty_game_id(self, flask_test_client):
+        """get-game-data with empty game_id should return 400."""
+        response = flask_test_client.get("/get-game-data?game_id=")
+        assert response.status_code == 400

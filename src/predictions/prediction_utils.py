@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import config
+from src.utils import log_execution_time
 
 # Configuration
 DB_PATH = config["database"]["path"]
@@ -227,6 +228,7 @@ def calculate_home_win_prob(
     return win_prob
 
 
+@log_execution_time(average_over="games")
 def update_predictions(games):
     """
     Update predictions based on the current state of the games.
@@ -318,6 +320,7 @@ def update_predictions(games):
     return updated_predictions
 
 
+@log_execution_time(average_over="game_ids")
 def load_current_game_data(game_ids, predictor_name):
     """
     Load current game data including pre-game predictions from the database.

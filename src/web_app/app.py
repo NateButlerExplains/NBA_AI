@@ -1,7 +1,7 @@
 """
 app.py
 
-This module sets up a Flask web application to display NBA game data, including game schedules, team details, and predictions. 
+This module sets up a Flask web application to display NBA game data, including game schedules, team details, and predictions.
 It integrates with external APIs to fetch and process data, and utilizes a machine learning predictor for game predictions.
 
 Core Functions:
@@ -18,13 +18,15 @@ Usage:
 Typically run via a entry point in the root directory of the project.
 """
 
+import logging
+import time
 from datetime import datetime, timedelta
 
-import requests
-from flask import Flask, flash, jsonify, render_template, request, url_for
+from flask import Flask, flash, jsonify, render_template, request
 
 from src.config import config
 from src.games_api.api import api as api_blueprint
+from src.games_api.games import get_games, get_games_for_date
 from src.utils import validate_date_format
 from src.web_app.game_data_processor import get_user_datetime, process_game_data
 
@@ -95,12 +97,15 @@ def create_app(predictor):
         Fetches and processes game data for a given date or game ID.
 
         - Supports querying by either 'date' or 'game_id'.
-        - Retrieves game data from an external API and processes it for display.
+        - Retrieves game data directly from games module (no internal HTTP call).
 
         Returns:
             Response: JSON response containing processed game data or error message.
         """
+        start_time = time.perf_counter()
         try:
+            predictor = app.config["PREDICTOR"]
+
             # Determine the type of input (date or game_id)
             if "date" in request.args:
                 # Use provided date or default to the current date if not provided
@@ -111,11 +116,30 @@ def create_app(predictor):
                 else:
                     query_date_str = inbound_query_date_str
 
-                api_param_kv = {"date": query_date_str}
+                # Call get_games_for_date directly (no HTTP overhead)
+                game_data = get_games_for_date(
+                    query_date_str,
+                    predictor=predictor,
+                    update_predictions=True,
+                )
 
             elif "game_id" in request.args:
                 game_id = request.args.get("game_id")
-                api_param_kv = {"game_ids": game_id}
+                game_ids = [g.strip() for g in game_id.split(",") if g.strip()]
+
+                # Validate we have at least one game_id
+                if not game_ids:
+                    return (
+                        jsonify({"error": "game_id parameter cannot be empty."}),
+                        400,
+                    )
+
+                # Call get_games directly (no HTTP overhead)
+                game_data = get_games(
+                    game_ids,
+                    predictor=predictor,
+                    update_predictions=True,
+                )
 
             else:
                 return (
@@ -123,36 +147,33 @@ def create_app(predictor):
                     400,
                 )
 
-            # Fetch data from the API endpoint using url_for
-            api_url = url_for("api.games", _external=True)
-            predictor = app.config["PREDICTOR"]  # Get the predictor from the config
-            params = {
-                "predictor": predictor,
-                "update_predictions": "True",
-            }
-            params.update(api_param_kv)
-
-            response = requests.get(api_url, params=params)
-
-            # Check if the response indicates an error
-            if response.status_code != 200:
-                return (
-                    jsonify({"error": response.json().get("error", "Unknown error")}),
-                    response.status_code,
-                )
-
-            game_data = response.json()
             outbound_game_data = process_game_data(game_data)
+
+            elapsed = time.perf_counter() - start_time
+
+            # Summary log line at INFO level (similar style to pipeline stages)
+            if "date" in request.args:
+                logging.info(
+                    f"[Frontend] {query_date_str}: {len(game_data)} games | {elapsed:.1f}s"
+                )
+            else:
+                # game_id request - show the game_id(s)
+                game_id_display = (
+                    game_ids[0] if len(game_ids) == 1 else f"{len(game_ids)} games"
+                )
+                logging.info(f"[Frontend] {game_id_display} | {elapsed:.1f}s")
 
             return jsonify(outbound_game_data)
 
-        except requests.RequestException as e:
+        except ValueError as e:
             return (
-                jsonify(
-                    {
-                        "error": f"Unable to fetch game data due to a request error: {str(e)}"
-                    }
-                ),
+                jsonify({"error": str(e)}),
+                400,
+            )
+        except Exception as e:
+            logging.exception("Error in get_game_data")
+            return (
+                jsonify({"error": f"Unable to fetch game data: {str(e)}"}),
                 500,
             )
 
