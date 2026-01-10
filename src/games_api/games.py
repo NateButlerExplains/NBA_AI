@@ -76,7 +76,7 @@ def get_normal_data(conn, game_ids, predictor_name, pbp_limit=50):
         WHERE game_id IN ({placeholders})
     )
     SELECT
-        g.game_id, g.date_time_utc, g.home_team, g.away_team, g.status, g.season,
+        g.game_id, g.date_time_utc, g.home_team, g.away_team, g.status, g.status_text, g.season,
         g.season_type, g.pre_game_data_finalized, g.game_data_finalized,
         s.play_id AS state_play_id, s.game_date, s.home, s.away, s.clock, s.period,
         s.home_score, s.away_score, s.total, s.home_margin, s.is_final_state, s.players_data,
@@ -99,6 +99,7 @@ def get_normal_data(conn, game_ids, predictor_name, pbp_limit=50):
             "home_team": row["home_team"],
             "away_team": row["away_team"],
             "status": row["status"],
+            "status_text": row["status_text"],
             "season": row["season"],
             "season_type": row["season_type"],
             "pre_game_data_finalized": row["pre_game_data_finalized"],

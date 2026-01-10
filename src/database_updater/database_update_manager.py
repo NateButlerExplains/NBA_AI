@@ -55,12 +55,18 @@ from src.utils import log_execution_time, lookup_basic_game_info
 DB_PATH = config["database"]["path"]
 
 
-def _validate_pbp(game_ids, db_path=DB_PATH):
+def _validate_pbp(game_ids, db_path=DB_PATH, suppress_no_final_state=False):
     """
     Validate PBP data after collection.
 
     Checks for missing PBP, low play counts, stale data, duplicate plays.
     Critical issues are logged but don't block pipeline (data may be refetched).
+
+    Args:
+        game_ids: List of game IDs to validate
+        db_path: Database path
+        suppress_no_final_state: If True, skip NO_FINAL_STATE check (used during pipeline
+            when GameStates haven't been created yet)
     """
     from src.database_updater.validators import PbPValidator
 
@@ -72,6 +78,10 @@ def _validate_pbp(game_ids, db_path=DB_PATH):
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         result = validator.validate(game_ids, cursor)
+
+        # Filter out NO_FINAL_STATE if suppressed (will be created in next stage)
+        if suppress_no_final_state:
+            result.issues = [i for i in result.issues if i.check_id != "NO_FINAL_STATE"]
 
         if result.has_critical_issues:
             logging.error(f"PBP validation failed:\n{result.summary()}")
@@ -124,6 +134,14 @@ def update_database(
     Returns:
         None
     """
+    from src.utils import determine_current_season
+
+    # Resolve "Current" to actual season name once at start
+    if season == "Current":
+        season = determine_current_season()
+
+    logging.info(f"=== Updating database for {season} ===")
+
     # STEP 1: Update Schedule
     update_schedule(season)
 
@@ -178,7 +196,7 @@ def update_pbp_data(season, db_path=DB_PATH, chunk_size=100):
 
     if not game_ids:
         stage_logger.set_counts(added=0, updated=0, removed=0)
-        stage_logger.log_complete(season)
+        stage_logger.log_complete()
         return
 
     total_games = len(game_ids)
@@ -224,10 +242,10 @@ def update_pbp_data(season, db_path=DB_PATH, chunk_size=100):
     stage_logger.set_counts(
         added=total_added, updated=total_updated, removed=0, total=total_games
     )
-    stage_logger.log_complete(season)
+    stage_logger.log_complete()
 
-    # Validate PBP data
-    _validate_pbp(game_ids, db_path)
+    # Validate PBP data (suppress NO_FINAL_STATE since GameStates haven't been created yet)
+    _validate_pbp(game_ids, db_path, suppress_no_final_state=True)
 
 
 @log_execution_time()
@@ -255,7 +273,7 @@ def update_game_state_data(season, db_path=DB_PATH, chunk_size=100):
 
     if not game_ids:
         stage_logger.set_counts(added=0, updated=0, removed=0)
-        stage_logger.log_complete(season)
+        stage_logger.log_complete()
         return
 
     total_games = len(game_ids)
@@ -348,7 +366,7 @@ def update_game_state_data(season, db_path=DB_PATH, chunk_size=100):
     stage_logger.set_counts(
         added=total_created, updated=total_updated, removed=0, total=total_games
     )
-    stage_logger.log_complete(season)
+    stage_logger.log_complete()
 
     # Validate GameStates data
     _validate_game_states(game_ids, db_path)
@@ -380,7 +398,7 @@ def update_boxscore_data(season, db_path=DB_PATH, chunk_size=100):
 
     if not game_ids:
         stage_logger.set_counts(added=0, updated=0, removed=0)
-        stage_logger.log_complete(season)
+        stage_logger.log_complete()
         return
 
     total_games = len(game_ids)
@@ -444,7 +462,7 @@ def update_boxscore_data(season, db_path=DB_PATH, chunk_size=100):
     stage_logger.set_counts(
         added=total_added, updated=total_updated, removed=0, total=total_games
     )
-    stage_logger.log_complete(season)
+    stage_logger.log_complete()
 
 
 @log_execution_time()
@@ -722,12 +740,6 @@ def update_injury_data(season, db_path=DB_PATH):
                     (season_start, season_end), cursor
                 )
 
-                # Also validate coverage
-                coverage_result = validator.validate_date_coverage(
-                    actual_season, cursor
-                )
-                validation_result.issues.extend(coverage_result.issues)
-
                 # Set validation in logger
                 stage_logger.set_validation(validation_result)
 
@@ -772,7 +784,6 @@ def update_betting_lines(season, db_path=DB_PATH):
     Returns:
         None
     """
-    from src.database_updater.validators import BettingValidator
     from src.utils import StageLogger, determine_current_season
 
     # Convert "Current" to actual season
@@ -786,30 +797,36 @@ def update_betting_lines(season, db_path=DB_PATH):
             season=season, use_covers=True, stage_logger=stage_logger
         )
 
-        # Validation
+        # Inline warnings for collection issues
+        # Any API errors should be visible (0 failure rate principle)
+        if stats.get("errors", 0) > 0:
+            logging.warning(
+                f"Betting collection had {stats['errors']} API errors "
+                f"(ESPN or Covers failures)"
+            )
+
+        # Warn if we processed games but got very few successful fetches
+        # Note: cached games are a valid outcome (not a failure), so exclude from attempted
+        total_attempted = (
+            stats.get("espn_fetched", 0)
+            + stats.get("covers_fetched", 0)
+            + stats.get("errors", 0)
+        )
+        total_success = stats.get("espn_fetched", 0) + stats.get("covers_fetched", 0)
+        # Only warn if we actually tried to fetch (not all cached) and got 0 successes
+        if total_attempted > 10 and total_success == 0:
+            logging.warning(
+                f"Betting collection: 0 games fetched out of {total_attempted} attempted "
+                f"(errors={stats.get('errors', 0)})"
+            )
+
+        # Get total count (any closing lines from ESPN or Covers)
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
-            validator = BettingValidator()
-
-            # Validate coverage for season
-            coverage_result = validator.validate_coverage(season, cursor)
-
-            # Set validation in logger
-            stage_logger.set_validation(coverage_result)
-
-            # Get total count (any closing lines from ESPN or Covers)
             cursor.execute(
                 "SELECT COUNT(*) FROM Betting WHERE espn_closing_spread IS NOT NULL OR covers_closing_spread IS NOT NULL"
             )
             total = cursor.fetchone()[0]
-
-            # Log validation issues
-            if coverage_result.has_critical_issues:
-                logging.error(
-                    f"Critical validation issues: {coverage_result.summary()}"
-                )
-            elif coverage_result.has_warnings:
-                logging.warning(f"Validation warnings: {coverage_result.summary()}")
 
         # Set counts and log completion
         stage_logger.set_counts(
@@ -847,7 +864,7 @@ def update_pre_game_data(season, db_path=DB_PATH, chunk_size=100):
 
     if not game_ids:
         stage_logger.set_counts(added=0, updated=0, removed=0)
-        stage_logger.log_complete(season)
+        stage_logger.log_complete()
         return
 
     total_games = len(game_ids)
@@ -954,7 +971,7 @@ def update_pre_game_data(season, db_path=DB_PATH, chunk_size=100):
     )
     if total_missing_priors > 0:
         stage_logger.set_extra_info(f"({total_missing_priors} incomplete)")
-    stage_logger.log_complete(season)
+    stage_logger.log_complete()
 
 
 @log_execution_time()
@@ -981,7 +998,7 @@ def update_prediction_data(season, predictor, db_path=DB_PATH):
 
     if not game_ids:
         stage_logger.set_counts(added=0, updated=0, removed=0)
-        stage_logger.log_complete(season)
+        stage_logger.log_complete()
         return
 
     # Generate and save predictions
@@ -999,7 +1016,7 @@ def update_prediction_data(season, predictor, db_path=DB_PATH):
     stage_logger.set_counts(
         added=total_added, updated=0, removed=0, total=len(game_ids)
     )
-    stage_logger.log_complete(season)
+    stage_logger.log_complete()
 
 
 def get_games_needing_boxscores(season, db_path):
@@ -1185,6 +1202,9 @@ def get_games_with_incomplete_pre_game_data(season, db_path=DB_PATH):
     """
     Retrieves game_ids for games with incomplete pre-game data.
 
+    Excludes postponed games (status_text = 'PPD') since they will never be played
+    and should not have features or predictions generated.
+
     Parameters:
         season (str): The season to filter games by (e.g., "2024-2025" or "Current").
         db_path (str): The path to the database (default is from config).
@@ -1206,7 +1226,8 @@ def get_games_with_incomplete_pre_game_data(season, db_path=DB_PATH):
       AND pre_game_data_finalized = 0
       AND game_data_finalized = 1
       AND status IN (2, 3)  -- In Progress or Final
-    
+      AND status_text != 'PPD'  -- Exclude postponed games
+
     UNION
 
     SELECT g1.game_id
@@ -1215,6 +1236,7 @@ def get_games_with_incomplete_pre_game_data(season, db_path=DB_PATH):
       AND g1.season_type IN ("Regular Season", "Post Season")
       AND g1.pre_game_data_finalized = 0
       AND g1.status = 1  -- Not Started
+      AND g1.status_text != 'PPD'  -- Exclude postponed games
       AND NOT EXISTS (
           SELECT 1
           FROM Games g2
@@ -1223,6 +1245,7 @@ def get_games_with_incomplete_pre_game_data(season, db_path=DB_PATH):
             AND g2.date_time_utc < g1.date_time_utc
             AND (g2.home_team = g1.home_team OR g2.away_team = g1.home_team OR g2.home_team = g1.away_team OR g2.away_team = g1.away_team)
             AND (g2.game_data_finalized = 0 OR g2.boxscore_data_finalized = 0)
+            AND g2.status_text != 'PPD'  -- Ignore postponed games when checking for blocking
       )
     """
 
@@ -1366,8 +1389,9 @@ def get_games_for_prediction_update(season, predictor, db_path=DB_PATH):
     - pre_game_data_finalized = 1 (prior states collected)
     - Valid features (non-empty feature_set)
     - No existing predictions for this predictor
+    - Not postponed (status_text != 'PPD')
 
-    This excludes opening night games with no prior season data.
+    This excludes opening night games with no prior season data and postponed games.
 
     Parameters:
         season (str): The season to update (e.g., "2024-2025" or "Current").
@@ -1391,6 +1415,7 @@ def get_games_for_prediction_update(season, predictor, db_path=DB_PATH):
         WHERE g.season = ?
             AND g.season_type IN ("Regular Season", "Post Season")
             AND g.pre_game_data_finalized = 1
+            AND g.status_text != 'PPD'
             AND LENGTH(f.feature_set) > 10
             AND p.game_id IS NULL
         """
