@@ -30,11 +30,6 @@ import pandas as pd
 
 from src.config import config
 from src.logging_config import setup_logging
-from src.predictions.prediction_engines.baseline_predictor import BaselinePredictor
-from src.predictions.prediction_engines.ensemble_predictor import EnsemblePredictor
-from src.predictions.prediction_engines.linear_predictor import LinearPredictor
-from src.predictions.prediction_engines.mlp_predictor import MLPPredictor
-from src.predictions.prediction_engines.tree_predictor import TreePredictor
 from src.utils import log_execution_time
 
 # Configuration
@@ -42,26 +37,45 @@ DB_PATH = config["database"]["path"]
 DEFAULT_PREDICTOR = config["default_predictor"]
 PREDICTORS_CONFIG = config["predictors"]
 
-# Define the PREDICTOR_MAP with actual class references
-PREDICTOR_MAP = {
-    "Baseline": BaselinePredictor,
-    "Linear": LinearPredictor,
-    "Tree": TreePredictor,
-    "MLP": MLPPredictor,
-    "Ensemble": EnsemblePredictor,
-}
+
+def _get_predictor_map():
+    """
+    Lazily build the PREDICTOR_MAP to avoid importing heavy dependencies at module load.
+
+    This defers torch/sklearn imports until a predictor is actually requested,
+    saving ~2s startup time when using Baseline predictor.
+    """
+    from src.predictions.prediction_engines.baseline_predictor import BaselinePredictor
+    from src.predictions.prediction_engines.ensemble_predictor import EnsemblePredictor
+    from src.predictions.prediction_engines.linear_predictor import LinearPredictor
+    from src.predictions.prediction_engines.mlp_predictor import MLPPredictor
+    from src.predictions.prediction_engines.tree_predictor import TreePredictor
+
+    return {
+        "Baseline": BaselinePredictor,
+        "Linear": LinearPredictor,
+        "Tree": TreePredictor,
+        "MLP": MLPPredictor,
+        "Ensemble": EnsemblePredictor,
+    }
+
+
+# Valid predictor names (for validation before lazy import)
+VALID_PREDICTORS = {"Baseline", "Linear", "Tree", "MLP", "Ensemble"}
 
 
 def determine_predictor_class(predictor_name):
     if predictor_name is None:
         predictor_name = DEFAULT_PREDICTOR
 
-    if predictor_name not in PREDICTOR_MAP:
+    if predictor_name not in VALID_PREDICTORS:
         raise ValueError(
-            f"Predictor '{predictor_name}' not found in PREDICTOR_MAP. Current options include: {PREDICTOR_MAP.keys()}"
+            f"Predictor '{predictor_name}' not found. Options: {VALID_PREDICTORS}"
         )
 
-    return PREDICTOR_MAP[predictor_name], predictor_name
+    # Lazy import to avoid loading torch/sklearn at module load
+    predictor_map = _get_predictor_map()
+    return predictor_map[predictor_name], predictor_name
 
 
 @log_execution_time(average_over="game_ids")
@@ -81,6 +95,14 @@ def make_pre_game_predictions(game_ids, predictor_name=None, save=True):
 
     # Create the predictions
     pre_game_predictions = predictor_instance.make_pre_game_predictions(game_ids)
+
+    # Warn if some games didn't get predictions
+    if len(pre_game_predictions) < len(game_ids):
+        missing_count = len(game_ids) - len(pre_game_predictions)
+        logging.warning(
+            f"Predictions: {missing_count}/{len(game_ids)} games did not receive predictions "
+            f"(missing features or model error)"
+        )
 
     logging.debug(
         f"Pre-game predictions generated successfully for {len(pre_game_predictions)} games using predictor '{predictor_name}'."
@@ -130,9 +152,9 @@ def make_current_predictions(game_ids, predictor_name=None):
     if predictor_name is None:
         predictor_name = DEFAULT_PREDICTOR
 
-    if predictor_name not in PREDICTOR_MAP:
+    if predictor_name not in VALID_PREDICTORS:
         raise ValueError(
-            f"Predictor '{predictor_name}' not found in PREDICTOR_MAP. Current options include: {PREDICTOR_MAP.keys()}"
+            f"Predictor '{predictor_name}' not found. Options: {VALID_PREDICTORS}"
         )
 
     logging.debug(
@@ -210,16 +232,9 @@ def save_predictions(predictions, predictor_name, db_path=DB_PATH):
 
             if time_until_game < 0:
                 # Allow predictions for past games (for historical analysis)
-                # but log a warning
                 logging.debug(
                     f"Saving prediction for completed game {game_id}: prediction time "
                     f"({prediction_datetime_str}) is after game start time ({game_time})."
-                )
-
-            elif time_until_game < 10:
-                logging.warning(
-                    f"Prediction for game {game_id} made within {time_until_game:.1f} minutes "
-                    f"of game start - very tight window!"
                 )
 
         data = [

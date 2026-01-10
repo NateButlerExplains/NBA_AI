@@ -51,7 +51,7 @@ from src.model_training.modeling_utils import load_featurized_modeling_data
 # Configuration
 DB_PATH = config["database"]["path"]
 PROJECT_ROOT = config["project"]["root"]
-MODEL_VERSION = "1.0"
+MODEL_VERSION = "1.1"
 
 # ============================================================================
 # CURATED HYPERPARAMETERS - Best practices with minimal search

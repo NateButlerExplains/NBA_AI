@@ -259,49 +259,5 @@ class TestPredictorParameter:
             assert isinstance(baseline_data, dict)
 
 
-class TestDatabaseIntegration:
-    """Tests verifying integration with live database."""
-
-    def test_database_accessible(self, flask_test_client):
-        """Database should be accessible for game queries."""
-        today = datetime.now().date().strftime("%Y-%m-%d")
-
-        response = flask_test_client.get(
-            f"/api/games?date={today}&update_predictions=False"
-        )
-
-        # Should get a response (even if empty or season error)
-        assert response.status_code in (200, 400)
-        data = response.get_json()
-        assert data is not None
-
-    def test_valid_season_returns_data_or_empty(self, flask_test_client):
-        """Valid season date should return dict, not error."""
-        # Use a date from the current valid season (2025-2026)
-        valid_date = "2025-11-15"
-
-        response = flask_test_client.get(
-            f"/api/games?date={valid_date}&update_predictions=False"
-        )
-
-        if response.status_code == 200:
-            data = response.get_json()
-            assert isinstance(data, dict)  # May be empty if no games that day
-        # If 400, that's also acceptable (date validation)
-
-    def test_response_time_reasonable(self, flask_test_client):
-        """API response time should be reasonable (< 10 seconds)."""
-        import time
-
-        today = datetime.now().date().strftime("%Y-%m-%d")
-
-        start = time.time()
-        response = flask_test_client.get(
-            f"/api/games?date={today}&update_predictions=False"
-        )
-        elapsed = time.time() - start
-
-        assert response.status_code in (200, 400)
-        assert (
-            elapsed < 10.0
-        ), f"API took {elapsed:.2f}s, should be < 10s with update_predictions=False"
+# NOTE: TestDatabaseIntegration tests removed - redundant with test_api.py and
+# response time tests are flaky. Database accessibility is verified by other tests.

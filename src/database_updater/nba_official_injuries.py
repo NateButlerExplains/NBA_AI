@@ -2,7 +2,11 @@
 nba_official_injuries.py
 
 Fetches and parses NBA's official daily injury report PDFs.
-Source: https://ak-static.cms.nba.com/referee/injury/Injury-Report_{YYYY-MM-DD}_05PM.pdf
+Source: https://ak-static.cms.nba.com/referee/injury/Injury-Report_{YYYY-MM-DD}_{time}.pdf
+
+The NBA publishes injury reports multiple times daily (9AM, 12PM, 3PM, 5PM, 5:30PM, 7PM ET).
+Later reports contain more complete data as teams submit updates throughout the day.
+This module fetches the latest available report (7PM preferred) for most complete coverage.
 
 This provides granular injury data including:
 - body_part: Ankle, Knee, Hamstring, etc.
@@ -14,7 +18,7 @@ Used for: Historical backfill and daily updates to complement ESPN real-time dat
 
 Functions:
     - update_nba_official_injuries(days_back=1): Updates recent injury reports
-    - fetch_injury_report(date): Fetches and parses a single day's PDF
+    - fetch_injury_report(date): Fetches and parses a single day's PDF (latest time)
     - parse_injury_pdf(pdf_content): Parses PDF content to extract injuries
 """
 
@@ -35,12 +39,25 @@ from src.config import config
 
 DB_PATH = config["database"]["path"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-PDF_URL_TEMPLATE = (
-    "https://ak-static.cms.nba.com/referee/injury/Injury-Report_{date}_05PM.pdf"
+
+# NBA changed URL format around Dec 22, 2025 - try new format first, fallback to old
+# Report times available: 9AM, 10AM, 11AM, 12PM, 1PM, 2PM, 3PM, 4PM, 5PM, 5:30PM, 7PM
+# We fetch latest available (7PM) for most complete data, falling back to earlier times
+#
+# NOTE: NBA's CDN returns 403 Forbidden for non-existent files (not 404 as expected).
+# This means 403 can indicate either:
+#   1. File doesn't exist yet (e.g., today's report before 9 AM ET)
+#   2. URL format has changed
+# We distinguish these cases by checking the time of day in Eastern timezone.
+PDF_TIMES_NEW = ["07_00PM", "05_30PM", "05_00PM"]  # Post Dec 22, 2025 format
+PDF_TIMES_OLD = ["07PM", "0530PM", "05PM"]  # Pre Dec 22, 2025 format
+PDF_URL_BASE = (
+    "https://ak-static.cms.nba.com/referee/injury/Injury-Report_{date}_{time}.pdf"
 )
 
 # Cache configuration
 INJURY_CACHE_TODAY_HOURS = 2  # Refetch today's injuries every 2 hours
+FIRST_REPORT_HOUR_ET = 9  # First injury report published at 9 AM Eastern
 
 
 def parse_injury_reason(reason: str) -> tuple:
@@ -166,7 +183,16 @@ def parse_injury_reason(reason: str) -> tuple:
 
 
 def parse_injury_pdf(pdf_content: bytes) -> pd.DataFrame:
-    """Parse NBA injury report PDF content."""
+    """Parse NBA injury report PDF content.
+
+    Handles multiple PDF formats:
+    - Lines with date/time/matchup prefix: "MM/DD/YYYY HH:MM(ET) ABC@XYZ TeamName Player,Name Status Reason"
+    - Lines with time/matchup prefix: "HH:MM(ET) ABC@XYZ TeamName Player,Name Status Reason"
+    - Lines with team name prefix: "TeamName Player,Name Status Reason"
+    - Lines with matchup embedded: "ABC@XYZ TeamName Player,Name Status Reason"
+    - Simple player lines: "Player,Name Status Reason"
+    - Player lines without reason: "Player,Name Status" (reason on next line)
+    """
     try:
         pdf = pdfplumber.open(io.BytesIO(pdf_content))
         all_text = ""
@@ -185,6 +211,43 @@ def parse_injury_pdf(pdf_content: bytes) -> pd.DataFrame:
     current_time = None
     current_matchup = None
 
+    # Known team name patterns (CamelCase without spaces as they appear in PDFs)
+    team_names = [
+        "AtlantaHawks",
+        "BostonCeltics",
+        "BrooklynNets",
+        "CharlotteHornets",
+        "ChicagoBulls",
+        "ClevelandCavaliers",
+        "DallasMavericks",
+        "DenverNuggets",
+        "DetroitPistons",
+        "GoldenStateWarriors",
+        "HoustonRockets",
+        "IndianaPacers",
+        "LosAngelesClippers",
+        "LosAngelesLakers",
+        "LAClippers",
+        "LALakers",
+        "MemphisGrizzlies",
+        "MiamiHeat",
+        "MilwaukeeBucks",
+        "MinnesotaTimberwolves",
+        "NewOrleansPelicans",
+        "NewYorkKnicks",
+        "OklahomaCityThunder",
+        "OrlandoMagic",
+        "Philadelphia76ers",
+        "PhoenixSuns",
+        "PortlandTrailBlazers",
+        "SacramentoKings",
+        "SanAntonioSpurs",
+        "TorontoRaptors",
+        "UtahJazz",
+        "WashingtonWizards",
+    ]
+    team_pattern = "|".join(team_names)
+
     for line in lines:
         line = line.strip()
         if (
@@ -195,36 +258,65 @@ def parse_injury_pdf(pdf_content: bytes) -> pd.DataFrame:
         ):
             continue
 
-        # Match: "MM/DD/YYYY HH:MM(ET) ABC@XYZ PlayerInfo..."
+        rest = line
+
+        # Match: "MM/DD/YYYY HH:MM(ET) ABC@XYZ ..."
         date_match = re.match(
             r"(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2})\(ET\)\s+([A-Z]{3}@[A-Z]{3})\s*(.*)",
-            line,
+            rest,
         )
         if date_match:
             current_date = date_match.group(1)
             current_time = date_match.group(2)
             current_matchup = date_match.group(3)
             rest = date_match.group(4)
-        elif re.match(r"(\d{2}:\d{2})\(ET\)\s+([A-Z]{3}@[A-Z]{3})", line):
-            match = re.match(r"(\d{2}:\d{2})\(ET\)\s+([A-Z]{3}@[A-Z]{3})\s*(.*)", line)
-            if match:
-                current_time = match.group(1)
-                current_matchup = match.group(2)
-                rest = match.group(3)
         else:
-            rest = line
+            # Match: "HH:MM(ET) ABC@XYZ ..."
+            time_match = re.match(
+                r"(\d{2}:\d{2})\(ET\)\s+([A-Z]{3}@[A-Z]{3})\s*(.*)", rest
+            )
+            if time_match:
+                current_time = time_match.group(1)
+                current_matchup = time_match.group(2)
+                rest = time_match.group(3)
+            else:
+                # Match: "ABC@XYZ ..." (matchup at start of line)
+                matchup_match = re.match(r"([A-Z]{3}@[A-Z]{3})\s+(.*)", rest)
+                if matchup_match:
+                    current_matchup = matchup_match.group(1)
+                    rest = matchup_match.group(2)
 
-        # Match player line
+        # Strip team name prefix if present (e.g., "DallasMavericks Cisse,Moussa...")
+        team_strip = re.match(rf"^({team_pattern})\s+(.*)", rest)
+        if team_strip:
+            rest = team_strip.group(2)
+
+        # Match player line with reason: "Player,Name Status Reason"
         player_match = re.match(
             r"^([A-Za-z\'\-]+,\s*[A-Za-z\'\-]+(?:\s*(?:Jr\.?|Sr\.?|III|IV|II|V))?)\s+"
-            r"(Out|Available|Questionable|Doubtful|Probable)\s+(.*)$",
+            r"(Out|Available|Questionable|Doubtful|Probable)\s+(.+)$",
             rest,
         )
-        if player_match and current_date:
+        if not player_match:
+            # Match player line without reason: "Player,Name Status"
+            player_match = re.match(
+                r"^([A-Za-z\'\-]+,\s*[A-Za-z\'\-]+(?:\s*(?:Jr\.?|Sr\.?|III|IV|II|V))?)\s+"
+                r"(Out|Available|Questionable|Doubtful|Probable)$",
+                rest,
+            )
+            if player_match:
+                # Create a fake match with empty reason
+                player_name = player_match.group(1).strip()
+                status = player_match.group(2)
+                reason = ""
+            else:
+                continue
+        else:
             player_name = player_match.group(1).strip()
             status = player_match.group(2)
             reason = player_match.group(3).strip()
 
+        if current_date:
             body_part, injury_type, side, category = parse_injury_reason(reason)
 
             # Include ALL absences (injuries + rest/personal/etc.)
@@ -247,21 +339,87 @@ def parse_injury_pdf(pdf_content: bytes) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-def fetch_injury_report(date: datetime) -> pd.DataFrame:
-    """Fetch and parse injury report for a specific date."""
-    url = PDF_URL_TEMPLATE.format(date=date.strftime("%Y-%m-%d"))
+def fetch_injury_report(date: datetime) -> tuple[pd.DataFrame, str]:
+    """Fetch and parse injury report for a specific date.
 
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        if resp.status_code == 200:
-            df = parse_injury_pdf(resp.content)
-            if len(df) > 0:
-                df["report_date"] = date.strftime("%Y-%m-%d")
-                return df
-    except Exception as e:
-        logging.debug(f"Error fetching {date.strftime('%Y-%m-%d')}: {e}")
+    Tries to fetch the latest available report (7PM > 5:30PM > 5PM) for most complete data.
+    Handles both new URL format (post Dec 2025) and old format.
 
-    return pd.DataFrame()
+    Returns:
+        tuple: (DataFrame with injuries, status string)
+            status can be: "success", "not_found", "not_yet_submitted", "parse_empty", "forbidden", "error"
+    """
+    date_str = date.strftime("%Y-%m-%d")
+
+    # Determine which URL time formats to try based on date
+    # New format uses underscores (07_00PM), old format doesn't (07PM)
+    # Try new format first for recent dates, old format for historical
+    format_cutover = datetime(2025, 12, 22)
+    if date.replace(tzinfo=None) >= format_cutover:
+        time_formats = PDF_TIMES_NEW + PDF_TIMES_OLD  # Try new first, fallback to old
+    else:
+        time_formats = PDF_TIMES_OLD + PDF_TIMES_NEW  # Try old first, fallback to new
+
+    last_status_code = None
+    for time_fmt in time_formats:
+        url = PDF_URL_BASE.format(date=date_str, time=time_fmt)
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            last_status_code = resp.status_code
+            if resp.status_code == 200:
+                # Check for "NOTYETSUBMITTED" pattern before full parsing
+                # This indicates teams haven't submitted their injury data yet
+                try:
+                    pdf = pdfplumber.open(io.BytesIO(resp.content))
+                    sample_text = ""
+                    for page in pdf.pages[:1]:  # Check first page only
+                        text = page.extract_text()
+                        if text:
+                            sample_text += text
+                    pdf.close()
+
+                    if "NOTYETSUBMITTED" in sample_text:
+                        # This is a valid report but teams haven't submitted data
+                        # Try an earlier time - teams may have submitted by then
+                        logging.debug(
+                            f"Injury PDF for {date_str} at {time_fmt}: NOTYETSUBMITTED, trying earlier time"
+                        )
+                        continue
+                except Exception:
+                    pass  # Fall through to regular parsing
+
+                df = parse_injury_pdf(resp.content)
+                if len(df) > 0:
+                    df["report_date"] = date_str
+                    logging.debug(
+                        f"Injury PDF for {date_str}: fetched {time_fmt} with {len(df)} records"
+                    )
+                    return df, "success"
+                else:
+                    # PDF downloaded but parser extracted nothing - try earlier time
+                    logging.debug(
+                        f"Injury PDF for {date_str} at {time_fmt}: parsed 0 records, trying earlier time"
+                    )
+                    continue
+            elif resp.status_code == 403:
+                # 403 means this time slot doesn't exist - try next
+                continue
+            elif resp.status_code == 404:
+                # 404 means no report at this time - try next
+                continue
+        except requests.exceptions.RequestException as e:
+            logging.debug(f"Request error fetching {date_str} at {time_fmt}: {e}")
+            continue
+        except Exception as e:
+            logging.debug(f"Error fetching {date_str} at {time_fmt}: {e}")
+            continue
+
+    # If we exhausted all times and last status was 403/404, check if it's truly not found
+    if last_status_code in (403, 404):
+        return pd.DataFrame(), "not_found"
+
+    # If we got NOTYETSUBMITTED from all times, report that
+    return pd.DataFrame(), "not_yet_submitted"
 
 
 def normalize_player_name(name: str) -> str:
@@ -328,11 +486,13 @@ def _get_injury_fetch_time(
 
 
 def _update_injury_cache(report_date: str, db_path: str = DB_PATH):
-    """Update the injury cache with current fetch timestamp."""
+    """Update the injury cache with current UTC fetch timestamp."""
     _ensure_injury_cache_table(db_path)
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
-        fetch_time = datetime.now().isoformat()
+        from datetime import timezone
+
+        fetch_time = datetime.now(timezone.utc).isoformat()
         cursor.execute(
             """
             INSERT INTO InjuryCache (report_date, last_fetched_at)
@@ -352,9 +512,16 @@ def _should_fetch_injury_date(report_date: datetime, db_path: str = DB_PATH) -> 
     - Today's date: Refetch if last fetch was >2 hours ago
     - Past dates: Once fetched, never refetch (permanent cache)
     """
+    from datetime import timezone
+
+    from src.utils import get_current_eastern_datetime, get_utc_now
+
     date_str = report_date.strftime("%Y-%m-%d")
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    is_today = report_date.date() == today.date()
+    # Use Eastern time for "today" since NBA injury reports use ET
+    today_eastern = get_current_eastern_datetime().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    is_today = report_date.date() == today_eastern.date()
 
     last_fetch = _get_injury_fetch_time(date_str, db_path)
 
@@ -364,7 +531,11 @@ def _should_fetch_injury_date(report_date: datetime, db_path: str = DB_PATH) -> 
 
     if is_today:
         # Today: check if cache expired (2 hours)
-        hours_since_fetch = (datetime.now() - last_fetch).total_seconds() / 3600
+        # Use UTC for cache comparison
+        now_utc = get_utc_now()
+        if last_fetch.tzinfo is None:
+            last_fetch = last_fetch.replace(tzinfo=timezone.utc)
+        hours_since_fetch = (now_utc - last_fetch).total_seconds() / 3600
         if hours_since_fetch > INJURY_CACHE_TODAY_HOURS:
             logging.debug(
                 f"Today's injury cache expired ({hours_since_fetch:.1f}h old) - refetching"
@@ -378,6 +549,78 @@ def _should_fetch_injury_date(report_date: datetime, db_path: str = DB_PATH) -> 
     else:
         # Past date: permanent cache
         return False
+
+
+def _find_dates_missing_data(dates: list, db_path: str = DB_PATH) -> list:
+    """
+    Find dates that are in the cache but have no actual injury data in the database.
+
+    This catches cases where:
+    - A previous fetch got a 403 error and was incorrectly cached
+    - The PDF was empty/unparseable
+    - Some other silent failure occurred
+
+    Args:
+        dates: List of datetime objects to check
+        db_path: Path to database
+
+    Returns:
+        List of datetime objects that should be retried
+    """
+    if not dates:
+        return []
+
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+
+        # Get dates that are in cache
+        date_strs = [dt.strftime("%Y-%m-%d") for dt in dates]
+        placeholders = ",".join("?" * len(date_strs))
+
+        cursor.execute(
+            f"SELECT report_date FROM InjuryCache WHERE report_date IN ({placeholders})",
+            date_strs,
+        )
+        cached_dates = {row[0] for row in cursor.fetchall()}
+
+        if not cached_dates:
+            return []
+
+        # Get dates that have actual injury data
+        cursor.execute(
+            f"""
+            SELECT DISTINCT DATE(report_timestamp) as report_date
+            FROM InjuryReports 
+            WHERE source = 'NBA_Official'
+            AND DATE(report_timestamp) IN ({placeholders})
+            """,
+            date_strs,
+        )
+        dates_with_data = {row[0] for row in cursor.fetchall()}
+
+        # Find dates that are cached but have no data
+        missing_data_dates = cached_dates - dates_with_data
+
+        if missing_data_dates:
+            logging.debug(
+                f"Found {len(missing_data_dates)} cached dates without data: {sorted(missing_data_dates)[:5]}..."
+            )
+
+        # Convert back to datetime objects
+        from src.utils import get_eastern_tz
+
+        eastern = get_eastern_tz()
+
+        result = []
+        for date_str in missing_data_dates:
+            try:
+                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                dt = eastern.localize(dt)
+                result.append(dt)
+            except ValueError:
+                continue
+
+        return result
 
 
 def build_player_lookup(db_path: str = DB_PATH) -> dict:
@@ -402,18 +645,31 @@ def build_player_lookup(db_path: str = DB_PATH) -> dict:
 
 
 def _ensure_injury_unique_constraint(db_path: str = DB_PATH):
-    """Add unique constraint to prevent duplicate injury records."""
+    """Add unique constraint to prevent duplicate injury records.
+
+    Uses (player_name, report_timestamp, source, team) as the semantic key
+    since nba_player_id can be NULL for unmatched players.
+    """
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
-        # Check if constraint already exists by trying to query index
+        # Check if new constraint already exists
         cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_injury_unique'"
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_injury_semantic_unique'"
         )
         if cursor.fetchone():
             return  # Already exists
 
-        # Remove existing duplicates before adding constraint
+        # Remove old constraint if it exists (the one that included nba_player_id)
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_injury_unique'"
+        )
+        if cursor.fetchone():
+            cursor.execute("DROP INDEX idx_injury_unique")
+            logging.debug("Dropped old idx_injury_unique index")
+
+        # Remove existing semantic duplicates before adding constraint
+        # Keep the record with an nba_player_id if possible, otherwise keep the first
         logging.debug(
             "Removing duplicate injury records before adding unique constraint..."
         )
@@ -421,9 +677,9 @@ def _ensure_injury_unique_constraint(db_path: str = DB_PATH):
             """
             DELETE FROM InjuryReports
             WHERE id NOT IN (
-                SELECT MIN(id)
+                SELECT MIN(CASE WHEN nba_player_id IS NOT NULL THEN id ELSE id + 1000000000 END)
                 FROM InjuryReports
-                GROUP BY nba_player_id, player_name, report_timestamp, source, team
+                GROUP BY player_name, report_timestamp, source, COALESCE(team, '')
             )
         """
         )
@@ -431,11 +687,11 @@ def _ensure_injury_unique_constraint(db_path: str = DB_PATH):
         if removed > 0:
             logging.info(f"Removed {removed} duplicate injury records")
 
-        # Add unique constraint via index (SQLite doesn't support ALTER TABLE ADD CONSTRAINT)
+        # Add semantic unique constraint (without nba_player_id which can be NULL)
         cursor.execute(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_injury_unique 
-            ON InjuryReports(nba_player_id, player_name, report_timestamp, source, team)
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_injury_semantic_unique 
+            ON InjuryReports(player_name, report_timestamp, source, COALESCE(team, ''))
         """
         )
         conn.commit()
@@ -518,36 +774,34 @@ def save_injury_records(df: pd.DataFrame, db_path: str = DB_PATH) -> dict:
             }
         )
 
-    # Check which records already exist (for counting)
+    # Use semantic key (player_name, report_timestamp, source, team) for deduplication
+    # This handles NULL nba_player_id correctly
     cursor = conn.cursor()
-    existing_keys = set()
 
+    # Check which records already exist using semantic key
+    existing_keys = set()
     if db_records:
-        # Build list of unique keys to check
-        keys_to_check = [
-            (
-                r["nba_player_id"],
-                r["player_name"],
-                r["report_timestamp"],
-                r["source"],
-                r["team"],
-            )
+        # Build semantic keys to check
+        semantic_keys = [
+            (r["player_name"], r["report_timestamp"], r["source"], r["team"] or "")
             for r in db_records
         ]
 
-        placeholders = ",".join(["(?,?,?,?,?)"] * len(keys_to_check))
-        flat_params = [item for key in keys_to_check for item in key]
+        # Query in batches if needed
+        for i in range(0, len(semantic_keys), 500):
+            batch = semantic_keys[i : i + 500]
+            placeholders = ",".join(["(?,?,?,?)"] * len(batch))
+            flat_params = [item for key in batch for item in key]
 
-        cursor.execute(
-            f"""
-            SELECT nba_player_id, player_name, report_timestamp, source, team
-            FROM InjuryReports
-            WHERE (nba_player_id, player_name, report_timestamp, source, team) IN (VALUES {placeholders})
-        """,
-            flat_params,
-        )
-
-        existing_keys = set(cursor.fetchall())
+            cursor.execute(
+                f"""
+                SELECT player_name, report_timestamp, source, COALESCE(team, '')
+                FROM InjuryReports
+                WHERE (player_name, report_timestamp, source, COALESCE(team, '')) IN (VALUES {placeholders})
+            """,
+                flat_params,
+            )
+            existing_keys.update(cursor.fetchall())
 
     # Count added vs updated
     added_count = 0
@@ -555,18 +809,17 @@ def save_injury_records(df: pd.DataFrame, db_path: str = DB_PATH) -> dict:
 
     for record in db_records:
         key = (
-            record["nba_player_id"],
             record["player_name"],
             record["report_timestamp"],
             record["source"],
-            record["team"],
+            record["team"] or "",
         )
         if key in existing_keys:
             updated_count += 1
         else:
             added_count += 1
 
-    # Use INSERT OR REPLACE to handle duplicates
+    # Use INSERT OR REPLACE with semantic unique index
     records_df = pd.DataFrame(db_records)
 
     # Pandas to_sql doesn't support OR REPLACE, so use executemany
@@ -605,9 +858,18 @@ def update_nba_official_injuries(
     Returns:
         dict: {"added": int, "updated": int, "total": int}
     """
-    from src.utils import determine_current_season, get_season_start_date
+    from src.utils import (
+        determine_current_season,
+        get_current_eastern_datetime,
+        get_eastern_tz,
+        get_season_start_date,
+    )
 
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    # Use Eastern time for "today" since NBA operates in ET
+    eastern = get_eastern_tz()
+    today = get_current_eastern_datetime().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
 
     # If season provided, fetch all missing dates in season
     if season:
@@ -617,12 +879,17 @@ def update_nba_official_injuries(
         if season == current_season:
             # Current season: from actual season start to today
             season_start = get_season_start_date(season, db_path)
+            # Make timezone-aware if naive
+            if season_start.tzinfo is None:
+                season_start = eastern.localize(season_start)
             season_end = today
         else:
             # Historical season: from actual season start to May 31 next year
             season_start = get_season_start_date(season, db_path)
+            if season_start.tzinfo is None:
+                season_start = eastern.localize(season_start)
             season_end_year = int(season.split("-")[1])
-            season_end = datetime(season_end_year, 5, 31)
+            season_end = eastern.localize(datetime(season_end_year, 5, 31))
 
         # Generate all dates in season
         all_dates = []
@@ -640,10 +907,20 @@ def update_nba_official_injuries(
     # Filter dates using smart caching:
     # - Today: refetch if >2 hours old
     # - Past dates: permanent cache (only fetch if never fetched)
-    dates = [dt for dt in all_dates if _should_fetch_injury_date(dt, db_path)]
+    dates_to_fetch = [dt for dt in all_dates if _should_fetch_injury_date(dt, db_path)]
+
+    # Also check for dates that were cached but have NO data in the database
+    # This catches cases where fetching failed silently (e.g., 403 errors)
+    dates_missing_data = _find_dates_missing_data(all_dates, db_path)
+
+    # Combine and deduplicate
+    dates = list(set(dates_to_fetch + dates_missing_data))
+    dates.sort()  # Process in chronological order
 
     if len(dates) == 0:
-        logging.debug(f"All {len(all_dates)} days already cached, nothing to fetch")
+        logging.debug(
+            f"All {len(all_dates)} days already cached with data, nothing to fetch"
+        )
         conn.close()
 
         # Get total count for reporting
@@ -656,13 +933,19 @@ def update_nba_official_injuries(
 
         return {"added": 0, "updated": 0, "total": total}
 
+    if dates_missing_data:
+        logging.info(
+            f"Found {len(dates_missing_data)} cached dates with no injury data - will retry"
+        )
+
     logging.debug(
-        f"Checking NBA Official injury reports for {len(dates)} days ({len(all_dates) - len(dates)} cached)..."
+        f"Checking NBA Official injury reports for {len(dates)} days ({len(all_dates) - len(dates)} cached with data)..."
     )
 
     total_added = 0
     total_updated = 0
     api_calls = 0
+    forbidden_count = 0
 
     # Use tqdm for progress bar only if fetching more than 7 days
     iterator = (
@@ -674,14 +957,14 @@ def update_nba_official_injuries(
     for dt in iterator:
         date_str = dt.strftime("%Y-%m-%d")
 
-        # Fetch the report
-        df = fetch_injury_report(dt)
+        # Fetch the report (now returns tuple with status)
+        df, status = fetch_injury_report(dt)
         api_calls += 1
 
         if stage_logger:
             stage_logger.log_api_call()
 
-        if not df.empty:
+        if status == "success" and not df.empty:
             counts = save_injury_records(df, db_path)
             total_added += counts["added"]
             total_updated += counts["updated"]
@@ -691,17 +974,91 @@ def update_nba_official_injuries(
             )
             if isinstance(iterator, tqdm):
                 iterator.set_postfix({"status": "saved", "records": counts["total"]})
-        else:
-            logging.debug(f"NBA Official injuries for {date_str}: no report available")
+
+            # Only cache successful fetches with data
+            _update_injury_cache(date_str, db_path)
+
+        elif status == "not_found":
+            logging.debug(
+                f"NBA Official injuries for {date_str}: no report available (off-day)"
+            )
             if isinstance(iterator, tqdm):
                 iterator.set_postfix({"status": "not found"})
+            # Cache 404s - these are legitimate "no game day" dates
+            _update_injury_cache(date_str, db_path)
 
-        # Update cache timestamp for this date (whether we got data or not)
-        _update_injury_cache(date_str, db_path)
+        elif status == "not_yet_submitted":
+            logging.debug(
+                f"NBA Official injuries for {date_str}: teams have not yet submitted data"
+            )
+            if isinstance(iterator, tqdm):
+                iterator.set_postfix({"status": "not submitted"})
+            # Cache this - teams didn't submit for this date (normal for early reports)
+            _update_injury_cache(date_str, db_path)
+
+        elif status == "forbidden":
+            forbidden_count += 1
+            logging.debug(f"NBA Official injuries for {date_str}: 403 Forbidden")
+            if isinstance(iterator, tqdm):
+                iterator.set_postfix({"status": "forbidden"})
+            # DON'T cache 403s - we should retry these later
+
+        else:
+            logging.debug(
+                f"NBA Official injuries for {date_str}: fetch failed ({status})"
+            )
+            if isinstance(iterator, tqdm):
+                iterator.set_postfix({"status": status})
+            # DON'T cache errors - we should retry these later
 
         time.sleep(0.1)  # Be nice to NBA servers
 
     conn.close()
+
+    # Log warning if we got 403 errors - but suppress if it's just today before 9 AM ET
+    if forbidden_count > 0:
+        # Check if all 403s are from today and it's before first report time
+        # NBA CDN returns 403 for non-existent files (not 404), so this is expected
+        is_before_first_report = (
+            today.hour < FIRST_REPORT_HOUR_ET
+        )  # today is already in Eastern time
+        today_str = today.strftime("%Y-%m-%d")
+        all_403s_are_today = (
+            forbidden_count == 1
+            and len(dates) == 1
+            and dates[0].strftime("%Y-%m-%d") == today_str
+        )
+
+        if all_403s_are_today and is_before_first_report:
+            logging.debug(
+                f"Injury reports: Today's report not yet published "
+                f"(before {FIRST_REPORT_HOUR_ET} AM ET, NBA CDN returns 403 for non-existent files)"
+            )
+        else:
+            logging.warning(
+                f"Injury reports: {forbidden_count} dates returned 403 Forbidden. "
+                f"NBA CDN uses 403 for non-existent files, but this many 403s may indicate "
+                f"a URL format change. Check PDF_TIMES_NEW and PDF_TIMES_OLD in nba_official_injuries.py"
+            )
+
+    # Log warning if we attempted fetches but collected nothing (skip if before first report)
+    if len(dates) > 0 and total_added == 0 and total_updated == 0:
+        is_before_first_report = today.hour < FIRST_REPORT_HOUR_ET
+        today_str = today.strftime("%Y-%m-%d")
+        all_dates_are_today = (
+            len(dates) == 1 and dates[0].strftime("%Y-%m-%d") == today_str
+        )
+
+        if all_dates_are_today and is_before_first_report:
+            # Don't warn - this is expected before first report time
+            logging.debug(
+                f"Injury reports: No data for today yet (before {FIRST_REPORT_HOUR_ET} AM ET)"
+            )
+        else:
+            logging.warning(
+                f"Injury reports: Attempted {len(dates)} dates but collected 0 records. "
+                f"This may indicate an API or parsing issue."
+            )
 
     # Get total count
     with sqlite3.connect(db_path) as conn:

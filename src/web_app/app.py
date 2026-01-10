@@ -102,7 +102,6 @@ def create_app(predictor):
         Returns:
             Response: JSON response containing processed game data or error message.
         """
-        start_time = time.perf_counter()
         try:
             predictor = app.config["PREDICTOR"]
 
@@ -117,11 +116,13 @@ def create_app(predictor):
                     query_date_str = inbound_query_date_str
 
                 # Call get_games_for_date directly (no HTTP overhead)
+                # Note: This triggers database updates which log their own timing
                 game_data = get_games_for_date(
                     query_date_str,
                     predictor=predictor,
                     update_predictions=True,
                 )
+                log_context = query_date_str
 
             elif "game_id" in request.args:
                 game_id = request.args.get("game_id")
@@ -140,6 +141,9 @@ def create_app(predictor):
                     predictor=predictor,
                     update_predictions=True,
                 )
+                log_context = (
+                    game_ids[0] if len(game_ids) == 1 else f"{len(game_ids)} games"
+                )
 
             else:
                 return (
@@ -147,21 +151,18 @@ def create_app(predictor):
                     400,
                 )
 
-            outbound_game_data = process_game_data(game_data)
+            # Get user timezone from request (passed from browser)
+            user_tz = request.args.get("user_tz", None)
 
-            elapsed = time.perf_counter() - start_time
+            # Time only the frontend processing (data transformation + JSON serialization)
+            frontend_start = time.perf_counter()
+            outbound_game_data = process_game_data(game_data, user_tz=user_tz)
+            frontend_elapsed = time.perf_counter() - frontend_start
 
             # Summary log line at INFO level (similar style to pipeline stages)
-            if "date" in request.args:
-                logging.info(
-                    f"[Frontend] {query_date_str}: {len(game_data)} games | {elapsed:.1f}s"
-                )
-            else:
-                # game_id request - show the game_id(s)
-                game_id_display = (
-                    game_ids[0] if len(game_ids) == 1 else f"{len(game_ids)} games"
-                )
-                logging.info(f"[Frontend] {game_id_display} | {elapsed:.1f}s")
+            logging.info(
+                f"[Frontend] {log_context}: {len(game_data)} games | {frontend_elapsed:.1f}s"
+            )
 
             return jsonify(outbound_game_data)
 

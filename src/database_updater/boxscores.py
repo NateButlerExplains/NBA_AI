@@ -311,7 +311,7 @@ def get_boxscores(
     Returns:
         dict: {game_id: (player_records, team_records)}
     """
-    logging.info(f"Fetching boxscores for {len(game_ids)} games...")
+    logging.debug(f"Fetching boxscores for {len(game_ids)} games...")
 
     # Get game statuses if requested
     game_statuses = {}
@@ -352,7 +352,12 @@ def get_boxscores(
     successful_count = sum(1 for data in results.values() if data[0] or data[1])
     failed_count = len(game_ids) - successful_count
 
-    logging.info(f"Fetched {successful_count} boxscores ({failed_count} failed)")
+    if failed_count > 0:
+        logging.warning(
+            f"Boxscore collection: {failed_count}/{len(game_ids)} games returned no data"
+        )
+    else:
+        logging.debug(f"Fetched {successful_count} boxscores successfully")
     return results
 
 
@@ -396,7 +401,7 @@ def save_boxscores(
     """
     import sqlite3
 
-    logging.info(f"Saving boxscores for {len(boxscore_data)} games...")
+    logging.debug(f"Saving boxscores for {len(boxscore_data)} games...")
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()

@@ -117,7 +117,7 @@ def fetch_game_data(
                 return game_id, actions_sorted
 
             except requests.exceptions.HTTPError as http_err:
-                logging.info(f"Game ID {game_id} - HTTP error: {http_err}")
+                logging.warning(f"Game ID {game_id} - HTTP error: {http_err}")
             except Exception as e:
                 logging.warning(f"Game ID {game_id} - API call error: {e}")
 
@@ -137,7 +137,7 @@ def get_pbp(game_ids, pbp_endpoint="both", stage_logger=None):
     Returns:
     dict: A dictionary mapping game IDs to lists of sorted actions. If an error occurs when fetching data for a game, the list of actions will be empty.
     """
-    logging.info(
+    logging.debug(
         f"Fetching play-by-play data for {len(game_ids)} games using pbp_endpoint: {pbp_endpoint}."
     )
     if isinstance(game_ids, str):
@@ -200,6 +200,14 @@ def get_pbp(game_ids, pbp_endpoint="both", stage_logger=None):
                     pbar.update(1)
 
     logging.debug(f"Fetched play-by-play data for {len(results)} games.")
+
+    # Track and warn about empty responses
+    empty_count = sum(1 for game_id, actions in results.items() if not actions)
+    if empty_count > 0:
+        logging.warning(
+            f"PBP collection: {empty_count}/{len(results)} games returned 0 actions from API"
+        )
+
     for game in results:
         if results[game]:
             logging.debug(f"Game ID: {game} - {len(results[game])} actions")

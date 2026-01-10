@@ -52,13 +52,15 @@ def get_user_datetime(as_eastern_tz=False):
 
 
 @log_execution_time(average_over="games")
-def process_game_data(games):
+def process_game_data(games, user_tz=None):
     """
     Processes game data for display, including team names, logos, date and time display,
     condensed play-by-play logs, predictions, and player data.
 
     Args:
         games (dict): A dictionary containing game data.
+        user_tz (str, optional): User's timezone in IANA format (e.g., "America/New_York").
+                                 If None, falls back to server's local timezone.
 
     Returns:
         list of dict: List of dictionaries with the processed game data.
@@ -66,11 +68,11 @@ def process_game_data(games):
     outbound_games = []
 
     for game_id, game in games.items():
-        # Parse UTC datetime and convert to local for display
-        from src.utils import parse_utc_datetime, utc_to_local
+        # Parse UTC datetime and convert to user's timezone for display
+        from src.utils import parse_utc_datetime, utc_to_user_tz
 
         utc_dt = parse_utc_datetime(game["date_time_utc"])
-        local_dt = utc_to_local(utc_dt)
+        local_dt = utc_to_user_tz(utc_dt, user_tz)
 
         # Basic game information
         outbound_game_data = {
@@ -104,8 +106,8 @@ def process_game_data(games):
             outbound_game_data["away_full_name"]
         )
 
-        # Format date and time for display
-        outbound_game_data.update(_format_date_time_display(game))
+        # Format date and time for display (pass user_tz for Today/Tomorrow logic)
+        outbound_game_data.update(_format_date_time_display(game, user_tz))
 
         # Extract predictions
         predictions = game.get("predictions", {})
@@ -221,12 +223,14 @@ def _generate_logo_url(team_name):
     return logo_url
 
 
-def _format_date_time_display(game):
+def _format_date_time_display(game, user_tz=None):
     """
     Formats the date and time display for a game.
 
     Args:
         game (dict): A dictionary containing game data.
+        user_tz (str, optional): User's timezone in IANA format (e.g., "America/New_York").
+                                 If None, falls back to server's local timezone.
 
     Returns:
         dict: A dictionary containing the formatted date and time display.
@@ -262,16 +266,20 @@ def _format_date_time_display(game):
         return {"datetime_display": datetime_display}
 
     # Handle cases for not started or completed games
-    # Data is now stored as actual UTC
-    from src.utils import parse_utc_datetime, utc_to_local
+    # Data is now stored as actual UTC - convert to user's timezone
+    from src.utils import get_utc_now, parse_utc_datetime, utc_to_user_tz
 
     game_date_time_utc = game["date_time_utc"]
     utc_dt = parse_utc_datetime(game_date_time_utc)
-    # Convert to user's local timezone
-    game_date_time_local = utc_to_local(utc_dt)
+    # Convert to user's timezone for display
+    game_date_time_local = utc_to_user_tz(utc_dt, user_tz)
 
     game_date = game_date_time_local.date()
-    current_date = datetime.now().date()
+
+    # Get current date in user's timezone (not server's local time)
+    # This ensures "Today/Tomorrow/Yesterday" is correct for the user
+    current_datetime_user = utc_to_user_tz(get_utc_now(), user_tz)
+    current_date = current_datetime_user.date()
     next_date = current_date + timedelta(days=1)
     previous_date = current_date - timedelta(days=1)
 

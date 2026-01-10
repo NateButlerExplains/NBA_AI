@@ -799,7 +799,8 @@ python scripts/migrate_betting_schema.py --database data/NBA_AI_dev.sqlite --exe
                     {
                         "gameId": "0022400061",
                         "gameStatus": 3,                    // 1=scheduled, 2=in progress, 3=final
-                        "gameDateTimeEst": "2024-10-22T19:30:00Z",
+                        "gameDateTimeUTC": "2024-10-22T23:30:00Z",  // UTC time stored in database
+                        "gameDateTimeEst": "2024-10-22T19:30:00",   // EST time (not used)
                         "homeTeam": {"teamTricode": "BOS"},
                         "awayTeam": {"teamTricode": "NYK"}
                     }
@@ -809,6 +810,8 @@ python scripts/migrate_betting_schema.py --database data/NBA_AI_dev.sqlite --exe
     }
 }
 ```
+
+**Note**: The NBA API provides both `gameDateTimeUTC` (used) and `gameDateTimeEst` (ignored). We store only the UTC value.
 
 **Rate Limiting**: None observed, but uses retry logic  
 **Saved To**: `Games` table

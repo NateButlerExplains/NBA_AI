@@ -8,7 +8,10 @@ Tests predictor instantiation and prediction generation.
 import pytest
 
 from src.predictions.prediction_engines.baseline_predictor import BaselinePredictor
-from src.predictions.prediction_manager import PREDICTOR_MAP, determine_predictor_class
+from src.predictions.prediction_manager import (
+    _get_predictor_map,
+    determine_predictor_class,
+)
 
 
 class TestDeterminePredictorClass:
@@ -16,9 +19,10 @@ class TestDeterminePredictorClass:
 
     def test_valid_predictor_names(self):
         """All registered predictors should be found."""
-        for name in PREDICTOR_MAP.keys():
+        predictor_map = _get_predictor_map()
+        for name in predictor_map.keys():
             predictor_class, returned_name = determine_predictor_class(name)
-            assert predictor_class == PREDICTOR_MAP[name]
+            assert predictor_class == predictor_map[name]
             assert returned_name == name
 
     def test_none_returns_default(self):
@@ -26,14 +30,15 @@ class TestDeterminePredictorClass:
         from src.config import config
 
         default = config["default_predictor"]
+        predictor_map = _get_predictor_map()
 
         predictor_class, name = determine_predictor_class(None)
         assert name == default
-        assert predictor_class == PREDICTOR_MAP[default]
+        assert predictor_class == predictor_map[default]
 
     def test_invalid_predictor_raises(self):
         """Invalid predictor name should raise ValueError."""
-        with pytest.raises(ValueError, match="not found in PREDICTOR_MAP"):
+        with pytest.raises(ValueError, match="not found"):
             determine_predictor_class("InvalidPredictor")
 
 
@@ -81,12 +86,14 @@ class TestPredictorMap:
 
     def test_all_predictors_registered(self):
         """All expected predictors should be in the map."""
+        predictor_map = _get_predictor_map()
         expected = {"Baseline", "Linear", "Tree", "MLP", "Ensemble"}
-        assert set(PREDICTOR_MAP.keys()) == expected
+        assert set(predictor_map.keys()) == expected
 
     def test_predictors_are_classes(self):
         """All values should be class types."""
-        for name, cls in PREDICTOR_MAP.items():
+        predictor_map = _get_predictor_map()
+        for name, cls in predictor_map.items():
             assert isinstance(cls, type), f"{name} is not a class"
 
 

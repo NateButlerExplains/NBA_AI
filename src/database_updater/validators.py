@@ -351,70 +351,6 @@ class ScheduleValidator(BaseValidator):
 
         return result
 
-    def validate_season_coverage(self, season: str, cursor) -> ValidationResult:
-        """
-        Validate game count for entire season (for completed historical seasons).
-
-        Args:
-            season: Season string (e.g., "2024-2025")
-            cursor: Database cursor
-
-        Returns:
-            ValidationResult with coverage issues
-        """
-        result = ValidationResult(
-            stage_name=f"{self.stage_name} ({season})",
-            total_checked=1,  # One season checked
-        )
-
-        # Count completed games
-        cursor.execute(
-            """
-            SELECT COUNT(*) FROM Games
-            WHERE season = ?
-            AND season_type IN ('Regular Season', 'Post Season')
-            AND status = 3  -- Final
-        """,
-            (season,),
-        )
-        completed_count = cursor.fetchone()[0]
-
-        # Expected counts
-        EXPECTED_REGULAR_SEASON = 1230  # 82 games * 30 teams / 2
-        EXPECTED_WITH_PLAYOFFS = 1320  # Regular + ~90 playoff games
-
-        # Determine if season is historical (completed)
-        from datetime import datetime
-
-        current_year = datetime.now().year
-        season_end_year = int(season.split("-")[1])
-        is_historical = season_end_year < current_year
-
-        # Only validate historical seasons
-        if is_historical:
-            if completed_count < 100:
-                result.issues.append(
-                    ValidationIssue(
-                        check_id="SEASON_CRITICALLY_LOW",
-                        severity=Severity.CRITICAL,
-                        message=f"Historical season has only {completed_count} games (expected ~{EXPECTED_REGULAR_SEASON})",
-                        count=completed_count,
-                        fixable=False,
-                    )
-                )
-            elif completed_count < 1000:
-                result.issues.append(
-                    ValidationIssue(
-                        check_id="SEASON_INCOMPLETE",
-                        severity=Severity.WARNING,
-                        message=f"Historical season has {completed_count} games (expected ~{EXPECTED_REGULAR_SEASON} for regular season)",
-                        count=completed_count,
-                        fixable=False,
-                    )
-                )
-
-        return result
-
 
 class PlayerValidator(BaseValidator):
     """Validator for Players stage (Players table)."""
@@ -464,74 +400,8 @@ class PlayerValidator(BaseValidator):
                 )
             )
 
-        # Check 2: Duplicate person_ids (shouldn't happen with unique constraint)
-        cursor.execute(
-            f"""
-            SELECT person_id, COUNT(*) as cnt
-            FROM Players
-            WHERE person_id IN ({placeholders})
-            GROUP BY person_id
-            HAVING cnt > 1
-        """,
-            player_ids,
-        )
-        dup_results = cursor.fetchall()
-
-        if dup_results:
-            dup_ids = [row[0] for row in dup_results]
-            result.issues.append(
-                ValidationIssue(
-                    check_id="DUPLICATE_PLAYERS",
-                    severity=Severity.CRITICAL,
-                    message="Duplicate person_ids found in Players table",
-                    count=len(dup_ids),
-                    sample_data=[str(id) for id in dup_ids[:5]],
-                    fixable=True,
-                )
-            )
-
-        return result
-
-    def validate_total_count(self, cursor) -> ValidationResult:
-        """
-        Validate total player count is reasonable.
-
-        Args:
-            cursor: Database cursor
-
-        Returns:
-            ValidationResult with count issues
-        """
-        result = ValidationResult(stage_name=self.stage_name, total_checked=1)
-
-        # Count total players
-        cursor.execute("SELECT COUNT(*) FROM Players")
-        total_count = cursor.fetchone()[0]
-
-        # Expected: ~500+ active players in NBA
-        MIN_EXPECTED_PLAYERS = 400
-        MAX_EXPECTED_PLAYERS = 10000  # All-time with historical
-
-        if total_count < MIN_EXPECTED_PLAYERS:
-            result.issues.append(
-                ValidationIssue(
-                    check_id="LOW_PLAYER_COUNT",
-                    severity=Severity.CRITICAL,
-                    message=f"Only {total_count} players in database (expected ≥{MIN_EXPECTED_PLAYERS})",
-                    count=total_count,
-                    fixable=False,
-                )
-            )
-        elif total_count > MAX_EXPECTED_PLAYERS:
-            result.issues.append(
-                ValidationIssue(
-                    check_id="HIGH_PLAYER_COUNT",
-                    severity=Severity.WARNING,
-                    message=f"Unusually high player count: {total_count} (expected ≤{MAX_EXPECTED_PLAYERS})",
-                    count=total_count,
-                    fixable=False,
-                )
-            )
+        # Note: DUPLICATE_PLAYERS check removed - Players table has UNIQUE constraint on person_id
+        # Note: validate_total_count() moved to health check CLI - not needed for inline validation
 
         return result
 
@@ -607,14 +477,16 @@ class InjuryValidator(BaseValidator):
                 )
             )
 
-        # Check 3: Duplicate records (should be 0 after unique constraint)
+        # Check 3: Duplicate records (semantic duplicates by player_name/timestamp/team)
+        # Note: Uses player_name + report_timestamp + team as the semantic key
+        # because nba_player_id can be NULL for unmatched players
         cursor.execute(
             """
-            SELECT nba_player_id, player_name, report_timestamp, source, team, COUNT(*) as cnt
+            SELECT player_name, report_timestamp, team, COUNT(*) as cnt
             FROM InjuryReports
             WHERE source = 'NBA_Official'
             AND report_timestamp BETWEEN ? AND ?
-            GROUP BY nba_player_id, player_name, report_timestamp, source, team
+            GROUP BY player_name, report_timestamp, COALESCE(team, '')
             HAVING cnt > 1
         """,
             (start_date, end_date),
@@ -626,77 +498,14 @@ class InjuryValidator(BaseValidator):
                 ValidationIssue(
                     check_id="DUPLICATE_INJURIES",
                     severity=Severity.CRITICAL,
-                    message="Duplicate injury records found (unique constraint violated)",
+                    message="Duplicate injury records found (same player/date/team)",
                     count=len(dup_results),
-                    sample_data=[f"{r[1]}:{r[2]}" for r in dup_results[:5]],
+                    sample_data=[f"{r[0]}:{r[1]}" for r in dup_results[:5]],
                     fixable=True,
                 )
             )
 
-        return result
-
-    def validate_date_coverage(self, season: str, cursor) -> ValidationResult:
-        """
-        Validate injury report coverage for a season.
-
-        Args:
-            season: Season string (e.g., "2024-2025")
-            cursor: Database cursor
-
-        Returns:
-            ValidationResult with coverage issues
-        """
-        from datetime import datetime
-
-        result = ValidationResult(
-            stage_name=f"{self.stage_name} ({season})", total_checked=1
-        )
-
-        # Get season date range
-        current_year = datetime.now().year
-        season_start_year = int(season.split("-")[0])
-        season_end_year = int(season.split("-")[1])
-
-        season_start = f"{season_start_year}-10-15"
-
-        # Current season: up to today, Historical: up to May 31
-        if season_end_year >= current_year:
-            season_end = datetime.now().strftime("%Y-%m-%d")
-        else:
-            season_end = f"{season_end_year}-05-31"
-
-        # Count days with reports
-        cursor.execute(
-            """
-            SELECT COUNT(DISTINCT DATE(report_timestamp))
-            FROM InjuryReports
-            WHERE source = 'NBA_Official'
-            AND report_timestamp BETWEEN ? AND ?
-        """,
-            (season_start, season_end),
-        )
-        days_with_data = cursor.fetchone()[0]
-
-        # Calculate expected days (roughly 7 months * 30 days = 210 days)
-        from datetime import datetime, timedelta
-
-        start_dt = datetime.strptime(season_start, "%Y-%m-%d")
-        end_dt = datetime.strptime(season_end, "%Y-%m-%d")
-        total_days = (end_dt - start_dt).days + 1
-
-        # Allow for some missing days (not every day has games)
-        MIN_COVERAGE_PCT = 0.5  # Expect at least 50% of days to have reports
-
-        if days_with_data < total_days * MIN_COVERAGE_PCT:
-            result.issues.append(
-                ValidationIssue(
-                    check_id="LOW_INJURY_COVERAGE",
-                    severity=Severity.WARNING,
-                    message=f"Low injury report coverage: {days_with_data}/{total_days} days ({days_with_data/total_days*100:.1f}%)",
-                    count=total_days - days_with_data,
-                    fixable=False,
-                )
-            )
+        # Note: validate_date_coverage() moved to health check CLI - not needed for inline validation
 
         return result
 
@@ -874,62 +683,6 @@ class BettingValidator(BaseValidator):
 
         return result
 
-    def validate_coverage(self, season: str, cursor) -> ValidationResult:
-        """
-        Validate betting coverage for a season.
-
-        Checks if completed games have betting data (any closing lines).
-        Expected: ~80-90% coverage (not all games have lines).
-        """
-        result = ValidationResult(
-            stage_name=f"{self.stage_name} ({season})", total_checked=1
-        )
-
-        # Count completed games
-        cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM Games
-            WHERE season = ?
-            AND season_type IN ('Regular Season', 'Post Season')
-            AND status = 3  -- Final
-        """,
-            (season,),
-        )
-        total_completed = cursor.fetchone()[0]
-
-        # Count games with any closing lines (ESPN or Covers)
-        cursor.execute(
-            """
-            SELECT COUNT(DISTINCT g.game_id)
-            FROM Games g
-            INNER JOIN Betting b ON g.game_id = b.game_id
-            WHERE g.season = ?
-            AND g.season_type IN ('Regular Season', 'Post Season')
-            AND g.status = 3  -- Final
-            AND (b.espn_closing_spread IS NOT NULL OR b.covers_closing_spread IS NOT NULL)
-        """,
-            (season,),
-        )
-        betting_count = cursor.fetchone()[0]
-
-        if total_completed > 0:
-            coverage_pct = betting_count / total_completed
-
-            # Expect at least 80% coverage
-            if coverage_pct < 0.80:
-                result.issues.append(
-                    ValidationIssue(
-                        check_id="LOW_BETTING_COVERAGE",
-                        severity=Severity.WARNING,
-                        message=f"Low betting coverage: {betting_count}/{total_completed} games ({coverage_pct*100:.1f}%)",
-                        count=total_completed - betting_count,
-                        fixable=False,
-                    )
-                )
-
-        return result
-
 
 class PbPValidator(BaseValidator):
     """
@@ -979,12 +732,15 @@ class PbPValidator(BaseValidator):
         )
         missing_pbp = [row[0] for row in cursor.fetchall()]
 
-        # Check 2: Games with suspiciously low play counts
+        # Check 2: Completed games with suspiciously low play counts
+        # Note: In-progress games naturally have few plays, so only check completed games
         cursor.execute(
             f"""
             SELECT p.game_id, COUNT(*) as play_count
             FROM PbP_Logs p
+            JOIN Games g ON p.game_id = g.game_id
             WHERE p.game_id IN ({placeholders})
+            AND g.status = 3  -- Only check completed games
             GROUP BY p.game_id
             HAVING play_count < 200
             """,
@@ -1349,7 +1105,8 @@ class BoxscoresValidator(BaseValidator):
                 )
             )
 
-        # Check 3: Player count per team (should be 5-15 players)
+        # Check 3: Player count per team (should be 5-18 players)
+        # Note: Teams can have >15 players due to two-way contracts, 10-day contracts, etc.
         cursor.execute(
             f"""
             SELECT pb.game_id, pb.team_id, COUNT(*) as player_count
@@ -1358,7 +1115,7 @@ class BoxscoresValidator(BaseValidator):
             WHERE pb.game_id IN ({placeholders})
             AND g.status = 3  -- Only check completed games
             GROUP BY pb.game_id, pb.team_id
-            HAVING player_count < 5 OR player_count > 15
+            HAVING player_count < 5 OR player_count > 18
         """,
             game_ids,
         )
@@ -1371,7 +1128,7 @@ class BoxscoresValidator(BaseValidator):
                 ValidationIssue(
                     check_id="INVALID_PLAYER_COUNT",
                     severity=Severity.WARNING,
-                    message="Teams with unusual player count (expected 5-15)",
+                    message="Teams with unusual player count (expected 5-18)",
                     count=len(invalid_player_counts),
                     sample_data=invalid_player_counts[:5],
                     fixable=True,
@@ -1435,13 +1192,14 @@ class BoxscoresValidator(BaseValidator):
             )
 
         # Check 6: NULL critical fields in PlayerBox
+        # Note: min=NULL is expected for DNP (Did Not Play) players, so only check pts and team_id
         cursor.execute(
             f"""
             SELECT COUNT(*) FROM PlayerBox pb
             JOIN Games g ON pb.game_id = g.game_id
             WHERE pb.game_id IN ({placeholders})
             AND g.status = 3  -- Only check completed games
-            AND (pb.pts IS NULL OR pb.min IS NULL OR pb.team_id IS NULL)
+            AND (pb.pts IS NULL OR pb.team_id IS NULL)
         """,
             game_ids,
         )
@@ -1452,7 +1210,7 @@ class BoxscoresValidator(BaseValidator):
                 ValidationIssue(
                     check_id="NULL_PLAYER_FIELDS",
                     severity=Severity.WARNING,
-                    message="PlayerBox records with NULL critical fields (pts, min, team_id)",
+                    message="PlayerBox records with NULL critical fields (pts, team_id)",
                     count=null_player_fields,
                     sample_data=[],
                     fixable=True,
@@ -1662,6 +1420,7 @@ class PredictionsValidator(BaseValidator):
         import json
 
         unreasonable_predictions = []
+
         for game_id, pred_set in cursor.fetchall():
             try:
                 pred = json.loads(pred_set)
@@ -1672,7 +1431,7 @@ class PredictionsValidator(BaseValidator):
                     if not (50 <= home_score <= 180) or not (50 <= away_score <= 180):
                         unreasonable_predictions.append(game_id)
             except (json.JSONDecodeError, TypeError):
-                pass
+                pass  # Skip unparseable JSON silently
 
         if unreasonable_predictions:
             result.issues.append(

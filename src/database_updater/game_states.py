@@ -225,6 +225,14 @@ def create_game_states(games_info):
         logging.error(f"An error occurred while creating game states: {e}")
         return {}
 
+    # Aggregate warning for games that produced 0 states
+    empty_count = sum(1 for game_id, states in game_states.items() if not states)
+    if empty_count > 0:
+        logging.warning(
+            f"GameStates: {empty_count}/{len(game_states)} games produced 0 states "
+            f"(missing or invalid PBP logs)"
+        )
+
     logging.debug(f"Game states created for {len(game_states)} games")
 
     return game_states

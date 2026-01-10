@@ -134,11 +134,20 @@ def create_feature_sets(prior_states_dict, db_path=DB_PATH):
     successful_games = sum(1 for features in features_dict.values() if features)
     no_feature_games_count = total_games - successful_games
 
-    # Log the results
+    # Log the results - warn if many games have no features (indicates data issues)
     logging.debug(f"Feature sets created successfully for {successful_games} games.")
-    logging.debug(
-        f"No feature sets were created for {no_feature_games_count} games due to insufficient prior states."
-    )
+    if no_feature_games_count > 0:
+        # Warn if more than 20% of games have no features (early season expected)
+        if total_games >= 10 and no_feature_games_count / total_games > 0.2:
+            logging.warning(
+                f"Features: {no_feature_games_count}/{total_games} games have no feature sets "
+                f"(insufficient prior states)"
+            )
+        else:
+            logging.debug(
+                f"No feature sets were created for {no_feature_games_count} games "
+                f"due to insufficient prior states."
+            )
 
     if successful_games > 0:
         example_game_id, example_features = next(
@@ -171,11 +180,14 @@ def save_feature_sets(feature_sets, db_path=DB_PATH):
         cursor = conn.cursor()
 
         # Prepare the data for the parameterized query
-        current_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Use UTC timestamp for consistency across server timezones
+        from src.utils import get_utc_now
+
+        current_datetime = get_utc_now().strftime("%Y-%m-%d %H:%M:%S")
         data = [
             (
                 game_id,
-                current_datetime,  # Use the current datetime for all entries
+                current_datetime,  # Use the current UTC datetime for all entries
                 json.dumps(feature_set),  # Convert feature set to JSON
             )
             for game_id, feature_set in feature_sets.items()

@@ -105,10 +105,14 @@ def _should_update_players(db_path):
         logging.debug("No cache entry for players - updating")
         return True
 
-    # Calculate time since last update
-    from datetime import datetime, timedelta
+    # Calculate time since last update (use UTC for consistency)
+    from datetime import datetime, timedelta, timezone
 
-    time_since_update = datetime.now() - last_update
+    now_utc = datetime.now(timezone.utc)
+    # Ensure last_update is timezone-aware (assume UTC if naive)
+    if last_update.tzinfo is None:
+        last_update = last_update.replace(tzinfo=timezone.utc)
+    time_since_update = now_utc - last_update
     minutes_since_update = time_since_update.total_seconds() / 60
 
     # Check if cache expired (always use current season threshold since we fetch all players)
@@ -129,9 +133,9 @@ def _should_update_players(db_path):
 
 def _update_players_cache(db_path):
     """
-    Update the players cache with current timestamp.
+    Update the players cache with current UTC timestamp.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     _ensure_players_cache_table(db_path)
 
@@ -143,7 +147,7 @@ def _update_players_cache(db_path):
             INSERT OR REPLACE INTO PlayersCache (season, last_update_datetime)
             VALUES (?, ?)
         """,
-            (current_season, datetime.now().isoformat()),
+            (current_season, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
 
@@ -218,12 +222,20 @@ def fetch_players(stage_logger: StageLogger):
     url = NBA_API_PLAYERS_ENDPOINT.format(season=api_season)
 
     # Fetch the data with retry logic
-    session = requests_retry_session()
-    response = session.get(url, headers=NBA_API_STATS_HEADERS, timeout=30)
-    response.raise_for_status()
-    stage_logger.log_api_call()  # Track API call
+    try:
+        session = requests_retry_session()
+        response = session.get(url, headers=NBA_API_STATS_HEADERS, timeout=30)
+        response.raise_for_status()
+        stage_logger.log_api_call()  # Track API call
+    except Exception as e:
+        logging.warning(f"Players API request failed: {e}")
+        return []
 
-    data = response.json()
+    try:
+        data = response.json()
+    except Exception as e:
+        logging.warning(f"Players API returned invalid JSON: {e}")
+        return []
 
     # Extract the player data from the response
     headers = data.get("resultSets", [{}])[0].get("headers", [])
@@ -293,6 +305,13 @@ def fetch_players(stage_logger: StageLogger):
             continue
 
     logging.debug(f"Fetched {len(players_list)} players from NBA API")
+
+    # Sanity check: NBA has ~500+ active players
+    if len(players_list) < 100:
+        logging.warning(
+            f"NBA API returned only {len(players_list)} players (expected 500+) "
+            f"- may indicate API issue"
+        )
 
     return players_list
 
@@ -411,10 +430,6 @@ def save_players(players_data, db_path=DB_PATH, stage_logger=None):
         # Validate saved data
         validator = PlayerValidator()
         validation_result = validator.validate(person_ids, cursor)
-
-        # Also validate total count
-        total_count_result = validator.validate_total_count(cursor)
-        validation_result.issues.extend(total_count_result.issues)
 
         # Set validation suffix in stage logger
         if stage_logger:

@@ -288,18 +288,27 @@ def create_betting_tables(conn: Optional[sqlite3.Connection] = None) -> None:
 
 
 def get_espn_event_id(
-    game_id: str, game_date: str, home_team: str, away_team: str
+    game_id: str,
+    game_date: str,
+    home_team: str,
+    away_team: str,
+    game_time_utc: str = None,
 ) -> Optional[str]:
     """
     Get ESPN event ID for an NBA game.
 
     Uses ESPNGameMapping cache if available, otherwise fetches from ESPN scoreboard.
 
+    Note: ESPN uses US Eastern dates, but our DB stores UTC. Games in early UTC hours
+    (00:00-08:00) are typically the previous day's evening games in US time.
+    This function tries both the given date and the previous day.
+
     Args:
         game_id: NBA game ID
-        game_date: Game date in YYYY-MM-DD format
+        game_date: Game date in YYYY-MM-DD format (UTC)
         home_team: Home team tricode (e.g., "BOS")
         away_team: Away team tricode (e.g., "LAL")
+        game_time_utc: Optional game time (HH:MM:SS) to determine if previous day check needed
 
     Returns:
         ESPN event ID or None if not found
@@ -314,43 +323,52 @@ def get_espn_event_id(
         if row:
             return row[0]
 
-    # Fetch from ESPN scoreboard
-    date_formatted = game_date.replace("-", "")
-    url = f"{ESPN_SCOREBOARD_URL}?dates={date_formatted}"
+    # Determine which dates to try
+    # Games at 00:00-08:00 UTC are likely previous day's evening games in US time
+    dates_to_try = [game_date]
+    if game_time_utc:
+        hour = int(game_time_utc.split(":")[0])
+        if hour < 8:  # Early UTC = previous day in US
+            prev_date = (
+                datetime.strptime(game_date, "%Y-%m-%d") - timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+            dates_to_try = [prev_date, game_date]  # Try previous day first
 
-    try:
-        resp = requests.get(url, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
+    for try_date in dates_to_try:
+        date_formatted = try_date.replace("-", "")
+        url = f"{ESPN_SCOREBOARD_URL}?dates={date_formatted}"
 
-        events = data.get("events", [])
-        for event in events:
-            competitors = event.get("competitions", [{}])[0].get("competitors", [])
-            if len(competitors) >= 2:
-                # ESPN: competitors[0] is home, competitors[1] is away
-                espn_home = competitors[0].get("team", {}).get("abbreviation", "")
-                espn_away = competitors[1].get("team", {}).get("abbreviation", "")
+        try:
+            resp = requests.get(url, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
 
-                # Normalize team abbreviations (ESPN uses different codes sometimes)
-                if _teams_match(home_team, espn_home) and _teams_match(
-                    away_team, espn_away
-                ):
-                    espn_id = event["id"]
+            events = data.get("events", [])
+            for event in events:
+                competitors = event.get("competitions", [{}])[0].get("competitors", [])
+                if len(competitors) >= 2:
+                    # ESPN: competitors[0] is home, competitors[1] is away
+                    espn_home = competitors[0].get("team", {}).get("abbreviation", "")
+                    espn_away = competitors[1].get("team", {}).get("abbreviation", "")
 
-                    # Cache the mapping
-                    _cache_espn_mapping(
-                        game_id, espn_id, game_date, home_team, away_team
-                    )
-                    return espn_id
+                    # Normalize team abbreviations (ESPN uses different codes sometimes)
+                    if _teams_match(home_team, espn_home) and _teams_match(
+                        away_team, espn_away
+                    ):
+                        espn_id = event["id"]
 
-        logger.warning(
-            f"No ESPN match found for {away_team}@{home_team} on {game_date}"
-        )
-        return None
+                        # Cache the mapping
+                        _cache_espn_mapping(
+                            game_id, espn_id, game_date, home_team, away_team
+                        )
+                        return espn_id
 
-    except requests.RequestException as e:
-        logger.error(f"ESPN scoreboard request failed: {e}")
-        return None
+        except requests.RequestException as e:
+            logger.error(f"ESPN scoreboard request failed for {try_date}: {e}")
+            continue
+
+    logger.warning(f"No ESPN match found for {away_team}@{home_team} on {game_date}")
+    return None
 
 
 def _teams_match(nba_code: str, espn_code: str) -> bool:
@@ -389,8 +407,8 @@ def fetch_espn_betting_data(espn_event_id: str, home_team: str) -> Optional[dict
     Fetch betting data from ESPN summary endpoint.
 
     ESPN API provides structured opening and closing/current lines:
-    - 'open' field: Historical opening line (set days before game)
-    - 'close' field: Context-dependent (current for future games, closing for completed)
+    - Pre-game: Uses nested structure with 'open' and 'close' fields
+    - Post-game: Uses flat structure with 'spread', 'overUnder', 'homeTeamOdds', etc.
 
     Args:
         espn_event_id: ESPN event ID
@@ -428,16 +446,21 @@ def fetch_espn_betting_data(espn_event_id: str, home_team: str) -> Optional[dict
 
         result = {}
 
-        # Extract OPENING lines (from 'open' field)
+        # Extract OPENING lines (from 'open' field in nested structure)
         opening = _extract_espn_lines(odds_data, home_team, line_type="open")
         if opening:
             result["opening"] = opening
 
-        # Extract CURRENT/CLOSING lines (from 'close' field)
-        # Note: 'close' means current for future games, closing for completed games
+        # Extract CURRENT/CLOSING lines
+        # First try nested 'close' structure (pre-game format)
         current_or_closing = _extract_espn_lines(
             odds_data, home_team, line_type="close"
         )
+
+        # If nested structure is empty, try flat structure (post-game format)
+        if not current_or_closing:
+            current_or_closing = _extract_espn_flat_lines(odds_data)
+
         if current_or_closing:
             result["current_or_closing"] = current_or_closing
 
@@ -510,6 +533,59 @@ def _extract_espn_lines(
         lines["ml_home"] = _convert_odds(home_ml_data.get("odds"))
     if away_ml_data.get("odds") is not None:
         lines["ml_away"] = _convert_odds(away_ml_data.get("odds"))
+
+    return lines if lines else None
+
+
+def _extract_espn_flat_lines(odds_data: dict) -> Optional[dict]:
+    """
+    Extract betting lines from ESPN flat structure (used for completed games).
+
+    Post-game ESPN API uses a flat structure instead of nested open/close:
+    {
+        "spread": -4.5,
+        "overUnder": 241.5,
+        "overOdds": -112.0,
+        "underOdds": -108.0,
+        "homeTeamOdds": {"spreadOdds": -102.0, "moneyLine": -180, ...},
+        "awayTeamOdds": {"spreadOdds": -118.0, "moneyLine": 150, ...}
+    }
+
+    Args:
+        odds_data: ESPN pickcenter odds object
+
+    Returns:
+        Dict with spread, total, moneyline, and odds, or None if unavailable
+    """
+    lines = {}
+
+    # Extract spread (already in home perspective: negative = home favored)
+    if odds_data.get("spread") is not None:
+        lines["spread"] = float(odds_data["spread"])
+
+    # Extract spread odds from team odds
+    home_odds = odds_data.get("homeTeamOdds", {})
+    away_odds = odds_data.get("awayTeamOdds", {})
+
+    if home_odds.get("spreadOdds") is not None:
+        lines["spread_home_odds"] = _convert_odds(home_odds["spreadOdds"])
+    if away_odds.get("spreadOdds") is not None:
+        lines["spread_away_odds"] = _convert_odds(away_odds["spreadOdds"])
+
+    # Extract total (over/under)
+    if odds_data.get("overUnder") is not None:
+        lines["total"] = float(odds_data["overUnder"])
+
+    if odds_data.get("overOdds") is not None:
+        lines["over_odds"] = _convert_odds(odds_data["overOdds"])
+    if odds_data.get("underOdds") is not None:
+        lines["under_odds"] = _convert_odds(odds_data["underOdds"])
+
+    # Extract moneylines
+    if home_odds.get("moneyLine") is not None:
+        lines["ml_home"] = _convert_odds(home_odds["moneyLine"])
+    if away_odds.get("moneyLine") is not None:
+        lines["ml_away"] = _convert_odds(away_odds["moneyLine"])
 
     return lines if lines else None
 
@@ -669,7 +745,11 @@ def fetch_betting_for_game(
         return None
 
     # Get ESPN event ID
-    espn_id = get_espn_event_id(game_id, game_date, home_team, away_team)
+    # Extract time as string (HH:MM:SS) from datetime object for timezone checking
+    game_time_str = game_datetime.strftime("%H:%M:%S") if isinstance(game_datetime, datetime) else game_datetime
+    espn_id = get_espn_event_id(
+        game_id, game_date, home_team, away_team, game_time_utc=game_time_str
+    )
     if not espn_id:
         logger.warning(f"No ESPN ID found for {game_id}")
         return None
@@ -1096,20 +1176,29 @@ def _get_games_needing_betting_data(
     return conn.execute(query, (season, future_cutoff)).fetchall()
 
 
-def _should_use_cache(existing: dict, game_status: str, now: datetime) -> bool:
+def _should_use_cache(
+    existing: dict,
+    game_status: int,
+    now: datetime,
+    game_datetime: Optional[datetime] = None,
+) -> bool:
     """
     Determine if we should use cached betting data instead of re-fetching.
 
     Caching rules:
-    1. Finalized games (closing lines exist + lines_finalized=1): Cache forever, never re-check
-    2. All other games: Cache for 1 hour, then re-check regardless of whether previous check found data
-
-    This ensures we actively check for newly-posted lines every hour until games are finalized.
+    1. Finalized games (closing lines exist + lines_finalized=1): Cache forever
+    2. Games with no ESPN ID after previous attempt: Cache for 24 hours (fall through to Covers)
+    3. Completed games with current_spread: Re-fetch once to get closing (then finalize)
+    4. Future games >24h away: Cache for 6 hours
+    5. Future games <24h away: Cache for 1 hour (lines move more)
+    6. In-progress games: Cache for 6 hours (lines locked at tipoff)
 
     Args:
-        existing: Dict with keys: updated_at, lines_finalized, espn_closing_spread, covers_closing_spread
-        game_status: Current game status (not used anymore, kept for API compatibility)
+        existing: Dict with keys: updated_at, lines_finalized, espn_closing_spread,
+                  covers_closing_spread, espn_current_spread, espn_event_id
+        game_status: Current game status (1=scheduled, 2=in-progress, 3=final)
         now: Current datetime (UTC)
+        game_datetime: Game start time (optional, for smarter caching)
 
     Returns:
         True if cached data should be used, False if we should re-fetch
@@ -1126,8 +1215,7 @@ def _should_use_cache(existing: dict, game_status: str, now: datetime) -> bool:
     except (ValueError, AttributeError):
         return False  # Invalid timestamp = re-fetch
 
-    # Rule 1: Finalized games = cache forever, never re-check
-    # Must have BOTH lines_finalized flag AND actual closing line data
+    # Rule 1: Finalized games = cache forever
     has_closing = (
         existing.get("espn_closing_spread") is not None
         or existing.get("covers_closing_spread") is not None
@@ -1135,14 +1223,44 @@ def _should_use_cache(existing: dict, game_status: str, now: datetime) -> bool:
     if existing.get("lines_finalized") == 1 and has_closing:
         return True  # Cache forever
 
-    # Rule 2: All non-finalized games = cache for 1 hour
-    # This includes:
-    # - Scheduled games (checking for opening/current lines)
-    # - In-progress games (checking for closing lines as they lock)
-    # - Completed games without closing lines yet (waiting for final lines)
-    # - Games with no data from previous checks (re-checking for new posts)
     hours_since_update = (now - updated_at).total_seconds() / 3600
-    return hours_since_update < CACHE_HOURS
+
+    # Rule 2: Games without ESPN ID = cache for 24 hours (ESPN won't have it, use Covers)
+    # Only applies if we've tried before (has updated_at) but no ESPN ID or lines
+    if (
+        existing.get("espn_event_id") is None
+        and existing.get("espn_current_spread") is None
+        and existing.get("espn_closing_spread") is None
+    ):
+        return hours_since_update < 24.0
+
+    # Rule 3: Completed games - need one re-fetch to get closing lines
+    if game_status == 3:  # Final
+        if existing.get("espn_current_spread") is not None:
+            # Has current lines, give 1 hour to re-fetch for closing format
+            return hours_since_update < 1.0
+        else:
+            # No data yet, re-fetch immediately
+            return False
+
+    # Rule 4: In-progress games - lines locked at tipoff, cache for 6 hours
+    if game_status == 2:  # In Progress
+        return hours_since_update < 6.0
+
+    # Rule 5 & 6: Scheduled games - cache based on time until game
+    if game_datetime:
+        hours_until_game = (
+            game_datetime.replace(tzinfo=timezone.utc) - now
+        ).total_seconds() / 3600
+        if hours_until_game > 24:
+            # >24h away: cache for 6 hours
+            return hours_since_update < 6.0
+        else:
+            # <24h away: cache for 1 hour
+            return hours_since_update < 1.0
+
+    # Fallback: 1 hour cache
+    return hours_since_update < 1.0
 
 
 @log_execution_time(average_over="games")
@@ -1151,9 +1269,11 @@ def _fetch_espn_batch(games: list, conn: sqlite3.Connection, stage_logger=None) 
     Fetch betting data from ESPN API for a batch of games (Tier 1).
 
     Caching strategy:
-    - Scheduled games: Cache for 1 hour (fresh day-of updates)
-    - In-progress games: Cache for 6 hours (closing lines lock at tipoff)
-    - Completed games: Cache permanently if closing lines already fetched
+    - Finalized games: Cache forever
+    - Completed games: Re-fetch once to get closing, then finalize
+    - In-progress games: Cache for 6 hours (lines locked at tipoff)
+    - Future games >24h: Cache for 6 hours
+    - Future games <24h: Cache for 1 hour
     """
     stats = {"fetched": 0, "saved": 0, "skipped": 0, "errors": 0, "cached": 0}
     betting_data_batch = []
@@ -1166,7 +1286,7 @@ def _fetch_espn_batch(games: list, conn: sqlite3.Connection, stage_logger=None) 
     cursor = conn.execute(
         f"""
         SELECT game_id, updated_at, lines_finalized, 
-               espn_closing_spread, covers_closing_spread
+               espn_closing_spread, covers_closing_spread, espn_current_spread, espn_event_id
         FROM Betting
         WHERE game_id IN ({placeholders})
         """,
@@ -1183,15 +1303,19 @@ def _fetch_espn_batch(games: list, conn: sqlite3.Connection, stage_logger=None) 
         )
 
         try:
+            # Parse game datetime for cache decision
+            game_datetime_str = game["date_time_utc"]
+            game_datetime = datetime.strptime(game_datetime_str, "%Y-%m-%dT%H:%M:%SZ")
+
             # Check cache before fetching
             existing = existing_betting.get(game_id)
-            if existing and _should_use_cache(existing, game_status, now):
+            if existing and _should_use_cache(
+                existing, game_status, now, game_datetime
+            ):
                 stats["cached"] += 1
                 stats["skipped"] += 1
                 continue
 
-            game_datetime_str = game["date_time_utc"]
-            game_datetime = datetime.strptime(game_datetime_str, "%Y-%m-%dT%H:%M:%SZ")
             game_date = game_datetime_str.split("T")[0]
 
             betting_data = fetch_betting_for_game(

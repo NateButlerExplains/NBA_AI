@@ -1,27 +1,44 @@
 # NBA AI TODO
 
-> **Last Updated**: December 25, 2025  
-> **Current Sprint**: Sprint 17 - GenAI Predictor Design (Planning)
+> **Last Updated**: January 9, 2026
+> **Current Sprint**: Pre-Release Stabilization
 
 ---
 
 ## 🎯 Active Sprint
 
-### Sprint 17: GenAI Predictor Design (Planning)
+### Pre-Release Stabilization (v1.0 Preparation)
 
-**Goal**: Research and design the GenAI-based prediction engine using PBP data as primary source.
+**Goal**: Verify all setup tooling and achieve stable state before v1.0 release.
 
-**Status**: 📋 PLANNING
+**Status**: 🔧 IN PROGRESS
 
-**Research Areas**:
-- [ ] Transformer architectures for sports sequence data
-- [ ] PBP tokenization strategy (events, time, scores as tokens)
-- [ ] Embedding layer design for game state representation
-- [ ] Training data preparation (sequence formatting)
+**Tasks**:
+
+- [ ] Verify setup.py works end-to-end for new users
+- [ ] Run comprehensive health checks on current database
+- [ ] Validate current ⊂ dev ⊂ full subset relationships
+- [ ] Ad hoc testing of core workflows
+- [ ] Update any outdated setup documentation
+- [ ] Run full test suite and address any failures
+- [ ] Verify model files are accessible and working
 
 ---
 
 ## 📋 Backlog
+
+### Sprint 17: GenAI Predictor Design (Next Major Phase)
+
+**Goal**: Research and design the GenAI-based prediction engine using PBP data as primary source.
+
+**Research Areas**:
+
+- Transformer architectures for sports sequence data
+- PBP tokenization strategy (events, time, scores as tokens)
+- Embedding layer design for game state representation
+- Training data preparation (sequence formatting)
+
+### Future Enhancements
 
 - **Historical Data Backfill**: PlayerBox/TeamBox (2000-2022, ~30K games), InjuryReports (Dec 2018-2023, ~900 PDFs/season)
 - **Player Props Model**: Player-level predictions using PlayerBox data
@@ -29,6 +46,28 @@
 ---
 
 ## ✅ Completed Sprints
+
+### Sprint 16b: Datetime & Timezone Overhaul (Dec 27, 2025)
+**Summary**: Comprehensive datetime consistency across project with user timezone detection.
+
+**Strategy**: "Store UTC, query in Eastern Time, display in user's local timezone"
+
+**Changes**:
+- Added central datetime utilities in `src/utils.py`:
+  - `get_utc_now()` - timezone-aware UTC datetime
+  - `get_current_eastern_datetime()` - NBA operating timezone
+  - `get_current_eastern_date()` - for season/schedule operations
+  - `utc_to_timezone()` - convert for user display
+- Fixed `determine_current_season()` to use Eastern time for June 30 boundary
+- Standardized all cache timestamps to UTC (features, players, injuries)
+- Added browser timezone detection (JavaScript → Python)
+- Fixed "Today/Tomorrow" display to use user's actual timezone
+- Fixed timezone comparison error in injury data collection
+
+**Testing**:
+- Verified correct display for America/New_York, America/Los_Angeles, Europe/London
+- Database quality validated for both DEV and CURRENT databases
+- Update pipeline tested successfully with new UTC timestamps
 
 ### Sprint 16: Frontend API Optimization (Dec 25, 2025)
 **Summary**: Comprehensive logging, query optimization, and live game status sync for frontend API.

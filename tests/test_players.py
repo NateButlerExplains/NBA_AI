@@ -251,49 +251,6 @@ class TestPlayerDataParsing:
         os.unlink(db.name)
 
 
-class TestPlayerDataQuality:
-    """Tests for data quality in Players table."""
-
-    def test_active_players_count_reasonable(self):
-        """Should have reasonable number of active players."""
-        db_path = config["database"]["path"]
-
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM Players WHERE roster_status = 1")
-            active_count = cursor.fetchone()[0]
-
-        # NBA has ~450 active players, allow range 400-600
-        assert (
-            400 <= active_count <= 600
-        ), f"Active player count {active_count} outside expected range"
-
-    def test_no_null_person_ids(self):
-        """All players should have valid person_id."""
-        db_path = config["database"]["path"]
-
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM Players WHERE person_id IS NULL")
-            null_count = cursor.fetchone()[0]
-
-        assert null_count == 0, "No NULL person_ids allowed"
-
-    def test_active_players_have_teams(self):
-        """Most active players should have team assignment."""
-        db_path = config["database"]["path"]
-
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT COUNT(*) FROM Players WHERE roster_status = 1 AND team IS NULL"
-            )
-            no_team = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM Players WHERE roster_status = 1")
-            active = cursor.fetchone()[0]
-
-        # Allow up to 5% of active players without teams (free agents, etc.)
-        pct_no_team = no_team / active if active > 0 else 0
-        assert (
-            pct_no_team < 0.05
-        ), f"{pct_no_team*100:.1f}% of active players have no team"
+# NOTE: TestPlayerDataQuality tests removed - now covered by health_check.py:
+#   - player_count check covers active player counts
+#   - no_duplicate_person_ids check covers data integrity

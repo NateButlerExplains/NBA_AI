@@ -49,6 +49,132 @@ EASTERN_TZ_OFFSET_HOURS = -5  # EST (standard time)
 EASTERN_TZ_OFFSET_DST_HOURS = -4  # EDT (daylight saving time)
 
 
+# =============================================================================
+# DATETIME STRATEGY
+# =============================================================================
+# This project uses a consistent datetime strategy:
+#
+# 1. STORAGE: All timestamps stored in UTC (ISO 8601 format with 'Z' suffix)
+#    - Games.date_time_utc: "2024-10-22T19:30:00Z"
+#    - Betting.updated_at: "2024-10-22T19:30:00Z"
+#    - Cache timestamps: UTC via get_utc_now()
+#
+# 2. QUERIES: NBA schedule dates are in Eastern Time (NBA's operating timezone)
+#    - When user asks for "games on Dec 26", convert ET day boundaries to UTC
+#    - Use get_current_eastern_date() for season determination
+#
+# 3. DISPLAY: Convert to user's timezone for frontend display
+#    - Pass user_tz from browser to backend
+#    - Use utc_to_user_tz() for display formatting
+#
+# Key functions:
+#   get_utc_now()              - Current time in UTC (for timestamps)
+#   get_current_eastern_date() - Current date in ET (for NBA schedule logic)
+#   get_eastern_tz()           - Get pytz Eastern timezone object
+#   utc_to_user_tz()           - Convert UTC to user's timezone for display
+# =============================================================================
+
+
+def get_utc_now() -> datetime:
+    """
+    Get current datetime in UTC (timezone-aware).
+
+    Use this for:
+    - Storing timestamps in database
+    - Cache expiration calculations
+    - API rate limiting
+
+    Returns:
+        datetime: Current UTC time with tzinfo set
+    """
+    from datetime import timezone
+
+    return datetime.now(timezone.utc)
+
+
+def get_eastern_tz():
+    """
+    Get the US/Eastern timezone object.
+
+    Returns:
+        pytz timezone for US/Eastern (handles DST automatically)
+    """
+    import pytz
+
+    return pytz.timezone("US/Eastern")
+
+
+def get_current_eastern_datetime() -> datetime:
+    """
+    Get current datetime in Eastern Time (timezone-aware).
+
+    Use this for:
+    - NBA schedule date calculations (NBA operates in ET)
+    - Season boundary determination
+    - Game scheduling logic
+
+    Returns:
+        datetime: Current Eastern time with tzinfo set
+    """
+    import pytz
+
+    utc_now = datetime.now(pytz.UTC)
+    return utc_now.astimezone(get_eastern_tz())
+
+
+def get_current_eastern_date():
+    """
+    Get current date in Eastern Time.
+
+    Use this for:
+    - Determining "today's games" in NBA schedule terms
+    - Season boundary checks (June 30 cutoff)
+
+    Returns:
+        date: Current date in Eastern timezone
+    """
+    return get_current_eastern_datetime().date()
+
+
+def utc_to_user_tz(utc_dt: datetime, user_tz: str = None) -> datetime:
+    """
+    Convert UTC datetime to user's timezone.
+
+    Args:
+        utc_dt: datetime in UTC (can be naive or aware)
+        user_tz: IANA timezone string from browser (e.g., "America/New_York")
+                 If None, falls back to server's local timezone
+
+    Returns:
+        datetime: Timezone-aware datetime in user's timezone
+    """
+    from datetime import timezone
+
+    import pytz
+
+    # If naive, assume UTC
+    if utc_dt.tzinfo is None:
+        utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+
+    if user_tz:
+        try:
+            tz = pytz.timezone(user_tz)
+            return utc_dt.astimezone(tz)
+        except pytz.UnknownTimeZoneError:
+            logging.warning(
+                f"Unknown timezone '{user_tz}', falling back to server local"
+            )
+
+    # Fallback to server's local timezone
+    try:
+        from tzlocal import get_localzone
+
+        local_tz = get_localzone()
+        return utc_dt.astimezone(local_tz)
+    except ImportError:
+        return utc_dt  # Return UTC if tzlocal not available
+
+
 def parse_utc_datetime(utc_string: str) -> datetime:
     """
     Parse a UTC datetime string from the database.
@@ -198,15 +324,22 @@ def lookup_basic_game_info(game_ids, db_path=DB_PATH):
 
 def determine_current_season():
     """
-    Determines the current NBA season based on the current date.
-    Returns the current NBA season in 'XXXX-XXXX' format.
-    """
+    Determines the current NBA season based on the current date in Eastern Time.
 
-    current_date = datetime.now()
+    Uses Eastern Time because NBA operates in ET and season boundaries
+    (June 30th cutoff) are defined in ET.
+
+    Returns:
+        str: The current NBA season in 'XXXX-XXXX' format.
+    """
+    # Use Eastern time since NBA operates in ET
+    current_date = get_current_eastern_datetime()
     current_year = current_date.year
 
-    # Determine the season based on the league year cutoff (June 30th)
-    league_year_cutoff = datetime(current_year, 6, 30)
+    # Determine the season based on the league year cutoff (June 30th ET)
+    # Using timezone-aware comparison
+    eastern = get_eastern_tz()
+    league_year_cutoff = eastern.localize(datetime(current_year, 6, 30, 23, 59, 59))
 
     if current_date > league_year_cutoff:
         season = f"{current_year}-{current_year + 1}"
