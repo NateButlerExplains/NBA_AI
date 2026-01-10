@@ -162,8 +162,13 @@
           >
           <a
             class="list-group-item list-group-item-action"
-            href="#installation-and-usage"
-            ><strong>Installation and Usage</strong></a
+            href="#quick-start"
+            ><strong>Quick Start</strong></a
+          >
+          <a
+            class="list-group-item list-group-item-action"
+            href="#development-status"
+            ><strong>Development Status</strong></a
           >
         </div>
       </div>
@@ -198,10 +203,11 @@
 
         <p>
           The project is in active development with a complete data collection
-          pipeline and basic prediction engines. The current system processes
-          multiple seasons of data with a complete PBP → GameStates → Features →
-          Predictions pipeline. The web app provides a simple interface for
-          displaying games with current scores and predictions.
+          pipeline and basic prediction engines. Recent infrastructure cleanup removed unnecessary complexity (Airflow orchestration, Wandb experiment tracking) to focus on the core GenAI prediction engine development.
+        </p>
+
+        <p>
+          The current system supports seasons 2023-2026 with complete PBP → GameStates → PlayerBox/TeamBox → Features → Predictions pipeline. The default installation includes only the current season (2025-2026); historical data is available separately. The web app provides a simple interface for displaying games with current scores and predictions.
         </p>
 
         <img
@@ -228,12 +234,24 @@
                 and updates the database.
               </li>
               <li>
+                <code>players.py</code>: Fetches and updates player reference data.
+              </li>
+              <li>
+                <code>nba_official_injuries.py</code>: Fetches injury reports from NBA's official injury report PDFs.
+              </li>
+              <li>
+                <code>betting.py</code>: Fetches betting lines (spreads/totals) from ESPN API and Covers.com.
+              </li>
+              <li>
                 <code>pbp.py</code>: Fetches play-by-play data for games and
                 updates the database.
               </li>
               <li>
                 <code>game_states.py</code>: Parses play-by-play data to
                 generate game states and updates the database.
+              </li>
+              <li>
+                <code>boxscores.py</code>: Fetches traditional boxscore stats (PlayerBox and TeamBox).
               </li>
               <li>
                 <code>prior_states.py</code>: Determines prior final game states
@@ -409,20 +427,19 @@
             based on teams' PPG and opponents' PPG.
           </li>
           <li>
-            <strong>Linear:</strong> Ridge Regression model using rolling
+            <strong>Linear:</strong> Ridge Regression model using 34 rolling
             average features from prior game states.
           </li>
           <li>
             <strong>Tree:</strong> XGBoost model using the same features as the
-            Linear model.
+            Linear model (default, best performance).
           </li>
           <li>
-            <strong>MLP:</strong> PyTorch MLP model using the same features as
-            the Linear model.
+            <strong>MLP</strong> <em>(optional)</em><strong>:</strong> PyTorch MLP model - requires uncommenting PyTorch in requirements.txt.
           </li>
           <li>
-            <strong>Ensemble:</strong> Weighted average of Linear (30%), Tree
-            (40%), and MLP (30%) predictions.
+            <strong>Ensemble</strong> <em>(optional)</em><strong>:</strong> Weighted average of Linear (30%), Tree
+            (40%), and MLP (30%) - requires PyTorch.
           </li>
         </ul>
 
@@ -447,14 +464,14 @@
         />
       </div>
 
-      <!-- Installation and Usage -->
+      <!-- Quick Start -->
       <div class="container my-5">
-        <h1 id="installation-and-usage">Installation and Usage</h1>
+        <h1 id="quick-start">Quick Start</h1>
 
         <h3 id="requirements">Requirements</h3>
         <ul>
           <li>Python 3.10+</li>
-          <li>~500MB disk space (database + models + dependencies)</li>
+          <li>~2GB disk space (database + models + dependencies)</li>
         </ul>
 
         <h3 id="installation">Installation</h3>
@@ -500,61 +517,74 @@ python start_app.py --log_level=DEBUG</code></pre>
 
         <p>
           Available predictors: <code>Baseline</code>, <code>Linear</code>,
-          <code>Tree</code>, <code>MLP</code>, <code>Ensemble</code>
+          <code>Tree</code> (default), <code>MLP</code>*, <code>Ensemble</code>*
         </p>
 
-        <h3 id="historical-data">Historical Data</h3>
+        <p>
+          *Requires PyTorch - uncomment in requirements.txt
+        </p>
+      </div>
+
+      <!-- Development Status -->
+      <div class="container my-5">
+        <h1 id="development-status">Development Status</h1>
+
+        <p><strong>This project is in active development.</strong></p>
 
         <p>
-          The default setup downloads only the current season. A database with
-          seasons 2023-2024 through 2025-2026 (4,094 games total) is available
-          from
-          <a
+          The core data pipeline and prediction engines are functional. The focus is now on building advanced DL/GenAI prediction engines using play-by-play data.
+        </p>
+
+        <h3>Disclaimer</h3>
+
+        <p>
+          This is a personal side project provided "as is" with no guarantees of quality, functionality, or ongoing maintenance. I've vibe-coded much of this release and while I'll try to address issues, I can't promise timely responses or fixes.
+        </p>
+
+        <p>
+          <strong>For production or commercial use</strong>: Consider using <a href="https://sportradar.com/" target="_blank" rel="noopener noreferrer">SportsRadar</a>, the official NBA data partner. Their API would greatly simplify data management compared to scraping the NBA Stats API. I use this approach only because I can't justify the cost for a personal project.
+        </p>
+
+        <h3>Historical Data</h3>
+
+        <p>
+          The default setup downloads only the current season (2025-2026, ~1,300 games). A development database with 3 seasons (2023-2024 through 2025-2026, ~4,100 games total) is available from <a
             href="https://github.com/NBA-Betting/NBA_AI/releases"
             target="_blank"
             rel="noopener noreferrer"
             >GitHub Releases</a
-          >
-          as <code>NBA_AI_dev.sqlite</code>.
+          >.
         </p>
 
-        <p>To use it, update your <code>.env</code>:</p>
+        <p>To use it:</p>
+
+        <ol>
+          <li>Download <code>NBA_AI_dev.zip</code> from the latest release</li>
+          <li>Extract to <code>data/NBA_AI_dev.sqlite</code></li>
+          <li>Update your <code>.env</code>:</li>
+        </ol>
 
         <pre><code>DATABASE_PATH=data/NBA_AI_dev.sqlite</code></pre>
 
-        <h3 id="usage-notes">Usage Notes</h3>
+        <h3>Usage Notes</h3>
 
         <ul>
           <li>
-            <strong>First run for new seasons</strong>: When viewing a date in a
-            new season, the app fetches play-by-play data from the NBA API. This
-            initial update may take several minutes as it makes API calls for
-            each game. Subsequent views are fast since data is cached in the
-            database.
+            <strong>First run for a date</strong>: When viewing a date for the first time, the app fetches data from the NBA API. This initial update may take a few seconds per game. Subsequent views are instant since data is cached in the database.
           </li>
           <li>
-            <strong>Season restrictions</strong>: By default, the web app is
-            limited to recent seasons to prevent excessive API calls. To enable
-            additional seasons, modify <code>valid_seasons</code> in
-            <code>config.yaml</code>:
+            <strong>Season restrictions</strong>: By default, the web app allows seasons 2023-2024 through 2025-2026. To restrict or expand this, modify <code>valid_seasons</code> in
+            <code>config.yaml</code>.
           </li>
         </ul>
 
-        <pre><code>api:
-  valid_seasons:
-    - "2023-2024"
-    - "2024-2025"
-    - "2025-2026"</code></pre>
+        <h3>Technical Notes</h3>
 
-        <h3 id="development-note">Development Note</h3>
-
-        <p>
-          <em
-            >Development has been slower than expected as I've been focused on
-            other projects. I'm now refocusing on NBA AI and will be more
-            responsive to issues and messages. Thanks for your patience!</em
-          >
-        </p>
+        <ul>
+          <li>Default focus: 2025-2026 season (current season for public release)</li>
+          <li>Database: SQLite with complete pipeline (Schedule → Players → Injuries → Betting → PBP → GameStates → Boxscores → Features → Predictions)</li>
+          <li>Built with Python, Flask, SQLite, scikit-learn, XGBoost, and nba_api (PyTorch optional for MLP/Ensemble)</li>
+        </ul>
       </div>
     </div>
 
