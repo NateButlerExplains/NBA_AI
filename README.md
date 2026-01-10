@@ -85,9 +85,9 @@ Currently, there are a few basic prediction engines used to predict the outcomes
 
 - **Baseline**: A simple predictor that predicts scores based on teams' PPG and opponents' PPG.
 - **Linear**: Ridge Regression model using 34 rolling average features from prior game states.
-- **Tree**: XGBoost model using the same features as the Linear model.
-- **MLP**: PyTorch MLP model using the same features as the Linear model.
-- **Ensemble**: Weighted average of Linear (30%), Tree (40%), and MLP (30%) predictions.
+- **Tree**: XGBoost model using the same features as the Linear model (default, best performance).
+- **MLP** *(optional)*: PyTorch MLP model - requires uncommenting PyTorch in requirements.txt.
+- **Ensemble** *(optional)*: Weighted average of Linear (30%), Tree (40%), and MLP (30%) - requires PyTorch.
 
 
 ### Performance Metrics

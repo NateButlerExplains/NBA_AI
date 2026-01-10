@@ -58,23 +58,23 @@ default_predictor: "Tree"
 
 # Predictors Configuration
 # Models trained on 2023-2024, tested on 2024-2025 (Dec 2025)
-# v1.1 models: Ridge MAE 11.2, XGBoost MAE 10.1, MLP MAE 11.1
+# v0.4 models: Ridge MAE 11.2, XGBoost MAE 10.1, MLP MAE 11.1
 predictors:
   Baseline: {}  # Formula-based, no models required
   Linear:
     model_paths:
-      - "models/ridge_v1.1_mae11.2.joblib"
+      - "models/ridge_v0.4_mae11.2.joblib"
   Tree:
     model_paths:
-      - "models/xgboost_v1.1_mae10.1.joblib"
-  MLP:
-    model_paths:
-      - "models/mlp_v1.1_mae11.1.pth"
-  Ensemble:
-    model_paths:
-      Linear:
-        - "models/ridge_v1.1_mae11.2.joblib"
-      Tree:
-        - "models/xgboost_v1.1_mae10.1.joblib"
-      MLP:
-        - "models/mlp_v1.1_mae11.1.pth"
+      - "models/xgboost_v0.4_mae10.1.joblib"
+  # MLP:  # Requires PyTorch - uncomment torch in requirements.txt to use
+  #   model_paths:
+  #     - "models/mlp_v0.4_mae11.1.pth"
+  # Ensemble:  # Requires PyTorch for MLP component
+  #   model_paths:
+  #     Linear:
+  #       - "models/ridge_v0.4_mae11.2.joblib"
+  #     Tree:
+  #       - "models/xgboost_v0.4_mae10.1.joblib"
+  #     MLP:
+  #       - "models/mlp_v0.4_mae11.1.pth"

@@ -1294,13 +1294,29 @@ def _fetch_espn_batch(games: list, conn: sqlite3.Connection, stage_logger=None) 
     )
     existing_betting = {row[0]: dict(row) for row in cursor.fetchall()}
 
-    pbar = tqdm(games, desc="Tier 1: ESPN API", unit="game", leave=False)
-    for game in pbar:
+    # Pre-check if all games are cached to avoid showing unnecessary progress bar
+    all_cached = True
+    for game in games:
         game_id = game["game_id"]
         game_status = game["status"]
-        pbar.set_postfix(
-            fetched=stats["fetched"], cached=stats["cached"], errors=stats["errors"]
-        )
+        game_datetime_str = game["date_time_utc"]
+        game_datetime = datetime.strptime(game_datetime_str, "%Y-%m-%dT%H:%M:%SZ")
+        existing = existing_betting.get(game_id)
+        if not (existing and _should_use_cache(existing, game_status, now, game_datetime)):
+            all_cached = False
+            break
+
+    # Only show progress bar if we're fetching (not all cached)
+    pbar = None if all_cached else tqdm(games, desc="Tier 1: ESPN API", unit="game", leave=False)
+
+    for game in games:
+        game_id = game["game_id"]
+        game_status = game["status"]
+        if pbar:
+            pbar.set_postfix(
+                fetched=stats["fetched"], cached=stats["cached"], errors=stats["errors"]
+            )
+            pbar.update(1)
 
         try:
             # Parse game datetime for cache decision
@@ -1356,7 +1372,8 @@ def _fetch_espn_batch(games: list, conn: sqlite3.Connection, stage_logger=None) 
             logger.error(f"ESPN error for {game_id}: {e}")
             stats["errors"] += 1
 
-    pbar.close()
+    if pbar:
+        pbar.close()
 
     if betting_data_batch:
         stats["saved"] += save_betting_data(betting_data_batch, conn)

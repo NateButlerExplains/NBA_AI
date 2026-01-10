@@ -488,16 +488,28 @@ CREATE TABLE ScheduleCache (
 ---
 
 #### 14. InjuryCache (Injury Report Tracking)
-**Purpose**: Track which injury report dates have been fetched
+**Purpose**: Track which injury report dates have been fetched and their fetch status
 
 ```sql
 CREATE TABLE IF NOT EXISTS InjuryCache (
     report_date TEXT PRIMARY KEY,          -- "2024-12-25"
-    last_fetched_at TEXT NOT NULL          -- ISO 8601 timestamp
+    last_fetched_at TEXT NOT NULL,         -- ISO 8601 timestamp
+    status TEXT DEFAULT 'success'          -- 'success', 'not_found', 'not_yet_submitted'
 );
 ```
 
-**Purpose**: Avoid re-fetching injury PDFs that have already been processed.
+**Status Values**:
+
+- `success`: Injury data was successfully fetched and saved
+- `not_found`: No injury report exists for this date (off-day, no games)
+- `not_yet_submitted`: PDF exists but teams haven't submitted injury data yet
+
+**Cache Strategy**:
+
+- Today's date with `success`: Refetch after 2 hours
+- Today's date with `not_yet_submitted`: Retry after 1 hour (teams submit throughout day)
+- Past dates: Permanent cache (never refetch)
+- Dates with `not_found`: Permanent cache (legitimate off-days)
 
 ---
 

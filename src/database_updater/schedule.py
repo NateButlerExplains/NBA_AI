@@ -452,18 +452,37 @@ def save_schedule(games, season, db_path=DB_PATH, stage_logger=None):
         cursor.execute("BEGIN TRANSACTION")
 
         try:
-            # Count records to be deleted
+            # Count existing games and games to be deleted
+            cursor.execute(
+                f"SELECT COUNT(*) FROM Games WHERE season = ?",
+                [season],
+            )
+            existing_count = cursor.fetchone()[0]
+
             cursor.execute(
                 f"SELECT COUNT(*) FROM Games WHERE season = ? AND game_id NOT IN ({','.join('?' * len(game_ids))})",
                 [season] + game_ids,
             )
             removed_count = cursor.fetchone()[0]
 
-            # Delete records not in the new data
-            cursor.execute(
-                f"DELETE FROM Games WHERE season = ? AND game_id NOT IN ({','.join('?' * len(game_ids))})",
-                [season] + game_ids,
-            )
+            # Safety check: Prevent accidental mass deletion from incomplete API data
+            # If we would delete more than 50% of existing games, abort the update
+            if existing_count > 0 and removed_count > existing_count * 0.5:
+                logging.error(
+                    f"Safety check failed for {season}: Would delete {removed_count}/{existing_count} games "
+                    f"({removed_count/existing_count*100:.1f}%). This likely indicates incomplete API data. "
+                    f"Fetched only {len(game_ids)} games. Aborting schedule update to prevent data loss."
+                )
+                cursor.execute("ROLLBACK")
+                return False
+
+            # Delete records not in the new data (e.g., postponed/cancelled games)
+            if removed_count > 0:
+                cursor.execute(
+                    f"DELETE FROM Games WHERE season = ? AND game_id NOT IN ({','.join('?' * len(game_ids))})",
+                    [season] + game_ids,
+                )
+                logging.info(f"Removed {removed_count} obsolete games for {season}")
 
             added_count = 0
             updated_count = 0

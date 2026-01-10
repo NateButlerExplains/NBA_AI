@@ -19,11 +19,10 @@ Usage:
 Requirements:
     - Python 3.10 or higher
     - Internet connection (for downloads)
-    - ~500MB disk space (database + models + dependencies)
+    - ~2GB disk space (database + models + dependencies)
 """
 
 import argparse
-import os
 import platform
 import shutil
 import subprocess
@@ -37,12 +36,12 @@ from pathlib import Path
 # =============================================================================
 
 GITHUB_REPO = "NBA-Betting/NBA_AI"
-RELEASE_TAG = "v0.3.0"  # Specific release tag for v0.3.0
+RELEASE_TAG = "v0.4.0"  # Release tag for v0.4.0
 
 # Files to download from GitHub Releases
-DATABASE_ZIP_FILENAME = "NBA_AI_current.zip"  # Zipped database (~24MB)
-DATABASE_FILENAME = "NBA_AI_current.sqlite"  # Extracted database (~400MB)
-MODELS_FILENAME = "models_v0.3.zip"  # Trained ML models (~280KB)
+DATABASE_ZIP_FILENAME = "NBA_AI_current.zip"  # Zipped database (~43MB)
+DATABASE_FILENAME = "NBA_AI_current.sqlite"  # Extracted database (~668MB)
+MODELS_FILENAME = "models_v0.4.zip"  # Trained ML models v0.4 (~273KB)
 
 # Local fallback for testing (set via --local-source=/path/to/NBA_AI)
 LOCAL_SOURCE = None
@@ -195,7 +194,7 @@ def install_dependencies():
 
     # Install requirements
     print_info("Installing packages (this may take several minutes)...")
-    print_info("Installing: Flask, NumPy, Pandas, scikit-learn, XGBoost, PyTorch...")
+    print_info("Installing: Flask, NumPy, Pandas, scikit-learn, XGBoost...")
 
     result = run_command(
         f'"{pip_path}" install -r "{requirements_file}"', capture=False
@@ -370,14 +369,15 @@ def download_data_files():
         models_zip = PROJECT_ROOT / MODELS_FILENAME  # Download to project root
 
         if use_local:
-            # Copy from local source
-            local_models_zip = Path(LOCAL_SOURCE) / MODELS_FILENAME
+            # Copy from local source (models are in data/releases/v0.4/)
+            local_models_zip = Path(LOCAL_SOURCE) / "data" / "releases" / "v0.4" / MODELS_FILENAME
+            print_info(f"Looking for models at: {local_models_zip}")
             if local_models_zip.exists():
                 if copy_file_with_progress(local_models_zip, models_zip, "models"):
                     print_info("Extracting models...")
                     try:
                         with zipfile.ZipFile(models_zip, "r") as zip_ref:
-                            zip_ref.extractall(PROJECT_ROOT)  # Extract to project root
+                            zip_ref.extractall(MODELS_DIR)  # Extract to models directory
                         models_zip.unlink()  # Remove zip after extraction
                         print_success("Models extracted successfully")
                     except Exception as e:
@@ -387,7 +387,7 @@ def download_data_files():
                     success = False
             else:
                 print_error(f"Local models.zip not found: {local_models_zip}")
-                print_info("Baseline predictor will still work")
+                success = False
         else:
             # Download from GitHub Releases
             url = get_release_url(MODELS_FILENAME)
@@ -396,16 +396,16 @@ def download_data_files():
                 print_info("Extracting models...")
                 try:
                     with zipfile.ZipFile(models_zip, "r") as zip_ref:
-                        zip_ref.extractall(PROJECT_ROOT)  # Extract to project root
+                        zip_ref.extractall(MODELS_DIR)  # Extract to models directory
                     models_zip.unlink()  # Remove zip after extraction
                     print_success("Models extracted successfully")
                 except Exception as e:
                     print_error(f"Failed to extract models: {e}")
                     success = False
             else:
-                print_warning("Models download failed")
-                print_info("The Baseline predictor will still work.")
-                print_info("Other predictors (Linear, Tree, MLP) require model files.")
+                print_error("Models download failed")
+                print_info("Please download models manually from GitHub Releases")
+                success = False
 
     return success
 
@@ -469,14 +469,20 @@ def verify_installation():
     python_path = get_venv_python()
     all_good = True
 
-    # Test 1: Check config loads
+    # Test 1: Check config loads and get default predictor
     print_info("Testing configuration...")
     result = run_command(
-        f"\"{python_path}\" -c \"from src.config import config; print(config['database']['path'])\"",
+        f'"{python_path}" -c "from src.config import config; '
+        f"print(config['database']['path'], config.get('default_predictor', 'Tree'))\"",
         check=False,
     )
+    default_predictor = "Tree"  # fallback
     if result and result.returncode == 0:
-        print_success(f"Configuration loads: {result.stdout.strip()}")
+        parts = result.stdout.strip().split()
+        db_config_path = parts[0] if parts else ""
+        default_predictor = parts[1] if len(parts) > 1 else "Tree"
+        print_success(f"Configuration loads: {db_config_path}")
+        print_info(f"Default predictor: {default_predictor}")
     else:
         print_error("Configuration failed to load")
         all_good = False
@@ -499,77 +505,129 @@ def verify_installation():
         print_error(f"Database not found at: {db_path}")
         all_good = False
 
-    # Test 3: Check predictor works (use a game ID from the database)
-    print_info("Testing predictor...")
-    # First get a valid game_id from the database
+    # Test 3: Check model files (required for Tree and Linear predictors)
+    print_info("Checking model files...")
+    xgb_model = MODELS_DIR / "xgboost_v0.4_mae10.1.joblib"
+    ridge_model = MODELS_DIR / "ridge_v0.4_mae11.2.joblib"
+
+    if xgb_model.exists() and ridge_model.exists():
+        print_success("All model files present (Tree and Linear predictors ready)")
+    else:
+        missing = []
+        if not xgb_model.exists():
+            missing.append("XGBoost (Tree predictor)")
+        if not ridge_model.exists():
+            missing.append("Ridge (Linear predictor)")
+        print_error(f"Missing models: {', '.join(missing)}")
+        print_info("Please re-run setup.py or download models from GitHub Releases")
+        all_good = False
+
+    # Test 4: Test all available predictors
+    print_info("Testing predictors...")
+    # Get a game_id for an upcoming/scheduled game (status=1)
     get_game_id_cmd = (
         f'"{python_path}" -c "import sqlite3; '
         f"conn=sqlite3.connect('{db_path}'); c=conn.cursor(); "
-        f"c.execute('SELECT game_id FROM Games LIMIT 1'); "
-        f'print(c.fetchone()[0])"'
+        f"c.execute('SELECT game_id FROM Games WHERE status = 1 ORDER BY date_time_utc LIMIT 1'); "
+        f"result = c.fetchone(); print(result[0] if result else '')\""
     )
     game_id_result = run_command(get_game_id_cmd, check=False)
     test_game_id = (
         game_id_result.stdout.strip()
-        if game_id_result and game_id_result.returncode == 0
+        if game_id_result and game_id_result.returncode == 0 and game_id_result.stdout.strip()
         else None
     )
 
     if test_game_id:
-        result = run_command(
-            f'"{python_path}" -c "'
-            f"from src.predictions.prediction_engines.baseline_predictor import BaselinePredictor; "
-            f"p = BaselinePredictor(); "
-            f'r = p.make_pre_game_predictions(["{test_game_id}"]); '
-            f'print("OK" if "{test_game_id}" in r else "FAIL")"',
-            check=False,
-        )
-        if result and result.returncode == 0 and "OK" in result.stdout:
-            print_success("Baseline predictor works")
-        else:
-            print_warning(
-                "Predictor returned no prediction (game may not have prior data)"
-            )
-    else:
-        print_warning("Could not find game ID to test predictor")
+        # Test all three predictors using a temp script to handle imports cleanly
+        test_script = PROJECT_ROOT / "_test_predictors.py"
+        test_script.write_text(f'''
+import sys
+from src.config import config
 
-    # Test 4: Check Flask app
-    print_info("Testing web app...")
-    # Use a temp file to avoid quote escaping issues
+test_game_id = "{test_game_id}"
+results = []
+
+# Test Baseline (no model needed)
+try:
+    from src.predictions.prediction_engines.baseline_predictor import BaselinePredictor
+    p = BaselinePredictor()
+    r = p.make_pre_game_predictions([test_game_id])
+    results.append(("Baseline", test_game_id in r))
+except Exception as e:
+    results.append(("Baseline", False))
+
+# Test Linear (needs model_paths from config)
+try:
+    from src.predictions.prediction_engines.linear_predictor import LinearPredictor
+    model_paths = config.get("predictors", {{}}).get("Linear", {{}}).get("model_paths", [])
+    if model_paths:
+        p = LinearPredictor(model_paths=model_paths)
+        r = p.make_pre_game_predictions([test_game_id])
+        results.append(("Linear", test_game_id in r))
+    else:
+        results.append(("Linear", False))
+except Exception as e:
+    results.append(("Linear", False))
+
+# Test Tree (needs model_paths from config)
+try:
+    from src.predictions.prediction_engines.tree_predictor import TreePredictor
+    model_paths = config.get("predictors", {{}}).get("Tree", {{}}).get("model_paths", [])
+    if model_paths:
+        p = TreePredictor(model_paths=model_paths)
+        r = p.make_pre_game_predictions([test_game_id])
+        results.append(("Tree", test_game_id in r))
+    else:
+        results.append(("Tree", False))
+except Exception as e:
+    results.append(("Tree", False))
+
+# Output results
+ok = [name for name, success in results if success]
+fail = [name for name, success in results if not success]
+print("OK:" + ",".join(ok) if ok else "OK:")
+print("FAIL:" + ",".join(fail) if fail else "FAIL:")
+''')
+        result = run_command(f'"{python_path}" "{test_script}"', check=False)
+        test_script.unlink()  # Clean up
+
+        if result and result.returncode == 0:
+            lines = result.stdout.strip().split("\n")
+            ok_line = [l for l in lines if l.startswith("OK:")][0] if lines else "OK:"
+            fail_line = [l for l in lines if l.startswith("FAIL:")][0] if lines else "FAIL:"
+            predictors_ok = [p for p in ok_line.replace("OK:", "").split(",") if p]
+            predictors_failed = [p for p in fail_line.replace("FAIL:", "").split(",") if p]
+
+            if predictors_ok:
+                print_success(f"Predictors working: {', '.join(predictors_ok)}")
+            if predictors_failed:
+                print_error(f"Predictors failed: {', '.join(predictors_failed)}")
+                all_good = False
+        else:
+            print_error("Could not test predictors")
+            all_good = False
+    else:
+        print_warning("No upcoming games in database to test predictors")
+        print_info("Predictors will work when schedule data is updated")
+
+    # Test 5: Check Flask app with default predictor
+    print_info(f"Testing web app with {default_predictor} predictor...")
     test_script = PROJECT_ROOT / "_test_flask.py"
     test_script.write_text(
-        "from src.web_app.app import create_app\n"
-        "app = create_app(predictor='Baseline')\n"
-        "print('OK' if app else 'FAIL')\n"
+        f"from src.web_app.app import create_app\n"
+        f"app = create_app(predictor='{default_predictor}')\n"
+        f"print('OK' if app else 'FAIL')\n"
     )
     result = run_command(f'"{python_path}" "{test_script}"', check=False)
     test_script.unlink()  # Clean up
     if result and result.returncode == 0 and "OK" in result.stdout:
-        print_success("Flask app creates successfully")
+        print_success(f"Flask app creates successfully with {default_predictor} predictor")
     else:
         print_error("Flask app test failed")
         if result and result.stderr:
             print_info(f"Error: {result.stderr.strip()[:200]}")
         all_good = False
-
-    # Test 5: Check models (optional)
-    print_info("Checking model files...")
-    xgb_model = MODELS_DIR / "xgboost_v0.3_mae10.0.joblib"
-    ridge_model = MODELS_DIR / "ridge_v0.3_mae11.2.joblib"
-    mlp_model = MODELS_DIR / "mlp_v0.3_mae11.0.pth"
-
-    if xgb_model.exists() and ridge_model.exists() and mlp_model.exists():
-        print_success("All model files present (Tree, Linear, MLP predictors ready)")
-    else:
-        missing = []
-        if not xgb_model.exists():
-            missing.append("XGBoost")
-        if not ridge_model.exists():
-            missing.append("Ridge")
-        if not mlp_model.exists():
-            missing.append("MLP")
-        print_warning(f"Missing models: {', '.join(missing)}")
-        print_info("Baseline predictor will still work")
 
     return all_good
 
@@ -600,12 +658,12 @@ def print_completion_message(success):
 │     python start_app.py                                     │
 │                                                             │
 │  3. Open your browser to:                                   │
-│     http://localhost:5001                                   │
+│     http://localhost:5000                                   │
 │                                                             │
 ├─────────────────────────────────────────────────────────────┤
 │  Optional:                                                  │
 │  • Run with debug mode: python start_app.py --debug         │
-│  • Use different predictor: python start_app.py --predictor=Ensemble │
+│  • Use different predictor: python start_app.py --predictor=Linear │
 │  • Run tests: python -m pytest tests/ -v                    │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘

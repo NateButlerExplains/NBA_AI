@@ -37,6 +37,9 @@ from tqdm import tqdm
 
 from src.config import config
 
+# Suppress verbose DEBUG logging from pdfminer (used by pdfplumber)
+logging.getLogger('pdfminer').setLevel(logging.WARNING)
+
 DB_PATH = config["database"]["path"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -57,6 +60,7 @@ PDF_URL_BASE = (
 
 # Cache configuration
 INJURY_CACHE_TODAY_HOURS = 2  # Refetch today's injuries every 2 hours
+INJURY_CACHE_NOT_SUBMITTED_HOURS = 1  # Retry "not yet submitted" after 1 hour
 FIRST_REPORT_HOUR_ET = 9  # First injury report published at 9 AM Eastern
 
 
@@ -458,10 +462,18 @@ def _ensure_injury_cache_table(db_path: str = DB_PATH):
             """
             CREATE TABLE IF NOT EXISTS InjuryCache (
                 report_date TEXT PRIMARY KEY,
-                last_fetched_at TEXT NOT NULL
+                last_fetched_at TEXT NOT NULL,
+                status TEXT DEFAULT 'success'
             )
             """
         )
+        # Add status column if it doesn't exist (migration for existing tables)
+        cursor.execute("PRAGMA table_info(InjuryCache)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "status" not in columns:
+            cursor.execute(
+                "ALTER TABLE InjuryCache ADD COLUMN status TEXT DEFAULT 'success'"
+            )
         conn.commit()
 
 
@@ -485,8 +497,10 @@ def _get_injury_fetch_time(
         return None
 
 
-def _update_injury_cache(report_date: str, db_path: str = DB_PATH):
-    """Update the injury cache with current UTC fetch timestamp."""
+def _update_injury_cache(
+    report_date: str, db_path: str = DB_PATH, status: str = "success"
+):
+    """Update the injury cache with current UTC fetch timestamp and status."""
     _ensure_injury_cache_table(db_path)
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
@@ -495,13 +509,33 @@ def _update_injury_cache(report_date: str, db_path: str = DB_PATH):
         fetch_time = datetime.now(timezone.utc).isoformat()
         cursor.execute(
             """
-            INSERT INTO InjuryCache (report_date, last_fetched_at)
-            VALUES (?, ?)
-            ON CONFLICT(report_date) DO UPDATE SET last_fetched_at = excluded.last_fetched_at
+            INSERT INTO InjuryCache (report_date, last_fetched_at, status)
+            VALUES (?, ?, ?)
+            ON CONFLICT(report_date) DO UPDATE SET
+                last_fetched_at = excluded.last_fetched_at,
+                status = excluded.status
             """,
-            (report_date, fetch_time),
+            (report_date, fetch_time, status),
         )
         conn.commit()
+
+
+def _get_injury_cache_status(report_date: str, db_path: str = DB_PATH) -> Optional[str]:
+    """Get the cache status for a specific injury report date."""
+    _ensure_injury_cache_table(db_path)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT status FROM InjuryCache WHERE report_date = ?",
+                (report_date,),
+            )
+            result = cursor.fetchone()
+            if result:
+                return result[0]
+            return None
+    except sqlite3.OperationalError:
+        return None
 
 
 def _should_fetch_injury_date(report_date: datetime, db_path: str = DB_PATH) -> bool:
@@ -509,8 +543,9 @@ def _should_fetch_injury_date(report_date: datetime, db_path: str = DB_PATH) -> 
     Determine if an injury report date should be fetched.
 
     Cache strategy:
-    - Today's date: Refetch if last fetch was >2 hours ago
+    - Today's date: Refetch if last fetch was >2 hours ago AND status indicates data may exist
     - Past dates: Once fetched, never refetch (permanent cache)
+    - Dates with status='not_yet_submitted' for today: Don't refetch within 2 hours
     """
     from datetime import timezone
 
@@ -529,6 +564,9 @@ def _should_fetch_injury_date(report_date: datetime, db_path: str = DB_PATH) -> 
         # Never fetched - fetch it
         return True
 
+    # Get cached status
+    cached_status = _get_injury_cache_status(date_str, db_path)
+
     if is_today:
         # Today: check if cache expired (2 hours)
         # Use UTC for cache comparison
@@ -536,16 +574,31 @@ def _should_fetch_injury_date(report_date: datetime, db_path: str = DB_PATH) -> 
         if last_fetch.tzinfo is None:
             last_fetch = last_fetch.replace(tzinfo=timezone.utc)
         hours_since_fetch = (now_utc - last_fetch).total_seconds() / 3600
-        if hours_since_fetch > INJURY_CACHE_TODAY_HOURS:
-            logging.debug(
-                f"Today's injury cache expired ({hours_since_fetch:.1f}h old) - refetching"
-            )
-            return True
-        else:
+
+        if hours_since_fetch <= INJURY_CACHE_TODAY_HOURS:
+            # Cache is still fresh - skip
             logging.debug(
                 f"Today's injury cache fresh ({hours_since_fetch:.1f}h old) - skipping"
             )
             return False
+
+        # Cache expired - check status to determine retry behavior
+        # For 'not_yet_submitted', use shorter retry interval since teams submit throughout the day
+        if cached_status == "not_yet_submitted":
+            if hours_since_fetch <= INJURY_CACHE_NOT_SUBMITTED_HOURS:
+                logging.debug(
+                    f"Today's injury cache 'not_yet_submitted' and only {hours_since_fetch:.1f}h old - skipping"
+                )
+                return False
+            logging.debug(
+                f"Today's injury cache 'not_yet_submitted' but {hours_since_fetch:.1f}h old - retrying"
+            )
+            return True
+
+        logging.debug(
+            f"Today's injury cache expired ({hours_since_fetch:.1f}h old) - refetching"
+        )
+        return True
     else:
         # Past date: permanent cache
         return False
@@ -553,12 +606,17 @@ def _should_fetch_injury_date(report_date: datetime, db_path: str = DB_PATH) -> 
 
 def _find_dates_missing_data(dates: list, db_path: str = DB_PATH) -> list:
     """
-    Find dates that are in the cache but have no actual injury data in the database.
+    Find dates that are in the cache but have no actual injury data in the database,
+    AND where the cached status indicates data should exist.
 
     This catches cases where:
     - A previous fetch got a 403 error and was incorrectly cached
     - The PDF was empty/unparseable
     - Some other silent failure occurred
+
+    We DON'T retry dates where:
+    - status='not_found' (404 - legitimate off-day, no games)
+    - status='not_yet_submitted' (teams haven't submitted yet)
 
     Args:
         dates: List of datetime objects to check
@@ -570,27 +628,35 @@ def _find_dates_missing_data(dates: list, db_path: str = DB_PATH) -> list:
     if not dates:
         return []
 
+    # Ensure table has status column (migration)
+    _ensure_injury_cache_table(db_path)
+
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
-        # Get dates that are in cache
+        # Get dates that are in cache with status='success' (expected to have data)
+        # We only retry dates that were marked as "success" but actually have no data
         date_strs = [dt.strftime("%Y-%m-%d") for dt in dates]
         placeholders = ",".join("?" * len(date_strs))
 
         cursor.execute(
-            f"SELECT report_date FROM InjuryCache WHERE report_date IN ({placeholders})",
+            f"""
+            SELECT report_date FROM InjuryCache
+            WHERE report_date IN ({placeholders})
+            AND (status = 'success' OR status IS NULL)
+            """,
             date_strs,
         )
-        cached_dates = {row[0] for row in cursor.fetchall()}
+        cached_success_dates = {row[0] for row in cursor.fetchall()}
 
-        if not cached_dates:
+        if not cached_success_dates:
             return []
 
         # Get dates that have actual injury data
         cursor.execute(
             f"""
             SELECT DISTINCT DATE(report_timestamp) as report_date
-            FROM InjuryReports 
+            FROM InjuryReports
             WHERE source = 'NBA_Official'
             AND DATE(report_timestamp) IN ({placeholders})
             """,
@@ -598,8 +664,8 @@ def _find_dates_missing_data(dates: list, db_path: str = DB_PATH) -> list:
         )
         dates_with_data = {row[0] for row in cursor.fetchall()}
 
-        # Find dates that are cached but have no data
-        missing_data_dates = cached_dates - dates_with_data
+        # Find dates that are cached as success but have no data
+        missing_data_dates = cached_success_dates - dates_with_data
 
         if missing_data_dates:
             logging.debug(
@@ -975,8 +1041,8 @@ def update_nba_official_injuries(
             if isinstance(iterator, tqdm):
                 iterator.set_postfix({"status": "saved", "records": counts["total"]})
 
-            # Only cache successful fetches with data
-            _update_injury_cache(date_str, db_path)
+            # Cache successful fetches with data
+            _update_injury_cache(date_str, db_path, status="success")
 
         elif status == "not_found":
             logging.debug(
@@ -984,8 +1050,8 @@ def update_nba_official_injuries(
             )
             if isinstance(iterator, tqdm):
                 iterator.set_postfix({"status": "not found"})
-            # Cache 404s - these are legitimate "no game day" dates
-            _update_injury_cache(date_str, db_path)
+            # Cache 404s with status - these are legitimate "no game day" dates
+            _update_injury_cache(date_str, db_path, status="not_found")
 
         elif status == "not_yet_submitted":
             logging.debug(
@@ -993,8 +1059,8 @@ def update_nba_official_injuries(
             )
             if isinstance(iterator, tqdm):
                 iterator.set_postfix({"status": "not submitted"})
-            # Cache this - teams didn't submit for this date (normal for early reports)
-            _update_injury_cache(date_str, db_path)
+            # Cache with status - teams didn't submit for this date (normal for early reports)
+            _update_injury_cache(date_str, db_path, status="not_yet_submitted")
 
         elif status == "forbidden":
             forbidden_count += 1

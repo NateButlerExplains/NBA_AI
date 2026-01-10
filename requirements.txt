@@ -13,6 +13,8 @@ pandas==2.3.3
 pytz==2025.2
 tqdm==4.67.1
 tzlocal==5.3.1
+pdfplumber==0.11.9
+beautifulsoup4==4.13.3
 
 # Machine Learning
 scikit-learn==1.7.2
@@ -20,9 +22,10 @@ scipy==1.16.3
 xgboost==3.1.2
 joblib==1.5.2
 
-# PyTorch (CPU version)
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.8.0+cpu
+# PyTorch (CPU version) - Optional, only needed for MLP predictor
+# Uncomment if you want to use the MLP predictor
+# --extra-index-url https://download.pytorch.org/whl/cpu
+# torch==2.8.0+cpu
 
 # NBA API
 nba_api==1.11.3
