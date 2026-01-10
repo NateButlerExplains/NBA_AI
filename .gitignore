@@ -63,4 +63,4 @@ htmlcov/
 .idea/
 
 # Claude Code
-.claude/
+.claude/TODO.md
