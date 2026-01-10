@@ -61,3 +61,6 @@ htmlcov/
 *~
 .vscode/
 .idea/
+
+# Claude Code
+.claude/
