@@ -9,7 +9,6 @@ Usage:
 
 import argparse
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from sklearn.metrics import log_loss, mean_absolute_error
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.config import config
+from src.database import get_db
 
 # Configuration
 DB_PATH = config["database"]["path"]
@@ -37,7 +37,7 @@ def fetch_predictor_data(seasons, predictors):
     Returns:
         DataFrame: Data containing game_id, predictor, prediction_set, home_score, away_score.
     """
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db() as conn:
         query = f"""
         SELECT p.game_id, p.predictor, p.prediction_set, gs.home_score, gs.away_score
         FROM Predictions p

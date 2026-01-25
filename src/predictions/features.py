@@ -30,12 +30,12 @@ import argparse
 import datetime
 import json
 import logging
-import sqlite3
 
 import numpy as np
 import pandas as pd
 
 from src.config import config
+from src.database import get_db
 from src.database_updater.prior_states import (
     determine_prior_states_needed,
     load_prior_states,
@@ -176,7 +176,7 @@ def save_feature_sets(feature_sets, db_path=DB_PATH):
     """
     logging.debug(f"Saving feature sets for {len(feature_sets)} games...")
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         # Prepare the data for the parameterized query
@@ -228,7 +228,7 @@ def load_feature_sets(game_ids, db_path=DB_PATH):
         dict: A dictionary where each key is a game_id and each value is the corresponding feature set.
     """
     logging.debug(f"Loading feature sets for {len(game_ids)} games...")
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         # Query the database for the feature sets for the specified game_ids

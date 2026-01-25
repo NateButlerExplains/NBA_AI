@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.config import config
+from src.database import create_connection, get_db
 
 # =============================================================================
 # Unit Tests - Team Matching
@@ -170,7 +171,7 @@ class TestBettingDatabaseSchema:
     @pytest.fixture
     def db_conn(self):
         """Get database connection."""
-        conn = sqlite3.connect(config["database"]["path"])
+        conn = create_connection(config["database"]["path"])
         yield conn
         conn.close()
 
@@ -283,7 +284,7 @@ class TestBettingDataPersistence:
     def test_get_betting_data_returns_dict(self):
         """Betting table should have data for existing games."""
         # Get a game_id that exists in Betting table with actual data
-        conn = sqlite3.connect(config["database"]["path"])
+        conn = create_connection(config["database"]["path"])
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -305,7 +306,7 @@ class TestBettingDataPersistence:
 
     def test_betting_data_placeholder_rows(self):
         """Placeholder rows should exist for games with no betting data (cache mechanism)."""
-        conn = sqlite3.connect(config["database"]["path"])
+        conn = create_connection(config["database"]["path"])
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -334,7 +335,7 @@ class TestBettingDataConsistency:
     @pytest.fixture
     def db_conn(self):
         """Get database connection."""
-        conn = sqlite3.connect(config["database"]["path"])
+        conn = create_connection(config["database"]["path"])
         yield conn
         conn.close()
 

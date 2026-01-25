@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.database import create_connection, get_db
 from src.database_updater.boxscores import (
     fetch_single_boxscore,
     get_boxscores,
@@ -36,7 +37,7 @@ class TestBoxscoreRefetchLogic:
     def test_db(self):
         """Create temporary test database with schema."""
         db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        conn = sqlite3.connect(db.name)
+        conn = create_connection(db.name)
         cursor = conn.cursor()
 
         # Create schema with boxscore_last_fetched_at column
@@ -123,7 +124,7 @@ class TestBoxscoreRefetchLogic:
 
     def test_in_progress_games_no_boxscores(self, test_db):
         """In-progress games with no boxscores should be fetched."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -140,7 +141,7 @@ class TestBoxscoreRefetchLogic:
 
     def test_in_progress_games_recent_fetch(self, test_db):
         """In-progress games fetched <5 min ago should be skipped."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -159,7 +160,7 @@ class TestBoxscoreRefetchLogic:
 
     def test_in_progress_games_stale_fetch(self, test_db):
         """In-progress games fetched >5 min ago should be re-fetched."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -178,7 +179,7 @@ class TestBoxscoreRefetchLogic:
 
     def test_completed_not_finalized_needs_refetch(self, test_db):
         """Completed games not finalized with stale fetch should be re-fetched."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -197,7 +198,7 @@ class TestBoxscoreRefetchLogic:
 
     def test_completed_missing_boxscores_recent_game(self, test_db):
         """Recent completed games missing boxscores should be fetched (48h window)."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -214,7 +215,7 @@ class TestBoxscoreRefetchLogic:
 
     def test_completed_missing_boxscores_old_game(self, test_db):
         """Old completed games missing boxscores SHOULD be selected (ensures complete coverage)."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -231,7 +232,7 @@ class TestBoxscoreRefetchLogic:
 
     def test_finalized_games_skipped(self, test_db):
         """Games with boxscore_data_finalized=1 should be skipped."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -254,7 +255,7 @@ class TestBoxscoresValidator:
     def test_db(self):
         """Create test database with boxscore data."""
         db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        conn = sqlite3.connect(db.name)
+        conn = create_connection(db.name)
         cursor = conn.cursor()
 
         # Create schema
@@ -332,7 +333,7 @@ class TestBoxscoresValidator:
 
     def test_missing_player_box_records(self, test_db):
         """Should detect completed games missing PlayerBox records."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute("INSERT INTO Games (game_id, status) VALUES ('0022300001', 3)")
@@ -356,7 +357,7 @@ class TestBoxscoresValidator:
 
     def test_missing_team_box_records(self, test_db):
         """Should detect completed games missing TeamBox records."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute("INSERT INTO Games (game_id, status) VALUES ('0022300001', 3)")
@@ -380,7 +381,7 @@ class TestBoxscoresValidator:
 
     def test_invalid_player_count_per_team(self, test_db):
         """Should detect teams with unusual player counts."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute("INSERT INTO Games (game_id, status) VALUES ('0022300001', 3)")
@@ -418,7 +419,7 @@ class TestBoxscoresValidator:
 
     def test_invalid_team_count_per_game(self, test_db):
         """Should detect games without exactly 2 teams in TeamBox."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute("INSERT INTO Games (game_id, status) VALUES ('0022300001', 3)")
@@ -448,7 +449,7 @@ class TestBoxscoresValidator:
 
     def test_low_minutes_validation(self, test_db):
         """Should detect teams with <240 minutes (incomplete games)."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute("INSERT INTO Games (game_id, status) VALUES ('0022300001', 3)")
@@ -482,7 +483,7 @@ class TestBoxscoresValidator:
 
     def test_null_player_fields(self, test_db):
         """Should detect PlayerBox records with NULL critical fields."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute("INSERT INTO Games (game_id, status) VALUES ('0022300001', 3)")
@@ -517,7 +518,7 @@ class TestSaveBoxscores:
     def test_db(self):
         """Create test database without boxscore_last_fetched_at column."""
         db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        conn = sqlite3.connect(db.name)
+        conn = create_connection(db.name)
         cursor = conn.cursor()
 
         # Create schema WITHOUT boxscore_last_fetched_at column to test migration
@@ -598,7 +599,7 @@ class TestSaveBoxscores:
     def test_column_migration(self, test_db):
         """Should auto-migrate boxscore_last_fetched_at column."""
         # Verify column doesn't exist initially
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(Games)")
         columns = [row[1] for row in cursor.fetchall()]
@@ -763,7 +764,7 @@ class TestMinutesBasedFinalization:
     def test_db(self):
         """Create test database with complete boxscore data."""
         db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        conn = sqlite3.connect(db.name)
+        conn = create_connection(db.name)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -804,7 +805,7 @@ class TestMinutesBasedFinalization:
 
     def test_complete_game_gets_finalized(self, test_db):
         """Games with 240+ minutes per team should be finalized."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -848,7 +849,7 @@ class TestMinutesBasedFinalization:
 
     def test_incomplete_game_not_finalized(self, test_db):
         """Games with <240 minutes per team should not be finalized."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -884,7 +885,7 @@ class TestMinutesBasedFinalization:
 
     def test_non_final_status_not_finalized(self, test_db):
         """Games with status != 3 should not be finalized regardless of minutes."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         cursor.execute(

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.database import create_connection, get_db
 from src.health_check import CheckResult, CheckStatus, HealthReport, SeasonHealthChecker
 
 # =============================================================================
@@ -295,7 +296,7 @@ class TestSeasonHealthChecker:
 def test_db(tmp_path):
     """Create a minimal test database."""
     db_path = str(tmp_path / "test.sqlite")
-    conn = sqlite3.connect(db_path)
+    conn = create_connection(db_path)
     cursor = conn.cursor()
 
     # Create minimal schema
@@ -407,7 +408,7 @@ class TestSeasonHealthCheckerIntegration:
 
     def test_games_check_pass(self, test_db):
         """Test games check passes with data."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         # Insert test games
@@ -435,7 +436,7 @@ class TestSeasonHealthCheckerIntegration:
 
     def test_flag_consistency_critical(self, test_db):
         """Test flag consistency detects issues."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         # Insert a game with game_data_finalized=1 but no PbP
@@ -462,7 +463,7 @@ class TestSeasonHealthCheckerIntegration:
 
     def test_players_check_pass(self, test_db):
         """Test players check passes with data."""
-        conn = sqlite3.connect(test_db)
+        conn = create_connection(test_db)
         cursor = conn.cursor()
 
         # Insert 500+ players

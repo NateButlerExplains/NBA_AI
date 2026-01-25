@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.database import create_connection
 from src.database_updater.database_update_manager import get_games_needing_pbp_update
 from src.database_updater.pbp import save_pbp
 from src.database_updater.validators import PbPValidator, Severity
@@ -21,7 +22,7 @@ class TestPBPRefetchLogic:
     def test_db(self):
         """Create temporary test database with schema."""
         db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        conn = sqlite3.connect(db.name)
+        conn = create_connection(db.name)
         cursor = conn.cursor()
 
         # Create schema
@@ -184,7 +185,7 @@ class TestSavePBP:
     def test_db(self):
         """Create temporary test database."""
         db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        conn = sqlite3.connect(db.name)
+        conn = create_connection(db.name)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -285,7 +286,7 @@ class TestPbPValidator:
     def test_db(self):
         """Create test database with schema."""
         db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        conn = sqlite3.connect(db.name)
+        conn = create_connection(db.name)
         cursor = conn.cursor()
 
         cursor.execute(

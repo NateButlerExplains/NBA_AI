@@ -36,6 +36,7 @@ import requests
 from tqdm import tqdm
 
 from src.config import config
+from src.database import create_connection, get_db
 
 # Suppress verbose DEBUG logging from pdfminer (used by pdfplumber)
 logging.getLogger('pdfminer').setLevel(logging.WARNING)
@@ -456,7 +457,7 @@ def normalize_player_name(name: str) -> str:
 
 def _ensure_injury_cache_table(db_path: str = DB_PATH):
     """Create InjuryCache table if it doesn't exist."""
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -483,7 +484,7 @@ def _get_injury_fetch_time(
     """Get the last fetch time for a specific injury report date."""
     _ensure_injury_cache_table(db_path)
     try:
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT last_fetched_at FROM InjuryCache WHERE report_date = ?",
@@ -502,7 +503,7 @@ def _update_injury_cache(
 ):
     """Update the injury cache with current UTC fetch timestamp and status."""
     _ensure_injury_cache_table(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         from datetime import timezone
 
@@ -524,7 +525,7 @@ def _get_injury_cache_status(report_date: str, db_path: str = DB_PATH) -> Option
     """Get the cache status for a specific injury report date."""
     _ensure_injury_cache_table(db_path)
     try:
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT status FROM InjuryCache WHERE report_date = ?",
@@ -631,7 +632,7 @@ def _find_dates_missing_data(dates: list, db_path: str = DB_PATH) -> list:
     # Ensure table has status column (migration)
     _ensure_injury_cache_table(db_path)
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         # Get dates that are in cache with status='success' (expected to have data)
@@ -691,7 +692,7 @@ def _find_dates_missing_data(dates: list, db_path: str = DB_PATH) -> list:
 
 def build_player_lookup(db_path: str = DB_PATH) -> dict:
     """Build a lookup dict mapping normalized names to NBA player IDs."""
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT person_id, first_name, last_name, full_name FROM Players"
@@ -716,7 +717,7 @@ def _ensure_injury_unique_constraint(db_path: str = DB_PATH):
     Uses (player_name, report_timestamp, source, team) as the semantic key
     since nba_player_id can be NULL for unmatched players.
     """
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         # Check if new constraint already exists
@@ -778,7 +779,7 @@ def save_injury_records(df: pd.DataFrame, db_path: str = DB_PATH) -> dict:
     # Build player lookup for matching
     player_lookup = build_player_lookup(db_path)
 
-    conn = sqlite3.connect(db_path)
+    conn = create_connection(db_path)
 
     db_records = []
     for _, row in df.iterrows():
@@ -968,7 +969,7 @@ def update_nba_official_injuries(
         all_dates = [today - timedelta(days=i) for i in range(days_back + 1)]
         all_dates.reverse()  # Process oldest first
 
-    conn = sqlite3.connect(db_path)
+    conn = create_connection(db_path)
 
     # Filter dates using smart caching:
     # - Today: refetch if >2 hours old
@@ -990,7 +991,7 @@ def update_nba_official_injuries(
         conn.close()
 
         # Get total count for reporting
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT COUNT(*) FROM InjuryReports WHERE source='NBA_Official'"
@@ -1127,7 +1128,7 @@ def update_nba_official_injuries(
             )
 
     # Get total count
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM InjuryReports WHERE source='NBA_Official'")
         total = cursor.fetchone()[0]
@@ -1176,7 +1177,7 @@ def backfill_injury_reports(
         f"Backfilling NBA Official injury reports for {len(dates)} days ({start_date} to {end_date})..."
     )
 
-    conn = sqlite3.connect(db_path)
+    conn = create_connection(db_path)
     total_inserted = 0
     total_cached = 0
     total_not_found = 0

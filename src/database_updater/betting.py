@@ -66,6 +66,7 @@ import requests
 from tqdm import tqdm
 
 from src.config import config
+from src.database import create_connection, get_db
 from src.utils import NBATeamConverter, StageLogger, log_execution_time
 
 logger = logging.getLogger(__name__)
@@ -270,7 +271,7 @@ def create_betting_tables(conn: Optional[sqlite3.Connection] = None) -> None:
     """Create Betting table (single row per game schema)."""
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = create_connection()
         close_conn = True
 
     try:
@@ -314,7 +315,7 @@ def get_espn_event_id(
         ESPN event ID or None if not found
     """
     # Check cache first
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db() as conn:
         cursor = conn.execute(
             "SELECT espn_event_id FROM ESPNGameMapping WHERE nba_game_id = ?",
             (game_id,),
@@ -388,7 +389,7 @@ def _cache_espn_mapping(
 ) -> None:
     """Cache ESPN game mapping for future lookups."""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with get_db() as conn:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO ESPNGameMapping 
@@ -815,7 +816,7 @@ def save_betting_data(
 
     close_conn = False
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = create_connection()
         close_conn = True
 
     saved = 0
@@ -1028,7 +1029,7 @@ def update_betting_data(
 
     now = datetime.now(timezone.utc)
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db() as conn:
         conn.row_factory = sqlite3.Row
 
         # Ensure table exists
@@ -1554,7 +1555,7 @@ def update_betting_backfill(season: str) -> dict:
 
     logger.info(f"Tier 3: Backfilling season {season} from Covers team schedules")
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db() as conn:
         conn.row_factory = sqlite3.Row
 
         # Ensure table exists
@@ -1654,7 +1655,7 @@ def get_betting_data(game_id: str) -> Optional[dict]:
     Returns:
         Betting data dict or None
     """
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
             "SELECT * FROM Betting WHERE game_id = ?",

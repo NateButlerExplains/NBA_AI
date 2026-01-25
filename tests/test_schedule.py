@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
+from src.database import create_connection, get_db
 from src.database_updater import schedule
 from src.utils import determine_current_season
 
@@ -26,7 +27,7 @@ class TestScheduleCache:
     def temp_db(self):
         """Create temporary database with ScheduleCache table."""
         db = tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite")
-        conn = sqlite3.connect(db.name)
+        conn = create_connection(db.name)
         cursor = conn.cursor()
 
         # Create minimal ScheduleCache table
@@ -54,7 +55,7 @@ class TestScheduleCache:
         historical_season = "2022-2023"  # Not current
 
         # Ensure schedule_finalized column exists
-        with sqlite3.connect(temp_db) as conn:
+        with get_db(temp_db) as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA table_info(ScheduleCache)")
             columns = [row[1] for row in cursor.fetchall()]
@@ -80,7 +81,7 @@ class TestScheduleCache:
         historical_season = "2022-2023"
 
         # Ensure schedule_finalized column exists
-        with sqlite3.connect(temp_db) as conn:
+        with get_db(temp_db) as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA table_info(ScheduleCache)")
             columns = [row[1] for row in cursor.fetchall()]
@@ -108,7 +109,7 @@ class TestScheduleCache:
         current_season = determine_current_season()
 
         # Insert old cache entry for current season (6 minutes ago - beyond 5-minute threshold)
-        with sqlite3.connect(temp_db) as conn:
+        with get_db(temp_db) as conn:
             cursor = conn.cursor()
             old_time = (pd.Timestamp.now() - timedelta(minutes=6)).strftime(
                 "%Y-%m-%d %H:%M:%S"
@@ -145,7 +146,7 @@ class TestScheduleFlagPreservation:
         db_path = config["database"]["path"]
 
         # Find a game with all flags set to 1
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -182,7 +183,7 @@ class TestScheduleFlagPreservation:
         schedule.save_schedule(game_data, season, db_path)
 
         # Verify flags still set to 1
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """

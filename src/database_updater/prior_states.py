@@ -25,6 +25,7 @@ import logging
 import sqlite3
 
 from src.config import config
+from src.database import get_db
 from src.logging_config import setup_logging
 from src.utils import log_execution_time, lookup_basic_game_info
 
@@ -54,7 +55,7 @@ def determine_prior_states_needed(game_ids, db_path=DB_PATH):
     necessary_prior_states = {}
 
     try:
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -183,7 +184,7 @@ def load_prior_states(game_ids_dict, db_path=DB_PATH, parse_players_data=False):
     )
 
     try:
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 

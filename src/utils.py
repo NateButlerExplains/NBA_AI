@@ -28,7 +28,6 @@ Usage:
 import logging
 import os
 import re
-import sqlite3
 import time
 from datetime import datetime
 from functools import wraps
@@ -39,6 +38,7 @@ from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 
 from src.config import config
+from src.database import get_db
 
 # Configuration values
 DB_PATH = config["database"]["path"]
@@ -298,7 +298,7 @@ def lookup_basic_game_info(game_ids, db_path=DB_PATH):
     WHERE game_id IN ({','.join(['?'] * len(game_ids))})
     """
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(sql, game_ids)
         games = cursor.fetchall()
@@ -361,7 +361,7 @@ def get_season_start_date(season: str, db_path: str = DB_PATH) -> datetime:
     Returns:
         datetime: Date of first game in season (or Oct 22 fallback)
     """
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -837,7 +837,7 @@ class NBATeamConverter:
         identifier_normalized = str(identifier).lower().replace("-", " ")
 
         # Open a new database connection
-        with sqlite3.connect(NBATeamConverter.absolute_db_path) as conn:
+        with get_db(NBATeamConverter.absolute_db_path) as conn:
             cursor = conn.cursor()
 
             # Execute the SQL query
@@ -880,7 +880,7 @@ class NBATeamConverter:
         team_id = NBATeamConverter.__get_team_id(identifier)
 
         # Open a new database connection
-        with sqlite3.connect(NBATeamConverter.absolute_db_path) as conn:
+        with get_db(NBATeamConverter.absolute_db_path) as conn:
             cursor = conn.cursor()
 
             # Execute the SQL query
@@ -906,7 +906,7 @@ class NBATeamConverter:
         team_id = NBATeamConverter.__get_team_id(identifier)
 
         # Open a new database connection
-        with sqlite3.connect(NBATeamConverter.absolute_db_path) as conn:
+        with get_db(NBATeamConverter.absolute_db_path) as conn:
             cursor = conn.cursor()
 
             # Execute the SQL query
@@ -930,7 +930,7 @@ class NBATeamConverter:
         team_id = NBATeamConverter.__get_team_id(identifier)
 
         # Open a new database connection
-        with sqlite3.connect(NBATeamConverter.absolute_db_path) as conn:
+        with get_db(NBATeamConverter.absolute_db_path) as conn:
             cursor = conn.cursor()
 
             # Execute the SQL query

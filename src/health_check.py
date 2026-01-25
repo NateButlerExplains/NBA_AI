@@ -28,7 +28,6 @@ Exit Codes:
 import argparse
 import json
 import logging
-import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field
@@ -37,6 +36,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from src.config import config
+from src.database import get_db
 from src.logging_config import setup_logging
 from src.utils import get_current_eastern_date, validate_season_format
 
@@ -321,7 +321,7 @@ class SeasonHealthChecker:
         """Check Games table completeness and structure."""
         stage = "Games"
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db(self.db_path) as conn:
             cursor = conn.cursor()
 
             # 1. Check game count
@@ -474,7 +474,7 @@ class SeasonHealthChecker:
         """Check PbP_Logs table completeness."""
         stage = "PbP"
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db(self.db_path) as conn:
             cursor = conn.cursor()
 
             # 1. Get completed games count
@@ -604,7 +604,7 @@ class SeasonHealthChecker:
         """Check GameStates table completeness and structure."""
         stage = "GameStates"
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db(self.db_path) as conn:
             cursor = conn.cursor()
 
             # 1. Get games with game_data_finalized=1
@@ -757,7 +757,7 @@ class SeasonHealthChecker:
         """Check PlayerBox and TeamBox tables."""
         stage = "Boxscores"
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db(self.db_path) as conn:
             cursor = conn.cursor()
 
             # Check if this season should have boxscore data
@@ -920,7 +920,7 @@ class SeasonHealthChecker:
         """Check Features table completeness."""
         stage = "Features"
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db(self.db_path) as conn:
             cursor = conn.cursor()
 
             # 1. Get games with pre_game_data_finalized=1
@@ -1035,7 +1035,7 @@ class SeasonHealthChecker:
             )
             return
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db(self.db_path) as conn:
             cursor = conn.cursor()
 
             # Get games with pre_game_data_finalized=1 (eligible for predictions)
@@ -1130,7 +1130,7 @@ class SeasonHealthChecker:
             )
             return
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db(self.db_path) as conn:
             cursor = conn.cursor()
 
             # Get completed games
@@ -1223,7 +1223,7 @@ class SeasonHealthChecker:
             )
             return
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db(self.db_path) as conn:
             cursor = conn.cursor()
 
             # Get unique game days for this season
@@ -1356,7 +1356,7 @@ class SeasonHealthChecker:
         """Check Players table (not season-scoped)."""
         stage = "Players"
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db(self.db_path) as conn:
             cursor = conn.cursor()
 
             # 1. Check total player count
@@ -1431,7 +1431,7 @@ class SeasonHealthChecker:
         """Check that flags match underlying data state."""
         stage = "Flags"
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db(self.db_path) as conn:
             cursor = conn.cursor()
 
             # 1. game_data_finalized=1 but no PbP

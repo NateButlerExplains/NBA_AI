@@ -23,12 +23,12 @@ Usage:
 import argparse
 import json
 import logging
-import sqlite3
 
 import numpy as np
 import pandas as pd
 
 from src.config import config
+from src.database import get_db
 from src.logging_config import setup_logging
 from src.utils import log_execution_time
 
@@ -205,7 +205,7 @@ def save_predictions(predictions, predictor_name, db_path=DB_PATH):
     prediction_datetime = pd.Timestamp.now(tz="UTC")
     prediction_datetime_str = prediction_datetime.strftime("%Y-%m-%d %H:%M:%S")
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         # Validate prediction times against game start times

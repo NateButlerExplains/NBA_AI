@@ -33,6 +33,7 @@ from nba_api.stats.endpoints import BoxScoreTraditionalV3
 from tqdm import tqdm
 
 from src.config import config
+from src.database import get_db
 from src.utils import StageLogger, log_execution_time, requests_retry_session
 
 DB_PATH = config["database"]["path"]
@@ -316,7 +317,7 @@ def get_boxscores(
     # Get game statuses if requested
     game_statuses = {}
     if check_game_status:
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             for game_id in game_ids:
                 cursor.execute("SELECT status FROM Games WHERE game_id=?", (game_id,))
@@ -403,7 +404,7 @@ def save_boxscores(
 
     logging.debug(f"Saving boxscores for {len(boxscore_data)} games...")
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         # Auto-migration: Add boxscore_last_fetched_at column if it doesn't exist

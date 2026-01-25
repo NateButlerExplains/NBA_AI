@@ -27,6 +27,7 @@ import sqlite3
 import requests
 
 from src.config import config
+from src.database import get_db
 from src.database_updater.validators import PlayerValidator
 from src.logging_config import setup_logging
 from src.utils import (
@@ -49,7 +50,7 @@ PLAYERS_CACHE_HISTORICAL_DAYS = 365  # Cache duration for historical seasons (1 
 
 def _ensure_players_cache_table(db_path):
     """Create PlayersCache table if it doesn't exist."""
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -70,7 +71,7 @@ def _get_last_players_update(db_path):
         datetime or None: The last update datetime, or None if not cached.
     """
     try:
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT last_update_datetime FROM PlayersCache ORDER BY last_update_datetime DESC LIMIT 1"
@@ -140,7 +141,7 @@ def _update_players_cache(db_path):
     _ensure_players_cache_table(db_path)
 
     current_season = determine_current_season()
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -154,7 +155,7 @@ def _update_players_cache(db_path):
 
 def _get_player_count(db_path):
     """Get total player count from database."""
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM Players")
         return cursor.fetchone()[0]
@@ -334,7 +335,7 @@ def save_players(players_data, db_path=DB_PATH, stage_logger=None):
     if not players_data:
         return {"added": 0, "updated": 0, "total": 0}
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         # Get existing players to compare

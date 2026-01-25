@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.config import config
+from src.database import create_connection, get_db
 from src.database_updater import players
 
 
@@ -25,7 +26,7 @@ class TestPlayerSmartUpdate:
         db_path = config["database"]["path"]
 
         # Mock fetch_players to return one existing player with no changes
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -109,7 +110,7 @@ class TestPlayerSmartUpdate:
         db_path = config["database"]["path"]
 
         # Get existing player and modify team
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -195,7 +196,7 @@ class TestPlayerDataParsing:
         import tempfile
 
         db = tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite")
-        conn = sqlite3.connect(db.name)
+        conn = create_connection(db.name)
         cursor = conn.cursor()
 
         # Create Players table
@@ -234,7 +235,7 @@ class TestPlayerDataParsing:
         players.save_players(test_players, db.name)
 
         # Verify saved correctly
-        conn = sqlite3.connect(db.name)
+        conn = create_connection(db.name)
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM Players WHERE person_id = 123")
         result = cursor.fetchone()

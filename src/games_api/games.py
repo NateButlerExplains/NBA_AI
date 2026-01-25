@@ -27,6 +27,7 @@ import logging
 import sqlite3
 
 from src.config import config
+from src.database import get_db
 from src.database_updater.database_update_manager import update_database
 from src.logging_config import setup_logging
 from src.predictions.prediction_manager import make_current_predictions
@@ -203,7 +204,7 @@ def get_games(
         update_database(season, predictor, DB_PATH)
 
     # Use context manager to connect to the database
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db() as conn:
         conn.row_factory = sqlite3.Row
 
         data = get_normal_data(conn, game_ids, predictor_name=predictor)
@@ -259,7 +260,7 @@ def get_games_for_date(date, predictor=DEFAULT_PREDICTOR, update_predictions=Tru
     start_utc = start_of_day_et.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     end_utc = end_of_day_et.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT game_id FROM games WHERE date_time_utc >= ? AND date_time_utc < ?",

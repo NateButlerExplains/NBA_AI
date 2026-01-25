@@ -1,11 +1,11 @@
 import json
 import re
-import sqlite3
 
 import numpy as np
 import pandas as pd
 
 from src.config import config
+from src.database import get_db
 from src.utils import log_execution_time
 
 # Configuration
@@ -333,7 +333,7 @@ def load_current_game_data(game_ids, predictor_name):
     dict: A dictionary containing the game data with pre-game predictions and current game state.
     """
     game_data = {}
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db() as conn:
         cursor = conn.cursor()
 
         # Load pre-game predictions for all game_ids in a single query

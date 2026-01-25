@@ -31,6 +31,7 @@ import requests
 from tqdm import tqdm
 
 from src.config import config
+from src.database import get_db
 from src.logging_config import setup_logging
 from src.utils import (
     StageLogger,
@@ -236,7 +237,7 @@ def save_pbp(pbp_data, db_path=DB_PATH):
     failed_count = 0
 
     try:
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
 
             for game_id, pbp_logs_sorted in pbp_data.items():

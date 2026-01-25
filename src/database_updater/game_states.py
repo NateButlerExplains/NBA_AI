@@ -23,12 +23,12 @@ import argparse
 import json
 import logging
 import re
-import sqlite3
 from copy import deepcopy
 
 from tqdm import tqdm
 
 from src.config import config
+from src.database import get_db
 from src.database_updater.pbp import get_pbp, save_pbp
 from src.logging_config import setup_logging
 from src.utils import (
@@ -259,7 +259,7 @@ def save_game_states(game_states, db_path=DB_PATH):
     data_to_insert = None  # Initialize to avoid NameError in debug logging
 
     try:
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             for game_id, states in game_states.items():
                 if not states:
                     logging.debug(

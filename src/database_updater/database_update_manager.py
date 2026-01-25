@@ -29,12 +29,12 @@ Usage:
 
 import argparse
 import logging
-import sqlite3
 from datetime import datetime
 
 from tqdm import tqdm
 
 from src.config import config
+from src.database import get_db
 from src.database_updater.betting import update_betting_data
 from src.database_updater.boxscores import get_boxscores, save_boxscores
 from src.database_updater.game_states import create_game_states, save_game_states
@@ -75,7 +75,7 @@ def _validate_pbp(game_ids, db_path=DB_PATH, suppress_no_final_state=False):
 
     validator = PbPValidator()
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         result = validator.validate(game_ids, cursor)
 
@@ -105,7 +105,7 @@ def _validate_game_states(game_ids, db_path=DB_PATH):
 
     validator = GameStatesValidator()
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         result = validator.validate(game_ids, cursor)
 
@@ -301,7 +301,7 @@ def update_game_state_data(season, db_path=DB_PATH, chunk_size=100):
 
             # Load PBP data for parsing
             pbp_data = {}
-            with sqlite3.connect(db_path) as conn:
+            with get_db(db_path) as conn:
                 cursor = conn.cursor()
                 for game_id in chunk_game_ids:
                     # Check if GameStates already exist for this game
@@ -454,7 +454,7 @@ def update_boxscore_data(season, db_path=DB_PATH, chunk_size=100):
         pbar.close()
 
     # Validate all processed games
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         validation_result = validator.validate(game_ids, cursor)
         stage_logger.set_validation(validation_result)
@@ -523,7 +523,7 @@ def get_games_needing_pbp_update(season, db_path):
     if season == "Current":
         season = determine_current_season()
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -726,7 +726,7 @@ def update_injury_data(season, db_path=DB_PATH):
         if counts["added"] > 0 or counts["updated"] > 0:
             from datetime import datetime
 
-            with sqlite3.connect(db_path) as conn:
+            with get_db(db_path) as conn:
                 cursor = conn.cursor()
 
                 # Get date range for validation
@@ -821,7 +821,7 @@ def update_betting_lines(season, db_path=DB_PATH):
             )
 
         # Get total count (any closing lines from ESPN or Covers)
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT COUNT(*) FROM Betting WHERE espn_closing_spread IS NOT NULL OR covers_closing_spread IS NOT NULL"
@@ -890,7 +890,7 @@ def update_pre_game_data(season, db_path=DB_PATH, chunk_size=100):
 
     # Check which games already have features (for added vs updated tracking)
     existing_features = set()
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         placeholders = ",".join(["?"] * len(game_ids))
         cursor.execute(
@@ -932,7 +932,7 @@ def update_pre_game_data(season, db_path=DB_PATH, chunk_size=100):
                     total_missing_priors += 1
 
             # Update database in a single transaction
-            with sqlite3.connect(db_path) as conn:
+            with get_db(db_path) as conn:
                 cursor = conn.cursor()
                 cursor.executemany(
                     """
@@ -960,7 +960,7 @@ def update_pre_game_data(season, db_path=DB_PATH, chunk_size=100):
         pbar.close()
 
     # Validate the processed games
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         validation_result = validator.validate(game_ids, cursor)
         stage_logger.set_validation(validation_result)
@@ -1008,7 +1008,7 @@ def update_prediction_data(season, predictor, db_path=DB_PATH):
     total_added = len(predictions) if predictions else 0
 
     # Validate the predictions
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         validation_result = validator.validate(game_ids, cursor, predictor)
         stage_logger.set_validation(validation_result)
@@ -1043,7 +1043,7 @@ def get_games_needing_boxscores(season, db_path):
     if season == "Current":
         season = determine_current_season()
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         # Check if boxscore_last_fetched_at column exists
@@ -1124,7 +1124,7 @@ def get_games_needing_game_state_update(season, db_path=DB_PATH):
     if season == "Current":
         season = determine_current_season()
 
-    with sqlite3.connect(db_path) as db_connection:
+    with get_db(db_path) as db_connection:
         cursor = db_connection.cursor()
         cursor.execute(
             """
@@ -1179,7 +1179,7 @@ def get_games_needing_boxscores_only(season, db_path=DB_PATH):
     if season == "Current":
         season = determine_current_season()
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -1249,7 +1249,7 @@ def get_games_with_incomplete_pre_game_data(season, db_path=DB_PATH):
       )
     """
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(query, (season, season, season))
         results = cursor.fetchall()
@@ -1274,7 +1274,7 @@ def _mark_pbp_games_finalized(game_ids, db_path=DB_PATH):
     """
     finalized = []
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         for game_id in game_ids:
@@ -1323,7 +1323,7 @@ def _mark_boxscore_games_finalized(game_ids, db_path=DB_PATH):
     """
     finalized = []
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         for game_id in game_ids:
@@ -1420,7 +1420,7 @@ def get_games_for_prediction_update(season, predictor, db_path=DB_PATH):
             AND p.game_id IS NULL
         """
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(query, (predictor, season))
         result = cursor.fetchall()

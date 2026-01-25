@@ -28,6 +28,7 @@ import pandas as pd
 import requests
 
 from src.config import config
+from src.database import get_db
 from src.database_updater.validators import ScheduleValidator
 from src.logging_config import setup_logging
 from src.utils import (
@@ -59,7 +60,7 @@ def _get_schedule_cache_info(season, db_path):
     tuple: (last_update_datetime, schedule_finalized) or (None, False) if not cached.
     """
     try:
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             # Check if schedule_finalized column exists
             cursor.execute("PRAGMA table_info(ScheduleCache)")
@@ -155,7 +156,7 @@ def _update_schedule_cache(season, db_path, check_finalized=True):
     check_finalized (bool): Whether to check if season should be marked finalized.
     """
     try:
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             update_time = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M:%S")
 
@@ -220,7 +221,7 @@ def _validate_schedule(season: str, db_path: str = DB_PATH):
     """
     validator = ScheduleValidator()
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         # Get all game_ids for this season
@@ -272,7 +273,7 @@ def sync_live_game_status(db_path=DB_PATH):
         if not updates:
             return 0
 
-        with sqlite3.connect(db_path) as conn:
+        with get_db(db_path) as conn:
             cursor = conn.cursor()
             cursor.executemany(
                 "UPDATE Games SET status = ?, status_text = ? WHERE game_id = ?",
@@ -431,7 +432,7 @@ def save_schedule(games, season, db_path=DB_PATH, stage_logger=None):
 
     game_ids = [game["gameId"] for game in games]
 
-    with sqlite3.connect(db_path) as conn:
+    with get_db(db_path) as conn:
         cursor = conn.cursor()
 
         # Check for data corruption or unexpected issues in the new data
