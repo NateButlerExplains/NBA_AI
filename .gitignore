@@ -63,4 +63,7 @@ htmlcov/
 .idea/
 
 # Claude Code
-.claude/TODO.md
+.claude/
+
+# direnv
+.envrc
