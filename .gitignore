@@ -15,10 +15,11 @@ test_setup.sh
 models.zip
 
 # Data directory (download from GitHub Releases)
-data/
+/data/
 
 # Models directory (trained models - download from GitHub Releases or train locally)
-models/
+# Leading slash restricts to root-level only, so src/transformer/models/ is NOT ignored.
+/models/
 
 # Documentation build
 docs/_site/
