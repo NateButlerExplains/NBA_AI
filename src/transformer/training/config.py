@@ -110,7 +110,8 @@ class ModelConfig:
         if self.vocab_sizes:
             required_vocab_keys = [
                 "action_type", "sub_type", "player", "period",
-                "clock_bucket", "team_indicator", "score_diff_bucket", "shot_result"
+                "clock_bucket", "team_indicator", "score_diff_bucket", "shot_result",
+                "shot_distance_bucket", "shot_modifier",
             ]
             missing = [k for k in required_vocab_keys if k not in self.vocab_sizes]
             if missing:

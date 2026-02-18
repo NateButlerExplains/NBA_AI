@@ -238,6 +238,8 @@ def test_phase1_model():
         "team_indicator": 3,
         "score_diff_bucket": 13,
         "shot_result": 3,
+        "shot_distance_bucket": 11,
+        "shot_modifier": 30,
     }
 
     # Create model config
@@ -276,6 +278,8 @@ def test_phase1_model():
             "score_diff_buckets": torch.randint(0, 13, (batch_size, n_games, max_plays)),
             "player_ids": torch.randint(0, 1500, (batch_size, n_games, max_plays)),
             "shot_results": torch.randint(0, 3, (batch_size, n_games, max_plays)),
+            "shot_distance_buckets": torch.randint(0, 11, (batch_size, n_games, max_plays)),
+            "shot_modifier_ids": torch.randint(0, 30, (batch_size, n_games, max_plays)),
             "game_lengths": torch.randint(50, 100, (batch_size, n_games)),
         }
 

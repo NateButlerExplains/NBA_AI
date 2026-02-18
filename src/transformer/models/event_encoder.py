@@ -131,6 +131,8 @@ class EventEmbedding(nn.Module):
         score_diff_dim: int = 16,
         player_dim: int = 64,
         shot_result_dim: int = 8,
+        shot_distance_dim: int = 16,
+        shot_modifier_dim: int = 16,
     ):
         super().__init__()
 
@@ -165,8 +167,18 @@ class EventEmbedding(nn.Module):
         )
         self.shot_result_emb = nn.Embedding(vocab_sizes["shot_result"], shot_result_dim)
 
+        # --- New Shot Feature Embeddings ---
+        # shot_distance_bucket: 0=not a shot, 1-10=distance bins (padding_idx=0)
+        self.shot_distance_emb = nn.Embedding(
+            vocab_sizes["shot_distance_bucket"], shot_distance_dim, padding_idx=0
+        )
+        # shot_modifier: descriptor vocab (pullup, driving, step back, etc.)
+        self.shot_modifier_emb = nn.Embedding(
+            vocab_sizes["shot_modifier"], shot_modifier_dim, padding_idx=0
+        )
+
         # Total embedding dimension = sum of all component dimensions
-        # 32 + 32 + 16 + 16 + 8 + 16 + 64 + 8 = 192
+        # 32 + 32 + 16 + 16 + 8 + 16 + 64 + 8 + 16 + 16 = 224
         self.embed_dim = (
             action_dim
             + subtype_dim
@@ -176,10 +188,12 @@ class EventEmbedding(nn.Module):
             + score_diff_dim
             + player_dim
             + shot_result_dim
+            + shot_distance_dim
+            + shot_modifier_dim
         )
 
         # Linear projection: a single matrix multiply that transforms the
-        # 192-d concatenated embedding down to hidden_dim (256).
+        # 224-d concatenated embedding down to hidden_dim (256).
         # This lets the transformer work with a consistent dimension size.
         self.projection = nn.Linear(self.embed_dim, hidden_dim)
 
@@ -193,6 +207,8 @@ class EventEmbedding(nn.Module):
         score_diff_buckets: torch.Tensor,
         player_ids: torch.Tensor,
         shot_results: torch.Tensor,
+        shot_distance_buckets: torch.Tensor,
+        shot_modifier_ids: torch.Tensor,
     ) -> torch.Tensor:
         """
         Embed all token components and combine.
@@ -216,10 +232,12 @@ class EventEmbedding(nn.Module):
         score_diff_emb = self.score_diff_emb(score_diff_buckets)  # (..., seq_len, 16)
         player_emb = self.player_emb(player_ids)               # (..., seq_len, 64)
         shot_emb = self.shot_result_emb(shot_results)          # (..., seq_len, 8)
+        shot_dist_emb = self.shot_distance_emb(shot_distance_buckets)  # (..., seq_len, 16)
+        shot_mod_emb = self.shot_modifier_emb(shot_modifier_ids)       # (..., seq_len, 16)
 
         # Concatenate all embeddings along the last dimension (dim=-1).
-        # This joins them end-to-end: [action|subtype|period|...|shot]
-        # Result shape: (..., seq_len, 192)  -- one 192-d vector per play
+        # This joins them end-to-end: [action|subtype|period|...|shot_dist|shot_mod]
+        # Result shape: (..., seq_len, 224)  -- one 224-d vector per play
         combined = torch.cat(
             [
                 action_emb,
@@ -230,11 +248,13 @@ class EventEmbedding(nn.Module):
                 score_diff_emb,
                 player_emb,
                 shot_emb,
+                shot_dist_emb,
+                shot_mod_emb,
             ],
             dim=-1,
         )
 
-        # Project 192-d concatenated vector down to hidden_dim (256).
+        # Project 224-d concatenated vector down to hidden_dim (256).
         # This learned linear transform lets the model combine information
         # from all fields into a unified representation for each play.
         return self.projection(combined)
@@ -385,10 +405,12 @@ class EventEncoder(nn.Module):
         score_diff_buckets = reshape_for_encoding(history["score_diff_buckets"])
         player_ids = reshape_for_encoding(history["player_ids"])
         shot_results = reshape_for_encoding(history["shot_results"])
+        shot_distance_buckets = reshape_for_encoding(history["shot_distance_buckets"])
+        shot_modifier_ids = reshape_for_encoding(history["shot_modifier_ids"])
 
         # --- Step 2: Embed all token fields into continuous vectors ---
-        # Each play's 8 integer fields are embedded and concatenated into a
-        # 192-d vector, then projected to hidden_dim (256).
+        # Each play's 10 integer fields are embedded and concatenated into a
+        # 224-d vector, then projected to hidden_dim (256).
         # Output shape: (batch * n_games, max_plays, hidden_dim)
         x = self.embedding(
             action_type_ids,
@@ -399,6 +421,8 @@ class EventEncoder(nn.Module):
             score_diff_buckets,
             player_ids,
             shot_results,
+            shot_distance_buckets,
+            shot_modifier_ids,
         )
 
         # --- Step 3: Optionally prepend [CLS] token ---
@@ -498,6 +522,8 @@ class EventEncoder(nn.Module):
         score_diff_buckets: torch.Tensor,
         player_ids: torch.Tensor,
         shot_results: torch.Tensor,
+        shot_distance_buckets: torch.Tensor,
+        shot_modifier_ids: torch.Tensor,
         seq_len: Optional[int] = None,
     ) -> torch.Tensor:
         """
@@ -521,6 +547,8 @@ class EventEncoder(nn.Module):
             "score_diff_buckets": score_diff_buckets.unsqueeze(1),
             "player_ids": player_ids.unsqueeze(1),
             "shot_results": shot_results.unsqueeze(1),
+            "shot_distance_buckets": shot_distance_buckets.unsqueeze(1),
+            "shot_modifier_ids": shot_modifier_ids.unsqueeze(1),
         }
 
         if seq_len is not None:
@@ -552,6 +580,8 @@ def test_event_encoder():
         "team_indicator": 3,
         "score_diff_bucket": 13,
         "shot_result": 3,
+        "shot_distance_bucket": 11,
+        "shot_modifier": 30,
     }
 
     # Create encoder
@@ -581,6 +611,8 @@ def test_event_encoder():
         "score_diff_buckets": torch.randint(0, 13, (batch_size, n_games, max_plays)),
         "player_ids": torch.randint(0, 1500, (batch_size, n_games, max_plays)),
         "shot_results": torch.randint(0, 3, (batch_size, n_games, max_plays)),
+        "shot_distance_buckets": torch.randint(0, 11, (batch_size, n_games, max_plays)),
+        "shot_modifier_ids": torch.randint(0, 30, (batch_size, n_games, max_plays)),
         "game_lengths": torch.randint(50, 100, (batch_size, n_games)),
     }
 

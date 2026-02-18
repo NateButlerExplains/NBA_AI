@@ -900,6 +900,7 @@ def test_evaluator():
     history_keys = [
         "action_type_ids", "sub_type_ids", "periods", "clock_buckets",
         "team_indicators", "score_diff_buckets", "player_ids", "shot_results",
+        "shot_distance_buckets", "shot_modifier_ids",
     ]
 
     class MockDataset:

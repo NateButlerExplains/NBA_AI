@@ -121,6 +121,13 @@ class TokenizedPlay:
     # Shot outcome: 0 = not a shot, 1 = made, 2 = missed.
     shot_result: int
 
+    # Shot distance bucket: 0 = not a shot, 1-10 = distance bins (0-4ft, 5-9ft, ..., 45+ft).
+    shot_distance_bucket: int
+
+    # Shot modifier ID from descriptor vocab (e.g., "pullup", "driving", "step back").
+    # 0 = no modifier / not a shot.
+    shot_modifier_id: int
+
 
 @dataclass
 class TokenizedGame:
@@ -231,6 +238,20 @@ class PBPTokenizer:
             self.score_diff_max - self.score_diff_min
         ) // self.score_diff_step + 1  # = 121
 
+        # ------------------------------------------------------------------
+        # Shot distance discretization
+        # ------------------------------------------------------------------
+        # Bucket 0 = not a shot (or missing distance).
+        # Buckets 1-10 = 5-foot increments: [0-4], [5-9], ..., [40-44], [45+].
+        # 11 total buckets (0 through 10).
+        self.num_distance_buckets = 11  # 0=N/A, 1-10=distance bins
+
+        # ------------------------------------------------------------------
+        # Shot modifier vocabulary (descriptor field)
+        # ------------------------------------------------------------------
+        self.shot_modifier_vocab: dict[str, int] = {}
+        self.id_to_shot_modifier: dict[int, str] = {}
+
         # Guard flag: prevents tokenize_game() from being called before
         # the vocabulary has been built or loaded.
         self._initialized = False
@@ -264,6 +285,7 @@ class PBPTokenizer:
         # tokens meet the min_count threshold.
         action_type_counts: dict[str, int] = {}
         sub_type_counts: dict[str, int] = {}
+        shot_modifier_counts: dict[str, int] = {}
         player_ids: set[int] = set()
 
         with get_db(self.db_path) as conn:
@@ -316,6 +338,15 @@ class PBPTokenizer:
                 if sub_type:
                     sub_type_counts[sub_type] = sub_type_counts.get(sub_type, 0) + 1
 
+                # Count shot modifiers (descriptor field, e.g., "pullup", "driving")
+                # Only meaningful for shot actions (2pt, 3pt).
+                if action_type in ("2pt", "3pt"):
+                    descriptor = data.get("descriptor", "").strip().lower()
+                    if descriptor:
+                        shot_modifier_counts[descriptor] = (
+                            shot_modifier_counts.get(descriptor, 0) + 1
+                        )
+
                 # Collect unique player IDs (personId=0 means "no player")
                 person_id = data.get("personId")
                 if person_id and person_id != 0:
@@ -355,19 +386,28 @@ class PBPTokenizer:
         for i, player_id in enumerate(sorted(player_ids), start=1):
             self.player_vocab[player_id] = i
 
+        # --- Shot modifier vocabulary ---
+        # Same pattern: special tokens first, then real modifiers by frequency.
+        self.shot_modifier_vocab = {token: i for i, token in enumerate(SPECIAL_TOKENS)}
+        for modifier, cnt in sorted(shot_modifier_counts.items(), key=lambda x: -x[1]):
+            if cnt >= min_count:
+                self.shot_modifier_vocab[modifier] = len(self.shot_modifier_vocab)
+
         # ------------------------------------------------------------------
         # Build reverse (ID -> token) lookups for decoding / debugging.
         # ------------------------------------------------------------------
         self.id_to_action_type = {v: k for k, v in self.action_type_vocab.items()}
         self.id_to_sub_type = {v: k for k, v in self.sub_type_vocab.items()}
         self.id_to_player = {v: k for k, v in self.player_vocab.items()}
+        self.id_to_shot_modifier = {v: k for k, v in self.shot_modifier_vocab.items()}
 
         # Mark the tokenizer as ready to use.
         self._initialized = True
 
         logging.info(
             f"Vocabulary built: {len(self.action_type_vocab)} action types, "
-            f"{len(self.sub_type_vocab)} sub types, {len(self.player_vocab)} players"
+            f"{len(self.sub_type_vocab)} sub types, {len(self.player_vocab)} players, "
+            f"{len(self.shot_modifier_vocab)} shot modifiers"
         )
 
     def _clock_to_bucket(self, clock_str: str) -> int:
@@ -453,6 +493,50 @@ class PBPTokenizer:
         if team_tricode == away_team:
             return 1
         return 2
+
+    def _shot_distance_to_bucket(self, data: dict) -> int:
+        """
+        Convert shot distance (feet) to an integer bucket.
+
+        Returns:
+            0 if not a shot or distance is missing.
+            1-10 for 5-foot increments: 1=[0-4ft], 2=[5-9ft], ..., 10=[45+ft].
+        """
+        action_type = data.get("actionType", "").strip().lower()
+        if action_type not in ("2pt", "3pt"):
+            return 0
+
+        dist = data.get("shotDistance")
+        if dist is None or dist == "":
+            return 0
+
+        try:
+            feet = float(dist)
+            # Bucket 1=[0-4], 2=[5-9], ..., 9=[40-44], 10=[45+]
+            bucket = int(feet // 5) + 1
+            return min(bucket, 10)  # Cap at bucket 10
+        except (ValueError, TypeError):
+            return 0
+
+    def _get_shot_modifier(self, data: dict) -> int:
+        """
+        Extract the shot modifier (descriptor) from a play's JSON data.
+
+        Returns:
+            Integer ID from shot_modifier_vocab, or 0 (PAD) for non-shots
+            or shots without a descriptor.
+        """
+        action_type = data.get("actionType", "").strip().lower()
+        if action_type not in ("2pt", "3pt"):
+            return 0
+
+        descriptor = data.get("descriptor", "").strip().lower()
+        if not descriptor:
+            return 0
+
+        return self.shot_modifier_vocab.get(
+            descriptor, self.shot_modifier_vocab.get(UNK_TOKEN, 1)
+        )
 
     def _get_shot_result(self, data: dict) -> int:
         """
@@ -542,6 +626,12 @@ class PBPTokenizer:
         # --- Shot result: 0=not a shot, 1=made, 2=missed ---
         shot_result = self._get_shot_result(data)
 
+        # --- Shot distance bucket: 0=not a shot, 1-10=distance bins ---
+        shot_distance_bucket = self._shot_distance_to_bucket(data)
+
+        # --- Shot modifier: vocab ID from descriptor field ---
+        shot_modifier_id = self._get_shot_modifier(data)
+
         return TokenizedPlay(
             action_type_id=action_type_id,
             sub_type_id=sub_type_id,
@@ -551,6 +641,8 @@ class PBPTokenizer:
             score_diff_bucket=score_diff_bucket,
             player_id=player_id,
             shot_result=shot_result,
+            shot_distance_bucket=shot_distance_bucket,
+            shot_modifier_id=shot_modifier_id,
         )
 
     def tokenize_game(self, game_id: str) -> Optional[TokenizedGame]:
@@ -759,6 +851,12 @@ class PBPTokenizer:
                 dtype=np.int64,
             ),
             "shot_results": np.array([p.shot_result for p in plays], dtype=np.int64),
+            "shot_distance_buckets": np.array(
+                [p.shot_distance_bucket for p in plays], dtype=np.int64
+            ),
+            "shot_modifier_ids": np.array(
+                [p.shot_modifier_id for p in plays], dtype=np.int64
+            ),
         }
 
     def save(self, path: str) -> None:
@@ -781,10 +879,12 @@ class PBPTokenizer:
             "sub_type_vocab": self.sub_type_vocab,
             # JSON requires string keys, so we stringify the NBA player IDs.
             "player_vocab": {str(k): v for k, v in self.player_vocab.items()},
+            "shot_modifier_vocab": self.shot_modifier_vocab,
             "clock_buckets": self.clock_buckets,
             "score_diff_min": self.score_diff_min,
             "score_diff_max": self.score_diff_max,
             "score_diff_step": self.score_diff_step,
+            "num_distance_buckets": self.num_distance_buckets,
         }
 
         path = Path(path)
@@ -815,18 +915,24 @@ class PBPTokenizer:
         self.sub_type_vocab = data["sub_type_vocab"]
         # Convert stringified NBA player IDs back to integers.
         self.player_vocab = {int(k): v for k, v in data["player_vocab"].items()}
+        # Shot modifier vocab (backward-compatible: missing = empty w/ special tokens)
+        self.shot_modifier_vocab = data.get("shot_modifier_vocab", {
+            token: i for i, token in enumerate(SPECIAL_TOKENS)
+        })
 
         # Restore discretization parameters.
         self.clock_buckets = data["clock_buckets"]
         self.score_diff_min = data["score_diff_min"]
         self.score_diff_max = data["score_diff_max"]
         self.score_diff_step = data["score_diff_step"]
+        self.num_distance_buckets = data.get("num_distance_buckets", 11)
 
         # Rebuild reverse vocabularies (ID -> token) from the forward vocabs
         # so we can decode token IDs back to human-readable strings.
         self.id_to_action_type = {v: k for k, v in self.action_type_vocab.items()}
         self.id_to_sub_type = {v: k for k, v in self.sub_type_vocab.items()}
         self.id_to_player = {v: k for k, v in self.player_vocab.items()}
+        self.id_to_shot_modifier = {v: k for k, v in self.shot_modifier_vocab.items()}
 
         # Recompute the number of score buckets from the loaded parameters.
         self.num_score_buckets = (
@@ -858,6 +964,8 @@ class PBPTokenizer:
             "team_indicator": 3,  # home, away, neutral
             "score_diff_bucket": self.num_score_buckets,  # 121 (-60 to +60)
             "shot_result": 3,  # not a shot, made, missed
+            "shot_distance_bucket": self.num_distance_buckets,  # 11 (0=N/A, 1-10=distance bins)
+            "shot_modifier": len(self.shot_modifier_vocab) if self.shot_modifier_vocab else 5,
         }
 
 

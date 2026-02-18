@@ -21,6 +21,9 @@ models.zip
 # Leading slash restricts to root-level only, so src/transformer/models/ is NOT ignored.
 /models/
 
+# Training checkpoints (large binary files, train locally)
+/checkpoints/
+
 # Documentation build
 docs/_site/
 
