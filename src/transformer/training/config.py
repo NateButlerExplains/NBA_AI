@@ -102,6 +102,9 @@ class ModelConfig:
     temporal_positional_encoding: str = "learned"  # "learned" or "sinusoidal" position encoding
     temporal_pooling: str = "attention"  # How to aggregate games: "attention", "mean", or "first"
 
+    # --- Schedule Features (Phase 1c) ---
+    n_schedule_features: int = 0  # 0 = disabled, 2 = days_before_target + season_game_number
+
     # --- Regularization ---
     dropout: float = 0.1  # Probability of dropping neurons during training (prevents overfitting)
 

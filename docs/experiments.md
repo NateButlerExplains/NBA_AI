@@ -1,4 +1,4 @@
-# Phase 1a Experiment Log
+# Phase 1 Experiment Log
 
 > **Hardware**: RTX 2070 SUPER (8GB VRAM)
 > **Test Set**: 2024-2025 + 2025-2026 seasons
@@ -25,6 +25,13 @@
 |---|-----------|--------|-----------|---------------|---------|---------|----------|------------|--------|
 | 7 | GameStates (2 seasons) | `gamestates_2season.yaml` | 12.36 | 10.06 | 52.0% | 0.496 | 39.00 | 50 | 5.59M |
 | 8 | GameStates (5 seasons) | `gamestates_5season.yaml` | 12.36 | 10.14 | 52.0% | 0.509 | 39.06 | 50 | 5.59M |
+
+### Schedule Model (PBP + Temporal Embeddings → SimpleFusion → Probabilistic Heads)
+
+| # | Experiment | Config | Spread MAE | Avg Score MAE | Win Acc | Win AUC | Val Loss | Best Epoch | Params |
+|---|-----------|--------|-----------|---------------|---------|---------|----------|------------|--------|
+| 9 | Schedule (2 seasons) | `schedule_2season.yaml` | 12.41 | 10.14 | 51.9% | 0.512 | 39.19 | 9 | 5.93M |
+| 10 | Schedule (5 seasons) | `schedule_5season.yaml` | 12.24 | 10.19 | 55.9% | 0.578 | 38.81 | 10 | 5.93M |
 
 **Best Spread MAE**: 12.20 (Experiment 1 — PBP Baseline v1)
 **Best Avg Score MAE**: 10.06 (Experiment 7 — GameStates, 2 seasons)
@@ -111,6 +118,26 @@
 - **Result**: Spread MAE 12.36, Avg Score MAE 10.14, Win Acc 52.0%, Win AUC 0.509, val_loss 39.06, ran all 50 epochs
 - **Notes**: More training data didn't help. Results are virtually identical to the 2-season run. The GameStates model converges to the same ceiling as PBP regardless of data volume.
 
+### Experiment 9: Schedule (2 Seasons)
+
+**Config**: `configs/transformer/schedule_2season.yaml`
+**Date**: Feb 19, 2026
+
+- **Model**: PBP + temporal embeddings (Phase 1c). Adds `days_before_target` (Embed(180, 256)) and `season_game_number` (Embed(110, 256)) per history game, added as residual to game embeddings before TemporalAttention.
+- **New params**: +74K (1.3% increase) from embedding tables shared across home/away streams
+- **Training**: 2 seasons (2021-2023), same regularization as Exp 5
+- **Result**: Spread MAE 12.41, Avg Score MAE 10.14, Win Acc 51.9%, Win AUC 0.512, val_loss 39.19, best epoch 9, early stopped epoch 29
+- **Notes**: Schedule features didn't help on the 2-season config. Essentially identical to PBP 2-season baseline (Exp 5: 12.35). The temporal embeddings may not have enough data to learn meaningful patterns with only 2 training seasons.
+
+### Experiment 10: Schedule (5 Seasons)
+
+**Config**: `configs/transformer/schedule_5season.yaml`
+**Date**: Feb 19, 2026
+
+- **Changes**: Same schedule model with full 5-season training data
+- **Result**: Spread MAE 12.24, Avg Score MAE 10.19, Win Acc 55.9%, Win AUC 0.578, val_loss 38.81, best epoch 10, early stopped epoch 31
+- **Notes**: Slight improvement over matched PBP baseline (Exp 6: 12.29 → 12.24) but within noise of Exp 1 (12.20). The temporal embeddings don't break through the ~12.2 ceiling. The model's learned positional encoding already captures most of the temporal signal from game ordering.
+
 ---
 
 ## Key Findings
@@ -131,11 +158,14 @@
    - Architecture limitations (SimpleFusion may be too simple)
    - The fundamental unpredictability of NBA game outcomes from historical game data alone
 
+7. **Schedule/temporal embeddings don't break the ceiling (Phase 1c)**: Adding raw temporal data (days_before_target, season_game_number) as per-game embeddings produced no meaningful improvement. The model's existing learned positional encoding already captures temporal ordering. Rest effects, B2B fatigue, and tanking signals are either (a) already encoded in game outcomes, (b) too weak relative to game-to-game variance, or (c) need to be combined with roster data to be useful.
+
 ---
 
 ## Next Steps
 
-Phase 1a is considered maxed out. The GameStates experiment confirms the bottleneck is NOT in the input data representation. Potential directions:
-- **Phase 1b**: Add roster stream (Set Transformer / RosterEncoder) to incorporate who is actually playing
-- **Phase 1c**: Add context stream (rest days, back-to-back, travel distance) with cross-attention fusion
-- **Architecture changes**: Try different fusion strategies or deeper temporal models
+Phases 1a and 1c are considered maxed out. The GameStates ablation confirms the bottleneck is NOT in input data representation. Schedule temporal embeddings don't add signal. Potential directions:
+
+- **Phase 1b**: Add roster stream (Set Transformer / RosterEncoder) to incorporate who is actually playing — strongest remaining signal source
+- **Architecture changes**: Try different fusion strategies, cross-attention, or deeper temporal models
+- **Time2Vec**: Replace discrete clock/period encoding with continuous learned temporal encoding (orthogonal to schedule features)

@@ -100,6 +100,17 @@ class Phase1Model(nn.Module):
             dropout=config.dropout,
         )
 
+        # ========== Schedule Embeddings (Phase 1c) ==========
+        # Temporal embeddings added to per-game embeddings before TemporalAttention.
+        # Lets the model learn rest effects, B2B fatigue, tanking, playoff push, etc.
+        # Shared across home and away streams (temporal encoding is team-agnostic).
+        if getattr(config, "n_schedule_features", 0) > 0:
+            self.days_before_embed = nn.Embedding(180, config.hidden_dim)
+            self.season_game_embed = nn.Embedding(110, config.hidden_dim)
+        else:
+            self.days_before_embed = None
+            self.season_game_embed = None
+
     def forward(
         self,
         home_history: dict[str, torch.Tensor],
@@ -134,6 +145,19 @@ class Phase1Model(nn.Module):
         away_game_embeddings = self.event_encoder(
             away_history, away_history.get("game_lengths")
         )
+
+        # ===== STEP 1b: Add schedule embeddings (Phase 1c) =====
+        # Enrich per-game embeddings with temporal information: when each game
+        # was played relative to the target (rest/B2B) and where in the season
+        # (tanking/playoff push). Added as residual before TemporalAttention.
+        if self.days_before_embed is not None and "days_before_target" in home_history:
+            home_game_embeddings = home_game_embeddings + self.days_before_embed(
+                home_history["days_before_target"]
+            ) + self.season_game_embed(home_history["season_game_number"])
+
+            away_game_embeddings = away_game_embeddings + self.days_before_embed(
+                away_history["days_before_target"]
+            ) + self.season_game_embed(away_history["season_game_number"])
 
         # ===== STEP 2: Create game-level masks =====
         # Detect which "games" in the history are actually just padding
@@ -185,13 +209,19 @@ class Phase1Model(nn.Module):
 
     def get_num_parameters(self) -> dict[str, int]:
         """Get parameter counts by component."""
-        return {
+        counts = {
             "event_encoder": sum(p.numel() for p in self.event_encoder.parameters()),
             "temporal_attention": sum(p.numel() for p in self.temporal_attention.parameters()),
             "fusion": sum(p.numel() for p in self.fusion.parameters()),
             "prediction_heads": sum(p.numel() for p in self.prediction_heads.parameters()),
-            "total": sum(p.numel() for p in self.parameters()),
         }
+        if self.days_before_embed is not None:
+            counts["schedule_embeddings"] = (
+                sum(p.numel() for p in self.days_before_embed.parameters())
+                + sum(p.numel() for p in self.season_game_embed.parameters())
+            )
+        counts["total"] = sum(p.numel() for p in self.parameters())
+        return counts
 
 
 def create_model_from_tokenizer(

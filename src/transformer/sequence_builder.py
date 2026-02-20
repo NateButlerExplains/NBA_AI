@@ -19,7 +19,7 @@ Usage:
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -51,6 +51,7 @@ class TeamHistory:
     team: str  # Team tricode, e.g. "BOS" for Boston Celtics
     games: list[TokenizedGame]  # List of past games, ordered most recent first
     game_ids: list[str]  # Corresponding game IDs (parallel list with 'games')
+    game_dates: list[str] = field(default_factory=list)  # ISO dates for schedule features
 
 
 @dataclass
@@ -77,6 +78,9 @@ class MatchupSequence:
     final_home_score: Optional[int] = None  # Always the true final score (including OT)
     final_away_score: Optional[int] = None  # Always the true final score (including OT)
     is_overtime: bool = False               # Whether this game went to overtime
+    home_season_games: int = 0              # Total games home team played before target (Phase 1c)
+    away_season_games: int = 0              # Total games away team played before target (Phase 1c)
+    season: str = ""                        # Season string (e.g., "2024-2025") for game count query
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +132,9 @@ class SequenceBuilder:
 
     def _get_prior_games(
         self, team: str, before_date: str, n_games: int
-    ) -> list[str]:
+    ) -> list[tuple[str, str]]:
         """
-        Get game IDs for the last N games for a team before a given date.
+        Get game IDs and dates for the last N games for a team before a given date.
 
         This is where TEMPORAL ORDERING is enforced: the query uses
         "date(date_time_utc) < date(?)" to ensure we ONLY retrieve games
@@ -142,7 +146,7 @@ class SequenceBuilder:
             n_games: Number of games to fetch
 
         Returns:
-            List of game IDs, most recent first
+            List of (game_id, date_string) tuples, most recent first
         """
         with get_db(self.db_path) as conn:
             cursor = conn.execute(
@@ -161,8 +165,8 @@ class SequenceBuilder:
             )
             rows = cursor.fetchall()
 
-        # Return just the game IDs (discard the date column)
-        return [row[0] for row in rows]
+        # Return (game_id, date) tuples — dates used for schedule features (Phase 1c)
+        return [(row[0], row[1].split("T")[0]) for row in rows]
 
     def _get_game_with_cache(self, game_id: str) -> Optional[TokenizedGame]:
         """
@@ -207,20 +211,23 @@ class SequenceBuilder:
         # Step 1: Find the last N game IDs for this team before the target date
         # IMPORTANT: _get_prior_games() returns games in DESC order (most recent first).
         # This ordering is relied upon by sequence_to_arrays() for roster extraction.
-        game_ids = self._get_prior_games(team, before_date, self.n_games)
+        prior_results = self._get_prior_games(team, before_date, self.n_games)
 
         # Step 2: Tokenize each game (convert play-by-play text to numeric tokens)
         games = []
         valid_game_ids = []
+        valid_game_dates = []
 
-        for game_id in game_ids:
+        for game_id, game_date in prior_results:
             tokenized = self._get_game_with_cache(game_id)
             if tokenized:
                 games.append(tokenized)
                 valid_game_ids.append(game_id)
+                valid_game_dates.append(game_date)
             # If tokenization fails, we silently skip that game
 
-        return TeamHistory(team=team, games=games, game_ids=valid_game_ids)
+        return TeamHistory(team=team, games=games, game_ids=valid_game_ids,
+                           game_dates=valid_game_dates)
 
     def build_sequence(self, target_game_id: str) -> Optional[MatchupSequence]:
         """
@@ -244,7 +251,7 @@ class SequenceBuilder:
         with get_db(self.db_path) as conn:
             cursor = conn.execute(
                 """
-                SELECT home_team, away_team, date_time_utc, status,
+                SELECT home_team, away_team, date_time_utc, status, season,
                        (SELECT home_score FROM GameStates
                         WHERE game_id = g.game_id AND is_final_state = 1) as final_home_score,
                        (SELECT away_score FROM GameStates
@@ -268,7 +275,7 @@ class SequenceBuilder:
             logging.warning(f"Target game {target_game_id} not found")
             return None
 
-        (home_team, away_team, date_time_utc, status,
+        (home_team, away_team, date_time_utc, status, season,
          final_home_score, final_away_score,
          reg_home_score, reg_away_score, is_overtime) = row
 
@@ -290,6 +297,30 @@ class SequenceBuilder:
         home_history = self._get_team_history(home_team, target_date)
         away_history = self._get_team_history(away_team, target_date)
 
+        # Step 2b: Count total games each team has played this season before
+        # the target date. Used for season_game_number schedule features (Phase 1c).
+        home_season_games = 0
+        away_season_games = 0
+        if season:
+            with get_db(self.db_path) as conn:
+                for team, attr in [(home_team, "home"), (away_team, "away")]:
+                    cursor = conn.execute(
+                        """
+                        SELECT COUNT(*) FROM Games
+                        WHERE (home_team = ? OR away_team = ?)
+                        AND date(date_time_utc) < date(?)
+                        AND season = ?
+                        AND status = 3
+                        AND season_type IN ('Regular Season', 'Post Season')
+                        """,
+                        (team, team, target_date, season),
+                    )
+                    count = cursor.fetchone()[0]
+                    if attr == "home":
+                        home_season_games = count
+                    else:
+                        away_season_games = count
+
         # Step 3: Package everything into a MatchupSequence.
         # Scores are only included if the game is completed (status == 3).
         # For future/unplayed games, scores will be None.
@@ -305,6 +336,9 @@ class SequenceBuilder:
             final_home_score=final_home_score if status == 3 else None,
             final_away_score=final_away_score if status == 3 else None,
             is_overtime=bool(is_overtime),
+            home_season_games=home_season_games,
+            away_season_games=away_season_games,
+            season=season or "",
         )
 
     def build_sequences_batch(
@@ -420,6 +454,42 @@ class SequenceBuilder:
 # Conversion to numpy arrays (bridge between Python objects and PyTorch)
 # ---------------------------------------------------------------------------
 
+def _compute_schedule_arrays(
+    target_date: str,
+    game_dates: list[str],
+    season_game_count: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute schedule/temporal arrays for a team's history games.
+
+    Args:
+        target_date: ISO date string for the target game (e.g., "2024-01-15")
+        game_dates: Dates of history games, most recent first
+        season_game_count: Total games this team played before the target date
+
+    Returns:
+        (days_before_target, season_game_number) — both shape (n_games,), int64
+    """
+    from datetime import date as Date
+
+    target = Date.fromisoformat(target_date)
+
+    # Per-game: days between each history game and the target game
+    days_before = []
+    for gd in game_dates:
+        gap = (target - Date.fromisoformat(gd)).days
+        days_before.append(gap)
+    days_before = np.clip(days_before, 0, 179).astype(np.int64)
+
+    # Per-game: season_game_count - position_index
+    # Most recent history game (i=0) was the team's Nth game,
+    # the one before (i=1) was game N-1, etc.
+    season_nums = [max(season_game_count - i, 0) for i in range(len(game_dates))]
+    season_nums = np.clip(season_nums, 0, 109).astype(np.int64)
+
+    return days_before, season_nums
+
+
 def sequence_to_arrays(
     sequence: MatchupSequence,
     tokenizer: PBPTokenizer,
@@ -497,6 +567,26 @@ def sequence_to_arrays(
         result["game_lengths"] = np.array(game_lengths, dtype=np.int64)
         return result
 
+    # Compute schedule/temporal arrays for Phase 1c (days_before_target, season_game_number)
+    home_history_arrays = games_to_array(sequence.home_history.games)
+    away_history_arrays = games_to_array(sequence.away_history.games)
+
+    if home_history_arrays is not None and sequence.home_history.game_dates:
+        days_before, season_nums = _compute_schedule_arrays(
+            sequence.target_date, sequence.home_history.game_dates,
+            sequence.home_season_games,
+        )
+        home_history_arrays["days_before_target"] = days_before
+        home_history_arrays["season_game_number"] = season_nums
+
+    if away_history_arrays is not None and sequence.away_history.game_dates:
+        days_before, season_nums = _compute_schedule_arrays(
+            sequence.target_date, sequence.away_history.game_dates,
+            sequence.away_season_games,
+        )
+        away_history_arrays["days_before_target"] = days_before
+        away_history_arrays["season_game_number"] = season_nums
+
     # Build the final output dict containing everything for one training sample
     return {
         "target_game_id": sequence.target_game_id,
@@ -504,8 +594,8 @@ def sequence_to_arrays(
         "home_team": sequence.home_team,
         "away_team": sequence.away_team,
         # Convert each team's history games into padded numpy arrays
-        "home_history": games_to_array(sequence.home_history.games),
-        "away_history": games_to_array(sequence.away_history.games),
+        "home_history": home_history_arrays,
+        "away_history": away_history_arrays,
         # Roster arrays: convert player NBA IDs to numeric vocab indices.
         # Uses the most recent historical game's roster (games[0] = most recent)
         # as a proxy for the "current roster" for the target game.

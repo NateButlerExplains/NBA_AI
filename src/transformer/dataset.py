@@ -387,9 +387,9 @@ def collate_games(batch: list[dict]) -> dict:
 
         collated = {}
         for key in histories[0].keys():
-            if key == "game_lengths":
-                # game_lengths is 1D (one value per game), so only needs
-                # padding in the games dimension.
+            if histories[0][key].dim() == 1:
+                # 1D arrays (one value per game): game_lengths, days_before_target,
+                # season_game_number. Only needs padding in the games dimension.
                 padded = []
                 for h in histories:
                     arr = h[key]
