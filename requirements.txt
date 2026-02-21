@@ -22,10 +22,13 @@ scipy==1.16.3
 xgboost==3.1.2
 joblib==1.5.2
 
-# PyTorch (CPU version) - Optional, only needed for MLP predictor
-# Uncomment if you want to use the MLP predictor
-# --extra-index-url https://download.pytorch.org/whl/cpu
-# torch==2.8.0+cpu
+# PyTorch - Optional for public release (MLP/Ensemble predictors)
+# Required for transformer training (Phase 1+ neural model, needs CUDA GPU)
+# CPU version (MLP predictor only):
+#   --extra-index-url https://download.pytorch.org/whl/cpu
+#   torch==2.8.0+cpu
+# GPU version (transformer training):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
 
 # NBA API
 nba_api==1.11.3

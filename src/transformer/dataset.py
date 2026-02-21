@@ -277,6 +277,14 @@ class NBAGameDataset(Dataset):
         result["home_roster"] = torch.from_numpy(arrays["home_roster"])
         result["away_roster"] = torch.from_numpy(arrays["away_roster"])
 
+        # Rest days for target game (Combined Phase 1)
+        result["home_rest_days"] = torch.tensor(
+            arrays.get("home_rest_days", 1), dtype=torch.long
+        )
+        result["away_rest_days"] = torch.tensor(
+            arrays.get("away_rest_days", 1), dtype=torch.long
+        )
+
         return result
 
     def _empty_sample(self, game_id: str) -> dict:
@@ -303,6 +311,8 @@ class NBAGameDataset(Dataset):
             "away_history": None,
             "home_roster": torch.zeros(0, dtype=torch.int64),
             "away_roster": torch.zeros(0, dtype=torch.int64),
+            "home_rest_days": torch.tensor(1, dtype=torch.long),
+            "away_rest_days": torch.tensor(1, dtype=torch.long),
         }
 
     def clear_cache(self):
@@ -442,6 +452,10 @@ def collate_games(batch: list[dict]) -> dict:
 
         # Stack into shape: (batch_size, max_roster_size)
         result[prefix] = torch.stack(padded)
+
+    # STEP 5: Collate rest_days (scalar per team, just stack).
+    result["home_rest_days"] = torch.stack([b["home_rest_days"] for b in batch])
+    result["away_rest_days"] = torch.stack([b["away_rest_days"] for b in batch])
 
     return result
 

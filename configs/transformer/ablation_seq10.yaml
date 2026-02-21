@@ -1,11 +1,18 @@
 # =============================================================================
-# ABLATION: N=10 History Games
+# EXPERIMENT 3: N=10 History Games Ablation (Phase 1a)
+# Date: Feb 14, 2026
 # =============================================================================
-# Changes from full_baseline.yaml:
+# Changes from Exp 1 (full_baseline.yaml):
 #   - n_history_games: 5 -> 10
 #   - max_history_games: 10 -> 20 (architectural headroom)
 #   - batch_size: 4 -> 2 (longer sequences need more VRAM)
 #   - gradient_accumulation_steps: 8 -> 16 (keep effective batch ~32)
+#
+# Result: Spread MAE 12.24, val_loss 38.46, best epoch 5, ~5.7M params
+#
+# Notes: More history didn't help meaningfully. The temporal attention may
+#   not be extracting useful signal beyond the most recent few games, or
+#   the additional games add noise.
 # =============================================================================
 
 data:

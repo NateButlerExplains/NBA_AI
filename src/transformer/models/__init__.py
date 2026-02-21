@@ -22,6 +22,10 @@ from src.transformer.models.temporal_attention import (
 )
 from src.transformer.models.fusion import (
     SimpleFusion,
+    CrossAttentionFusion,
+)
+from src.transformer.models.roster_encoder import (
+    RosterEncoder,
 )
 from src.transformer.models.prediction_heads import (
     PredictionHeads,
@@ -47,6 +51,9 @@ __all__ = [
     "SinusoidalRecencyEncoding",
     # Fusion
     "SimpleFusion",
+    "CrossAttentionFusion",
+    # Roster Encoder
+    "RosterEncoder",
     # Prediction Heads
     "PredictionHeads",
     "GamePrediction",

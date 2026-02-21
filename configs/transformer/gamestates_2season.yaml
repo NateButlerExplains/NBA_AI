@@ -1,9 +1,20 @@
 # =============================================================================
-# GAMESTATES 2-SEASON CONFIG: Score trajectory model (no PBP)
+# EXPERIMENT 7: GameStates — 2 Seasons (Phase 1a ablation)
+# Date: Feb 18, 2026
 # =============================================================================
-# Tests whether score evolution alone is sufficient for game prediction.
-# Same regularization as fast_2season.yaml for fair comparison.
-# Compare against PBP fast_2season (Spread MAE 12.35) and baseline v1 (12.20).
+# Score trajectory only — no PBP, no players, no action types.
+# Features: 5 per row (period, clock_bucket, home_score_bucket,
+#   away_score_bucket, margin_bucket). Embedding: 5x16-d = 80-d -> 256-d.
+# Uses separate train script: scripts/train_gamestates.py
+#
+# Result: Spread MAE 12.36, Avg Score MAE 10.06, Win Acc 52.0%, Win AUC 0.496,
+#   val_loss 39.00, ran all 50 epochs (no overfitting), ~5.59M params
+#
+# Notes: Nearly identical Spread MAE to PBP 2-season (Exp 5: 12.35). Val loss
+#   converged slowly but never diverged. Win AUC below 0.5 (essentially
+#   random). Best Avg Score MAE across all experiments (10.06) — learned
+#   score distributions well but couldn't extract directional signal.
+#   KEY FINDING: PBP adds no signal beyond score trajectories.
 # =============================================================================
 
 data:

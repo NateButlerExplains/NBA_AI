@@ -571,6 +571,10 @@ class Trainer:
         return self.model(
             home_history=batch["home_history"],
             away_history=batch["away_history"],
+            home_roster=batch.get("home_roster"),
+            away_roster=batch.get("away_roster"),
+            home_rest_days=batch.get("home_rest_days"),
+            away_rest_days=batch.get("away_rest_days"),
         )
 
     def _validate(self) -> tuple[float, MetricResults]:

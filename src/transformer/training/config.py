@@ -105,6 +105,21 @@ class ModelConfig:
     # --- Schedule Features (Phase 1c) ---
     n_schedule_features: int = 0  # 0 = disabled, 2 = days_before_target + season_game_number
 
+    # --- History Stream ---
+    use_history: bool = True              # Enable PBP history stream (EventEncoder + TemporalAttention)
+
+    # --- Roster Stream (Phase 1b) ---
+    use_roster: bool = False              # Enable roster encoder (target game player IDs)
+    roster_attention_heads: int = 4       # Heads in roster self-attention
+    roster_attention_layers: int = 2      # Layers in roster self-attention
+
+    # --- Rest Days (Combined Phase 1) ---
+    use_rest_days: bool = False           # Enable rest_days as direct target-game feature
+
+    # --- Fusion ---
+    fusion_type: str = "simple"           # "simple" (MLP concat) or "cross_attention"
+    cross_attention_heads: int = 4        # Heads in cross-attention fusion
+
     # --- Regularization ---
     dropout: float = 0.1  # Probability of dropping neurons during training (prevents overfitting)
 

@@ -1,9 +1,17 @@
 # =============================================================================
-# ABLATION: 10 Training Seasons
+# EXPERIMENT 4: 10 Training Seasons Ablation (Phase 1a)
+# Date: Feb 14, 2026
 # =============================================================================
-# Changes from full_baseline.yaml:
+# Changes from Exp 1 (full_baseline.yaml):
 #   - train_seasons: 5 -> 10 seasons (2013-2023, ~12,800 games)
 #   - Tests whether more training data improves generalization
+#
+# Result: Spread MAE 12.74, val_loss 37.57, best epoch 10, ~5.7M params
+#
+# Notes: More training data actually hurt test Spread MAE despite improving
+#   val_loss. Older seasons (pre-2018) have different play styles and the
+#   model learns patterns that don't generalize to 2024-2025. 5 seasons is
+#   the sweet spot for this architecture.
 # =============================================================================
 
 data:

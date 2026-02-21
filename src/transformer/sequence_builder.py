@@ -81,6 +81,8 @@ class MatchupSequence:
     home_season_games: int = 0              # Total games home team played before target (Phase 1c)
     away_season_games: int = 0              # Total games away team played before target (Phase 1c)
     season: str = ""                        # Season string (e.g., "2024-2025") for game count query
+    target_home_roster: list[int] = field(default_factory=list)  # Player IDs from target game (Phase 1b)
+    target_away_roster: list[int] = field(default_factory=list)  # Player IDs from target game (Phase 1b)
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +323,32 @@ class SequenceBuilder:
                     else:
                         away_season_games = count
 
+        # Step 2c: Extract target game roster from GameStates.players_data (Phase 1b).
+        # Uses the actual players who participated in the target game (ground truth).
+        # For inference on future games, this would need to be approximated from
+        # injury reports, projected lineups, etc.
+        target_home_roster = []
+        target_away_roster = []
+        if status == 3:  # Only for completed games
+            with get_db(self.db_path) as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT players_data FROM GameStates
+                    WHERE game_id = ? AND is_final_state = 1
+                    """,
+                    (target_game_id,),
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    try:
+                        players_data = json.loads(row[0])
+                        if "home" in players_data:
+                            target_home_roster = [int(pid) for pid in players_data["home"].keys()]
+                        if "away" in players_data:
+                            target_away_roster = [int(pid) for pid in players_data["away"].keys()]
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        logging.debug(f"Failed to parse players_data for {target_game_id}")
+
         # Step 3: Package everything into a MatchupSequence.
         # Scores are only included if the game is completed (status == 3).
         # For future/unplayed games, scores will be None.
@@ -339,6 +367,8 @@ class SequenceBuilder:
             home_season_games=home_season_games,
             away_season_games=away_season_games,
             season=season or "",
+            target_home_roster=target_home_roster,
+            target_away_roster=target_away_roster,
         )
 
     def build_sequences_batch(
@@ -587,6 +617,26 @@ def sequence_to_arrays(
         away_history_arrays["days_before_target"] = days_before
         away_history_arrays["season_game_number"] = season_nums
 
+    # Compute rest_days for each team (days since last game before target).
+    # rest_days = days_before_target[0] - 1 because days_before counts the gap
+    # from the history game's date to the target date (B2B = gap of 1 = 0 rest days).
+    # Clipped to [0, 29] for embedding vocab size of 30.
+    home_rest_days = int(np.clip(
+        home_history_arrays["days_before_target"][0] - 1, 0, 29
+    )) if (
+        home_history_arrays is not None
+        and "days_before_target" in home_history_arrays
+        and len(home_history_arrays["days_before_target"]) > 0
+    ) else 1
+
+    away_rest_days = int(np.clip(
+        away_history_arrays["days_before_target"][0] - 1, 0, 29
+    )) if (
+        away_history_arrays is not None
+        and "days_before_target" in away_history_arrays
+        and len(away_history_arrays["days_before_target"]) > 0
+    ) else 1
+
     # Build the final output dict containing everything for one training sample
     return {
         "target_game_id": sequence.target_game_id,
@@ -596,24 +646,29 @@ def sequence_to_arrays(
         # Convert each team's history games into padded numpy arrays
         "home_history": home_history_arrays,
         "away_history": away_history_arrays,
+        # Rest days for the target game (Combined Phase 1)
+        "home_rest_days": home_rest_days,
+        "away_rest_days": away_rest_days,
         # Roster arrays: convert player NBA IDs to numeric vocab indices.
-        # Uses the most recent historical game's roster (games[0] = most recent)
-        # as a proxy for the "current roster" for the target game.
-        #
-        # KNOWN LIMITATION: If a team made roster changes between their most recent
-        # game and the target game (trades, signings, call-ups), those changes are
-        # not reflected here. This is documented in ARCHITECTURE.md line 89.
-        # The model currently ignores roster data (Phase 1a uses PBP history only).
-        # Rosters are still extracted here for future use.
-        # Future: Use InjuryReports table for more accurate rosters at inference time.
+        # Phase 1b: Uses the TARGET GAME's actual roster from GameStates.players_data
+        # (ground truth). Falls back to most recent prior game if target roster unavailable.
+        # For inference on future games, this would be approximated from injury reports.
         "home_roster": np.array(
-            [tokenizer.player_vocab.get(p, 0) for p in sequence.home_history.games[0].player_ids_home]
-            if sequence.home_history.games else [],
+            [tokenizer.player_vocab.get(p, 0) for p in sequence.target_home_roster]
+            if sequence.target_home_roster
+            else (
+                [tokenizer.player_vocab.get(p, 0) for p in sequence.home_history.games[0].player_ids_home]
+                if sequence.home_history.games else []
+            ),
             dtype=np.int64
         ),
         "away_roster": np.array(
-            [tokenizer.player_vocab.get(p, 0) for p in sequence.away_history.games[0].player_ids_away]
-            if sequence.away_history.games else [],
+            [tokenizer.player_vocab.get(p, 0) for p in sequence.target_away_roster]
+            if sequence.target_away_roster
+            else (
+                [tokenizer.player_vocab.get(p, 0) for p in sequence.away_history.games[0].player_ids_away]
+                if sequence.away_history.games else []
+            ),
             dtype=np.int64
         ),
         # The labels (targets) for training -- what the model tries to predict.

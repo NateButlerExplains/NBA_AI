@@ -1,16 +1,17 @@
 # =============================================================================
-# EXPERIMENT 8: GameStates — 5 Seasons (Phase 1a ablation)
-# Date: Feb 18, 2026
+# EXPERIMENT 12: Roster — 5 Seasons (Phase 1b)
+# Date: Feb 20, 2026
 # =============================================================================
-# Same GameStates model as Exp 7 with full 5-season training data.
+# Same roster model as Exp 11 with full 5-season training data.
 #
-# Result: Spread MAE 12.36, Avg Score MAE 10.14, Win Acc 52.0%, Win AUC 0.509,
-#   val_loss 39.06, ran all 50 epochs (no overfitting), ~5.59M params
+# Result: Spread MAE 12.33, Avg Score MAE 10.12, Win Acc 56.9%, Win AUC 0.583,
+#   val_loss 37.25, best epoch 31, ran all 50 epochs, ~6.1M params
 #
-# Notes: More training data didn't help. Results virtually identical to Exp 7
-#   (2-season). The GameStates model converges to the same ceiling as PBP
-#   regardless of data volume. Confirms the ~12.2-12.4 spread ceiling is
-#   fundamental, not data-limited.
+# Notes: Best val_loss across all Phase 1a-c experiments (37.25). Best Win AUC
+#   (0.583) and Win Accuracy (56.9%). Trained remarkably deep (best epoch 31
+#   vs typical 5-12). The model extracts genuine signal from roster
+#   composition. However, Spread MAE (12.33) still doesn't break the ~12.2
+#   ceiling. KEY FINDING: Roster helps predict WHO wins but not BY HOW MUCH.
 # =============================================================================
 
 data:
@@ -49,6 +50,10 @@ model:
   temporal_positional_encoding: "learned"
   temporal_pooling: "attention"
   dropout: 0.3
+  # Phase 1b: Roster encoder
+  use_roster: true
+  roster_attention_heads: 4
+  roster_attention_layers: 2
 
 
 optimizer:
@@ -67,7 +72,7 @@ training:
   patience: 20
   min_delta: 0.0001
   checkpoint_dir: "checkpoints/transformer"
-  experiment_name: "gamestates_5season"
+  experiment_name: "roster_5season"
   save_every_n_epochs: 5
   keep_n_checkpoints: 3
   log_every_n_steps: 200

@@ -14,9 +14,6 @@ api:
     - "2024-2025"
     - "2025-2026"
 
-# OpenAI API - removed Nov 2025, rebuilding GenAI from scratch
-# Future GenAI implementation will use different architecture
-
 web_app:
   secret_key: ${WEB_APP_SECRET_KEY} # Should be set in the .env file. Will be set automatically if not set in .env
 

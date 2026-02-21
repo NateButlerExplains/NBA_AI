@@ -1,13 +1,16 @@
 # =============================================================================
-# FULL BASELINE TRAINING CONFIGURATION (Phase 1a)
+# EXPERIMENT 1: Full Baseline (Phase 1a)
+# Date: Feb 14, 2026
 # =============================================================================
-# This YAML file is the SINGLE SOURCE OF TRUTH for a training experiment.
-# Every tunable hyperparameter is listed here — no need to check config.py.
+# Tokens: 8 components (actionType, subType, period, clock, team_indicator,
+#   score_diff, player, shot_result)
+# Training: 5 seasons (2018-2023), dropout=0.1, weight_decay=0.01,
+#   LR=1e-4, grad_accum=8
 #
-# To run training with this config:
-#   python scripts/train_transformer.py --config configs/transformer/full_baseline.yaml
+# Result: Spread MAE 12.20, val_loss 38.50, best epoch 5, ~5.7M params
 #
-# The trained model will be saved to: checkpoints/transformer/full_baseline/
+# Notes: Overfitting began early (epoch 5). Train loss kept dropping while
+#   val loss diverged. Indicated need for stronger regularization.
 # =============================================================================
 
 # -----------------------------------------------------------------------------

@@ -1,23 +1,25 @@
 # =============================================================================
-# EXPERIMENT 8: GameStates — 5 Seasons (Phase 1a ablation)
-# Date: Feb 18, 2026
+# EXPERIMENT 11: Roster — 2 Seasons (Phase 1b)
+# Date: Feb 20, 2026
 # =============================================================================
-# Same GameStates model as Exp 7 with full 5-season training data.
+# PBP + RosterEncoder. Adds target game's actual roster from
+# GameStates.players_data. RosterEncoder: shared player_emb (64-d) ->
+# 2-layer self-attention (4 heads) -> attention pooling -> Linear(64, 256).
+# 4 streams concatenated into SimpleFusion (1024-d input).
+# +400K params (6.1M total): roster encoder ~134K + expanded fusion ~200K.
 #
-# Result: Spread MAE 12.36, Avg Score MAE 10.14, Win Acc 52.0%, Win AUC 0.509,
-#   val_loss 39.06, ran all 50 epochs (no overfitting), ~5.59M params
+# Result: Spread MAE 12.48, Avg Score MAE 10.19, Win Acc 53.7%, Win AUC 0.551,
+#   val_loss 38.05, best epoch 23, early stopped epoch 43, ~6.1M params
 #
-# Notes: More training data didn't help. Results virtually identical to Exp 7
-#   (2-season). The GameStates model converges to the same ceiling as PBP
-#   regardless of data volume. Confirms the ~12.2-12.4 spread ceiling is
-#   fundamental, not data-limited.
+# Notes: Val loss improved substantially (38.05 vs 39.07 Exp 5) and model
+#   trained much longer (best epoch 23 vs 13), but spread MAE on test is
+#   worse (12.48 vs 12.35). Win accuracy and AUC improved. The model is
+#   learning from rosters but the signal isn't translating to better spread
+#   prediction with limited data.
 # =============================================================================
 
 data:
   train_seasons:
-    - "2018-2019"
-    - "2019-2020"
-    - "2020-2021"
     - "2021-2022"
     - "2022-2023"
 
@@ -49,6 +51,10 @@ model:
   temporal_positional_encoding: "learned"
   temporal_pooling: "attention"
   dropout: 0.3
+  # Phase 1b: Roster encoder
+  use_roster: true
+  roster_attention_heads: 4
+  roster_attention_layers: 2
 
 
 optimizer:
@@ -67,7 +73,7 @@ training:
   patience: 20
   min_delta: 0.0001
   checkpoint_dir: "checkpoints/transformer"
-  experiment_name: "gamestates_5season"
+  experiment_name: "roster_2season"
   save_every_n_epochs: 5
   keep_n_checkpoints: 3
   log_every_n_steps: 200

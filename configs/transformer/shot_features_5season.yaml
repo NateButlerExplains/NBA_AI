@@ -1,17 +1,18 @@
 # =============================================================================
-# SHOT FEATURES 5-SEASON: Full training with shot distance + modifier tokens
+# EXPERIMENT 6: Shot Features — 5 Seasons (Phase 1a)
+# Date: Feb 17, 2026
 # =============================================================================
-# Same 5-season data split and regularization as baseline_v2, but uses the
-# rebuilt tokenizer with 10-component tokens (added shot_distance_bucket and
-# shot_modifier_id as tokens #9 and #10).
+# Same 5-season data split and regularization as Exp 2, but uses rebuilt
+# tokenizer with 10-component tokens (added shot_distance_bucket and
+# shot_modifier_id as tokens #9 and #10). Token dim: 224 (up from 192).
 #
-# Fast 2-season results with these features:
-#   Spread MAE: 12.35, Avg Score MAE: 10.09, Best epoch: 13
+# Result: Spread MAE 12.29, Avg Score MAE 10.15, Win Acc 52.7%, Win AUC 0.567,
+#   val_loss 38.63, best epoch 12, ~5.85M params
 #
-# Baseline v2 (5 seasons, 8-component tokens):
-#   Spread MAE: 12.26, Best epoch: 9
-#
-# Goal: beat Spread MAE 12.20 with the enriched token representation.
+# Notes: Shot features didn't improve Spread MAE vs Exp 1 (12.29 vs 12.20).
+#   Val spread MAE reached 12.05 at epoch 12 during training, but test set
+#   result was 12.29 — overfitting after epoch 12. The model is hitting a
+#   ceiling around ~12.2 Spread MAE regardless of PBP token enrichment.
 # =============================================================================
 
 data:

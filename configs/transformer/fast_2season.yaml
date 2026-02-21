@@ -1,9 +1,17 @@
 # =============================================================================
-# FAST 2-SEASON CONFIG: Quick iteration with shot distance + modifier features
+# EXPERIMENT 5: Shot Features — 2-Season Fast Test (Phase 1a)
+# Date: Feb 17, 2026
 # =============================================================================
 # Uses 2 training seasons for ~15min epochs instead of ~30min.
 # New features: shot_distance_bucket + shot_modifier tokens (#9 and #10).
-# Compare against baseline_v2 results (Spread MAE 12.26 on 5 seasons).
+# Token dim: 224 (up from 192), projected to 256.
+#
+# Result: Spread MAE 12.35, Avg Score MAE 10.09, Win Acc 52.0%, Win AUC 0.535,
+#   val_loss 39.07, best epoch 13, ~5.85M params
+#
+# Notes: Avg Score MAE of 10.09 beats XGBoost baseline (10.1). Model trained
+#   longer (best epoch 13 vs 5-9 in baselines), suggesting shot features give
+#   more to learn. Spread MAE slightly worse due to less training data.
 # =============================================================================
 
 data:
