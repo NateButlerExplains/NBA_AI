@@ -1,0 +1,128 @@
+# =============================================================================
+# EXPERIMENT 1 (Phase 2): Baseline — Full-season player-aware architecture
+# Date: Feb 23, 2026
+# =============================================================================
+# Full Phase 2 architecture: Per-game encoder (scores + opponent + location +
+# per-player points) with GameStates dynamics on recent 5, temporal attention
+# over all prior same-season games, roster encoder, rest days, interaction
+# fusion. 512-d hidden, 128-d player embeddings, EMA, home/away augmentation.
+#
+# Changes from Phase 1:
+#   - All prior season games as context (3-82, not fixed 5)
+#   - Per-player points contribution in game representations
+#   - Attention pooling everywhere (not mean pool)
+#   - Interaction features in fusion (home-away diff + element-wise product)
+#   - EMA weight averaging (decay=0.999)
+#   - val_spread_mae early stopping with 3-epoch smoothing
+#   - Consistency loss for spread/score coherence
+#
+# Result: Spread MAE 11.70, RMSE 14.94, Home MAE 9.88, Away MAE 9.68,
+#   Win Acc 62.9%, Win AUC 0.674, Brier 0.2305, ECE 0.0463,
+#   90% Coverage 78.0%, best epoch 8, early stopped epoch 23, 38.2M params
+#
+# Notes: MAJOR IMPROVEMENT over Phase 1. Broke the 12.2 Spread MAE ceiling
+#   (11.70 vs 12.20). Win AUC jumped from 0.592 to 0.674, Win Acc from 57.6%
+#   to 62.9%. Well-calibrated (ECE 0.046). Best val_spread_mae was 11.46 at
+#   epoch 6-8, then steady overfit with train_loss dropping (35.7→17.6) while
+#   val_loss rose (41.8→39.9). ~6.5 min/epoch on RTX 2070 SUPER.
+# =============================================================================
+
+data:
+  train_seasons:
+    - "2018-2019"
+    - "2019-2020"
+    - "2020-2021"
+    - "2021-2022"
+    - "2022-2023"
+  val_seasons:
+    - "2023-2024"
+  test_seasons:
+    - "2024-2025"
+    - "2025-2026"
+  cache_dir: "data/phase2_cache"
+  n_recent_games: 5
+  max_context_games: 82
+  min_history_games: 3
+  max_players_per_game: 15
+  max_roster_size: 15
+  batch_size: 4
+  num_workers: 2
+  pin_memory: true
+  enable_augmentation: true
+
+model:
+  hidden_dim: 512
+  player_embed_dim: 128
+  n_players: 4000
+  n_teams: 30
+  score_dim: 128
+  opponent_dim: 64
+  location_dim: 32
+  player_contribution_dim: 256
+  player_contribution_heads: 4
+  player_contribution_dropout: 0.2
+  gs_embed_dim: 16
+  gs_encoder_layers: 4
+  gs_encoder_heads: 8
+  gs_encoder_ff_dim: 2048
+  gs_encoder_dropout: 0.1
+  gs_max_seq_len: 1000
+  temporal_layers: 3
+  temporal_heads: 8
+  temporal_ff_dim: 2048
+  temporal_dropout: 0.1
+  temporal_max_days: 180
+  temporal_n_pool_queries: 4
+  roster_layers: 2
+  roster_heads: 8
+  roster_ff_dim: 2048
+  roster_dropout: 0.2
+  rest_embed_dim: 64
+  max_rest_days: 30
+  fusion_dropout: 0.3
+  prediction_hidden_dim: 256
+  prediction_dropout: 0.3
+  spread_min_std: 1.0
+  score_min_std: 5.0
+
+optimizer:
+  optimizer: "adamw"
+  learning_rate: 0.0001
+  weight_decay: 0.1
+  betas:
+    - 0.9
+    - 0.98
+  eps: 0.00000001
+  scheduler: "cosine"
+  warmup_steps: 0
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.1
+  max_grad_norm: 1.0
+
+training:
+  max_epochs: 100
+  patience: 15
+  early_stopping_metric: "val_spread_mae"
+  smoothing_window: 3
+  min_delta: 0.0001
+  ema_decay: 0.999
+  use_ema: true
+  spread_loss_weight: 1.0
+  score_loss_weight: 0.5
+  win_prob_loss_weight: 0.3
+  consistency_loss_weight: 0.1
+  nll_weight: 1.0
+  mse_weight: 0.1
+  gradient_accumulation_steps: 8
+  checkpoint_dir: "checkpoints/phase2"
+  save_every_n_epochs: 5
+  save_best_only: true
+  keep_n_checkpoints: 3
+  log_every_n_steps: 50
+  use_wandb: false
+  wandb_project: "nba-phase2"
+  experiment_name: "phase2_baseline"
+  seed: 42
+  use_amp: true
+  amp_dtype: "float16"
+  device: "cuda"

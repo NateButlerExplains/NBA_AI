@@ -26,6 +26,7 @@ Usage:
 """
 
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -87,7 +88,7 @@ class SpreadLoss(nn.Module):
     Loss for spread (point differential) prediction.
 
     Combines NLL for probabilistic prediction with optional
-    auxiliary MSE for gradient stability.
+    auxiliary MSE (or Huber) for gradient stability.
 
     WHY COMBINE NLL + MSE?
         NLL alone trains the full distribution (mean AND uncertainty), but early
@@ -103,10 +104,12 @@ class SpreadLoss(nn.Module):
         self,
         nll_weight: float = 1.0,
         mse_weight: float = 0.1,
+        huber_delta: Optional[float] = None,
     ):
         super().__init__()
         self.nll_weight = nll_weight  # Weight for the probabilistic NLL component
-        self.mse_weight = mse_weight  # Weight for the auxiliary MSE component
+        self.mse_weight = mse_weight  # Weight for the auxiliary MSE/Huber component
+        self.huber_delta = huber_delta  # If set, use Huber instead of MSE
 
     def forward(
         self,
@@ -128,11 +131,14 @@ class SpreadLoss(nn.Module):
         # NLL trains the full predicted distribution (mean + uncertainty)
         nll = gaussian_nll_loss(target_spread, spread_mean, spread_std)
 
-        # MSE only trains the mean prediction — provides a simpler, more direct
-        # gradient signal that helps stabilize early training
-        mse = F.mse_loss(spread_mean, target_spread)
+        # Auxiliary loss on mean prediction. Huber is robust to blowout outliers
+        # (transitions from L2 to L1 at delta), MSE is the simpler default.
+        if self.huber_delta is not None:
+            mse = F.huber_loss(spread_mean, target_spread, delta=self.huber_delta)
+        else:
+            mse = F.mse_loss(spread_mean, target_spread)
 
-        # Weighted combination: NLL dominates (1.0) while MSE is auxiliary (0.1)
+        # Weighted combination: NLL dominates (1.0) while MSE/Huber is auxiliary
         total = self.nll_weight * nll + self.mse_weight * mse
 
         # Return all components separately so we can log and monitor each one
@@ -148,17 +154,19 @@ class ScoreLoss(nn.Module):
     Loss for absolute score prediction (e.g., home=110, away=105).
 
     Handles both home and away score predictions separately, then averages them.
-    Same NLL + MSE approach as SpreadLoss, applied to each team's score.
+    Same NLL + MSE/Huber approach as SpreadLoss, applied to each team's score.
     """
 
     def __init__(
         self,
         nll_weight: float = 1.0,
         mse_weight: float = 0.1,
+        huber_delta: Optional[float] = None,
     ):
         super().__init__()
         self.nll_weight = nll_weight
         self.mse_weight = mse_weight
+        self.huber_delta = huber_delta  # If set, use Huber instead of MSE
 
     def forward(
         self,
@@ -179,9 +187,13 @@ class ScoreLoss(nn.Module):
         home_nll = gaussian_nll_loss(target_home, home_mean, home_std)
         away_nll = gaussian_nll_loss(target_away, away_mean, away_std)
 
-        # Auxiliary MSE for each team's score
-        home_mse = F.mse_loss(home_mean, target_home)
-        away_mse = F.mse_loss(away_mean, target_away)
+        # Auxiliary loss for each team's score (Huber or MSE)
+        if self.huber_delta is not None:
+            home_mse = F.huber_loss(home_mean, target_home, delta=self.huber_delta)
+            away_mse = F.huber_loss(away_mean, target_away, delta=self.huber_delta)
+        else:
+            home_mse = F.mse_loss(home_mean, target_home)
+            away_mse = F.mse_loss(away_mean, target_away)
 
         # Average across home and away so both contribute equally
         nll = (home_nll + away_nll) / 2
@@ -296,6 +308,8 @@ class CombinedLoss(nn.Module):
         nll_weight: float = 1.0,
         mse_weight: float = 0.1,
         label_smoothing: float = 0.0,
+        spread_huber_delta: Optional[float] = None,
+        score_huber_delta: Optional[float] = None,
     ):
         """
         Initialize combined loss.
@@ -307,6 +321,8 @@ class CombinedLoss(nn.Module):
             nll_weight: Weight for NLL component within each loss
             mse_weight: Weight for MSE component within each loss
             label_smoothing: Label smoothing for win probability
+            spread_huber_delta: If set, use Huber loss (with this delta) instead of MSE for spread
+            score_huber_delta: If set, use Huber loss (with this delta) instead of MSE for scores
         """
         super().__init__()
 
@@ -316,8 +332,8 @@ class CombinedLoss(nn.Module):
         self.win_prob_weight = win_prob_weight
 
         # Each sub-loss handles one prediction task
-        self.spread_loss = SpreadLoss(nll_weight, mse_weight)
-        self.score_loss = ScoreLoss(nll_weight, mse_weight)
+        self.spread_loss = SpreadLoss(nll_weight, mse_weight, spread_huber_delta)
+        self.score_loss = ScoreLoss(nll_weight, mse_weight, score_huber_delta)
         self.win_prob_loss = WinProbLoss(label_smoothing)
 
     def forward(

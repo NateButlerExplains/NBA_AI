@@ -74,6 +74,7 @@ class GaussianHead(nn.Module):
         input_dim: int,
         hidden_dim: int = 128,
         min_std: float = 1.0,
+        max_std: Optional[float] = None,
         dropout: float = 0.1,
     ):
         """
@@ -85,11 +86,14 @@ class GaussianHead(nn.Module):
             min_std: Minimum standard deviation floor -- sigma will always be >= this.
                      For spread: 1.0 (at least 1 point of uncertainty)
                      For scores: 5.0 (at least 5 points of uncertainty)
+            max_std: Maximum standard deviation cap. Prevents sigma from inflating
+                     to absorb all prediction error (the NLL sigma trap).
             dropout: Dropout probability
         """
         super().__init__()
 
         self.min_std = min_std
+        self.max_std = max_std
 
         # Shared hidden layers that process the matchup representation
         # before splitting into separate mean and std outputs
@@ -134,6 +138,11 @@ class GaussianHead(nn.Module):
         # 3. + self.min_std adds the minimum floor (e.g., 1.0 for spread)
         # squeeze(-1) removes the trailing size-1 dimension: (batch, 1) -> (batch,)
         std = F.softplus(self.std_head(h)).squeeze(-1) + self.min_std
+
+        # Cap sigma to prevent the NLL sigma inflation trap where the model
+        # inflates sigma to reduce NLL gradient on mu, killing spread predictions
+        if self.max_std is not None:
+            std = torch.clamp(std, max=self.max_std)
 
         return mean, std
 
@@ -231,8 +240,10 @@ class PredictionHeads(nn.Module):
         input_dim: int = 256,
         hidden_dim: int = 128,
         spread_min_std: float = 1.0,
+        spread_max_std: Optional[float] = None,
         score_min_std: float = 5.0,
         dropout: float = 0.1,
+        derive_spread: bool = False,
     ):
         """
         Initialize prediction heads.
@@ -241,18 +252,27 @@ class PredictionHeads(nn.Module):
             input_dim: Dimension of matchup representation
             hidden_dim: Hidden layer dimension for heads
             spread_min_std: Minimum std for spread prediction
+            spread_max_std: Maximum std for spread prediction (caps sigma inflation)
             score_min_std: Minimum std for score predictions
             dropout: Dropout probability
+            derive_spread: If True, derive spread from score heads instead of
+                using a separate spread head. spread_mean = home_mean - away_mean,
+                spread_std = sqrt(home_std^2 + away_std^2). Eliminates the spread
+                collapse failure mode and routes all gradient through score heads.
         """
         super().__init__()
 
-        # Spread head
-        self.spread_head = GaussianHead(
-            input_dim=input_dim,
-            hidden_dim=hidden_dim,
-            min_std=spread_min_std,
-            dropout=dropout,
-        )
+        self.derive_spread = derive_spread
+
+        # Spread head (only if not deriving from scores)
+        if not derive_spread:
+            self.spread_head = GaussianHead(
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                min_std=spread_min_std,
+                max_std=spread_max_std,
+                dropout=dropout,
+            )
 
         # Score head
         self.score_head = ScoreHead(
@@ -272,12 +292,18 @@ class PredictionHeads(nn.Module):
         Returns:
             GamePrediction namedtuple with all outputs
         """
-        # --- Predict spread distribution ---
-        # spread = home_score - away_score. Positive = home winning.
-        spread_mean, spread_std = self.spread_head(matchup_repr)
-
         # --- Predict individual score distributions ---
         home_mean, home_std, away_mean, away_std = self.score_head(matchup_repr)
+
+        # --- Predict spread distribution ---
+        if self.derive_spread:
+            # Derive spread directly from score predictions. This eliminates the
+            # separate spread head (which suffered from collapse to near-zero) and
+            # routes all spread gradient through the score heads.
+            spread_mean = home_mean - away_mean
+            spread_std = torch.sqrt(home_std**2 + away_std**2)
+        else:
+            spread_mean, spread_std = self.spread_head(matchup_repr)
 
         # --- Derive win probability from the score distributions ---
         # This is elegant: we don't need a separate win prediction model!

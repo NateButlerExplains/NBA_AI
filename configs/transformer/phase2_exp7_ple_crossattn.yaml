@@ -1,0 +1,149 @@
+# =============================================================================
+# EXPERIMENT 7 (Phase 2): PLE + Cross-Attention Fusion + Huber Loss
+# Date: Feb 27, 2026
+# =============================================================================
+# Final Phase 2 experiment. Builds on Exp 5a (proven best: MAE 11.61, AUC 0.687)
+# with three targeted changes:
+#
+#   1. Piecewise Linear Encoding (PLE) for score features
+#      - Replaces Linear(4, 128) with learned bin boundaries
+#      - Captures non-linear score relationships (Gorishniy et al., 2022)
+#      - 16 bins per feature, covering -3 to +3 std
+#
+#   2. Cross-attention fusion replacing concat+MLP
+#      - Dynamic bilinear interaction: home queries attend to away, and vice versa
+#      - Richer matchup modeling than element-wise product
+#      - 8-head attention with diff residual preserved
+#
+#   3. Huber loss for outlier robustness
+#      - spread_huber_delta=10.0, score_huber_delta=15.0
+#      - Already implemented in Exp 6, free improvement
+#
+# No model size reduction (Exp 6 regression). No derived spread (sigma floor).
+# Keep everything else from Exp 5a unchanged.
+#
+# Reference results:
+#   Exp 5a:  Spread MAE 11.61, Win AUC 0.687 (Phase 2 best)
+#   Exp 6:   Spread MAE 11.84 (regressed: derived spread + model reduction)
+# =============================================================================
+
+data:
+  train_seasons:
+    - "2018-2019"
+    - "2019-2020"
+    - "2020-2021"
+    - "2021-2022"
+    - "2022-2023"
+  val_seasons:
+    - "2023-2024"
+  test_seasons:
+    - "2024-2025"
+    - "2025-2026"
+  cache_dir: "data/phase2_cache"
+  n_recent_games: 5
+  max_context_games: 82
+  min_history_games: 3
+  max_players_per_game: 15
+  max_roster_size: 15
+  batch_size: 4
+  num_workers: 2
+  pin_memory: true
+  enable_augmentation: true
+
+model:
+  hidden_dim: 512
+  player_embed_dim: 128
+  n_players: 4000
+  n_teams: 30
+  score_dim: 128
+  opponent_dim: 64
+  location_dim: 32
+  player_contribution_dim: 256
+  player_contribution_heads: 4
+  player_contribution_dropout: 0.2
+  gs_embed_dim: 16
+  gs_encoder_layers: 4
+  gs_encoder_heads: 8
+  gs_encoder_ff_dim: 2048
+  gs_encoder_dropout: 0.1
+  gs_max_seq_len: 1000
+  temporal_layers: 3
+  temporal_heads: 8
+  temporal_ff_dim: 2048
+  temporal_dropout: 0.1
+  temporal_max_days: 180
+  temporal_n_pool_queries: 8
+  temporal_pos_encoding: "days_before"
+  roster_layers: 2
+  roster_heads: 8
+  roster_ff_dim: 2048
+  roster_dropout: 0.2
+  rest_embed_dim: 64
+  max_rest_days: 30
+
+  # PLE for score features (NEW)
+  use_ple: true
+  n_ple_bins: 16
+
+  # Cross-attention fusion (NEW)
+  use_cross_attention_fusion: true
+  fusion_heads: 8
+  fusion_dropout: 0.1
+
+  prediction_hidden_dim: 256
+  prediction_dropout: 0.3
+  spread_min_std: 1.0
+  score_min_std: 5.0
+
+  # Player form encoder (from Exp 3/5a)
+  enable_player_form: true
+  player_form_dim: 64
+  player_form_days_dim: 32
+  player_form_heads: 4
+  player_form_ff_dim: 256
+  player_form_dropout: 0.2
+  max_player_appearances: 40
+
+optimizer:
+  optimizer: "adamw"
+  learning_rate: 0.0001
+  weight_decay: 0.1
+  betas:
+    - 0.9
+    - 0.98
+  eps: 0.00000001
+  scheduler: "cosine"
+  warmup_steps: 0
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.1
+  max_grad_norm: 1.0
+
+training:
+  max_epochs: 100
+  patience: 15
+  early_stopping_metric: "val_spread_mae"
+  smoothing_window: 3
+  min_delta: 0.0001
+  ema_decay: 0.999
+  use_ema: true
+  spread_loss_weight: 1.0
+  score_loss_weight: 0.5
+  win_prob_loss_weight: 0.3
+  consistency_loss_weight: 0.1
+  nll_weight: 1.0
+  mse_weight: 0.3
+  spread_huber_delta: 10.0          # Huber for spread (NEW, from Exp 6)
+  score_huber_delta: 15.0           # Huber for scores (NEW, from Exp 6)
+  gradient_accumulation_steps: 8
+  checkpoint_dir: "checkpoints/phase2"
+  save_every_n_epochs: 5
+  save_best_only: true
+  keep_n_checkpoints: 3
+  log_every_n_steps: 50
+  use_wandb: false
+  wandb_project: "nba-phase2"
+  experiment_name: "phase2_exp7_ple_crossattn"
+  seed: 42
+  use_amp: true
+  amp_dtype: "float16"
+  device: "cuda"
