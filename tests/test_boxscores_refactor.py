@@ -85,7 +85,7 @@ class TestBoxscoreRefetchLogic:
                 ftm INTEGER,
                 ft_pct REAL,
                 plus_minus INTEGER,
-                FOREIGN KEY (game_id) REFERENCES Games(game_id)
+                PRIMARY KEY (player_id, game_id)
             )
         """
         )
@@ -113,7 +113,7 @@ class TestBoxscoreRefetchLogic:
                 ftm INTEGER,
                 ft_pct REAL,
                 plus_minus INTEGER,
-                FOREIGN KEY (game_id) REFERENCES Games(game_id)
+                PRIMARY KEY (team_id, game_id)
             )
         """
         )
@@ -295,7 +295,8 @@ class TestBoxscoresValidator:
                 fta INTEGER,
                 ftm INTEGER,
                 ft_pct REAL,
-                plus_minus INTEGER
+                plus_minus INTEGER,
+                PRIMARY KEY (player_id, game_id)
             )
         """
         )
@@ -322,7 +323,8 @@ class TestBoxscoresValidator:
                 fta INTEGER,
                 ftm INTEGER,
                 ft_pct REAL,
-                plus_minus INTEGER
+                plus_minus INTEGER,
+                PRIMARY KEY (team_id, game_id)
             )
         """
         )
@@ -559,7 +561,8 @@ class TestSaveBoxscores:
                 fta INTEGER,
                 ftm INTEGER,
                 ft_pct REAL,
-                plus_minus INTEGER
+                plus_minus INTEGER,
+                PRIMARY KEY (player_id, game_id)
             )
         """
         )
@@ -586,7 +589,8 @@ class TestSaveBoxscores:
                 fta INTEGER,
                 ftm INTEGER,
                 ft_pct REAL,
-                plus_minus INTEGER
+                plus_minus INTEGER,
+                PRIMARY KEY (team_id, game_id)
             )
         """
         )
@@ -940,16 +944,20 @@ class TestBoxscoreAPIMocking:
         assert players == []
         assert teams == []
 
-    @patch("src.database_updater.boxscores.get_boxscores")
-    def test_stage_logger_integration(self, mock_get_boxscores):
+    @patch("src.database_updater.boxscores.fetch_single_boxscore")
+    def test_stage_logger_integration(self, mock_fetch):
         """Should track API calls in StageLogger."""
         from src.utils import StageLogger
 
-        mock_get_boxscores.return_value = {"0022300001": ([], [])}
+        def mock_fetch_side_effect(game_id, use_live=False):
+            return (game_id, [{"player_id": 1}], [{"team_id": 1}])
+
+        mock_fetch.side_effect = mock_fetch_side_effect
 
         stage_logger = StageLogger("Boxscores")
-        get_boxscores(["0022300001"], stage_logger=stage_logger)
+        assert stage_logger.api_calls == 0
 
-        # StageLogger should track the API call count
-        # (Implementation details depend on actual StageLogger methods)
-        assert True  # Placeholder for integration test
+        game_ids = ["0022300001", "0022300002", "0022300003"]
+        get_boxscores(game_ids, stage_logger=stage_logger)
+
+        assert stage_logger.api_calls == 3

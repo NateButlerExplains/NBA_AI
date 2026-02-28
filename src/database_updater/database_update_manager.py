@@ -373,7 +373,7 @@ def update_game_state_data(season, db_path=DB_PATH, chunk_size=100):
 
 
 @log_execution_time()
-def update_boxscore_data(season, db_path=DB_PATH, chunk_size=100):
+def update_boxscore_data(season, db_path=DB_PATH, chunk_size=30):
     """
     Collects boxscore data (PlayerBox, TeamBox) for games needing updates.
 

@@ -34,7 +34,7 @@ from tqdm import tqdm
 
 from src.config import config
 from src.database import get_db
-from src.utils import StageLogger, log_execution_time, requests_retry_session
+from src.utils import StageLogger, log_execution_time
 
 DB_PATH = config["database"]["path"]
 
@@ -282,9 +282,15 @@ def get_boxscore_with_fallback(
         return parse_boxscore_response(boxscore, game_id)
 
     except Exception as e:
-        # Retry once after delay
-        logging.warning(f"Error fetching boxscore for {game_id}, retrying: {e}")
-        time.sleep(2)
+        error_str = str(e).lower()
+        # Don't retry on permanent errors (404, 400-level, invalid game)
+        if any(code in error_str for code in ("404", "400", "403", "not found")):
+            logging.warning(f"Permanent error for {game_id}, skipping retry: {e}")
+            raise
+
+        # Retry once with backoff for transient errors (429, 500, timeout, connection)
+        logging.warning(f"Transient error for {game_id}, retrying in 3s: {e}")
+        time.sleep(3)
         try:
             boxscore = BoxScoreTraditionalV3(game_id=game_id).get_dict()
             return parse_boxscore_response(boxscore, game_id)
@@ -325,30 +331,55 @@ def get_boxscores(
                 if row:
                     game_statuses[game_id] = row[0]
 
-    # Limit concurrent connections to avoid pool warnings (NBA API has 10 connection limit)
-    thread_pool_size = min(8, os.cpu_count() * 2)
     results = {}
+    n = len(game_ids)
 
-    with requests_retry_session() as session:
+    # Daily updates (<=15 games): use threading for speed
+    # Catch-up mode (>15 games): sequential with rate-limit pauses
+    if n <= 15:
+        thread_pool_size = min(3, os.cpu_count())
         with ThreadPoolExecutor(max_workers=thread_pool_size) as executor:
-            futures = [
+            futures = {
                 executor.submit(
                     fetch_single_boxscore,
-                    game_id,
-                    game_statuses.get(game_id) == 2,  # In Progress
-                )
-                for game_id in game_ids
-            ]
-
+                    gid,
+                    game_statuses.get(gid) == 2,
+                ): gid
+                for gid in game_ids
+            }
             with tqdm(
-                total=len(futures), desc="Fetching boxscores", unit="game", leave=False
+                total=n, desc="Fetching boxscores", unit="game", leave=False
             ) as pbar:
                 for future in as_completed(futures):
                     game_id, player_records, team_records = future.result()
                     results[game_id] = (player_records, team_records)
                     if stage_logger:
-                        stage_logger.log_api_call()  # Track each API call
+                        stage_logger.log_api_call()
                     pbar.update(1)
+    else:
+        # Sequential with adaptive rate limiting to avoid NBA API throttling.
+        # The API consistently blocks after ~15 rapid requests, so we pause
+        # every 10 requests to stay well under the threshold.
+        burst_size = 10
+        cooldown = 10  # seconds between bursts
+        logging.info(
+            f"Catch-up mode: {n} games, fetching {burst_size} at a time "
+            f"with {cooldown}s cooldown"
+        )
+        with tqdm(
+            total=n, desc="Fetching boxscores", unit="game", leave=False
+        ) as pbar:
+            for i, gid in enumerate(game_ids):
+                game_id, player_records, team_records = fetch_single_boxscore(
+                    gid, game_statuses.get(gid) == 2
+                )
+                results[game_id] = (player_records, team_records)
+                if stage_logger:
+                    stage_logger.log_api_call()
+                pbar.update(1)
+                # Cooldown between bursts to stay under rate limits
+                if (i + 1) % burst_size == 0 and i + 1 < n:
+                    time.sleep(cooldown)
 
     successful_count = sum(1 for data in results.values() if data[0] or data[1])
     failed_count = len(game_ids) - successful_count
