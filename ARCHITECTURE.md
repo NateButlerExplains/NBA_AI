@@ -1,7 +1,7 @@
 # NBA Prediction Architecture
 
-> **Status**: Phase 1 Complete (15 experiments) | Phase 2 Complete (7 experiments) | Phase 3 In Progress
-> **Last Updated**: February 27, 2026
+> **Status**: Phase 1 Complete (15 experiments) | Phase 2 Complete (7 experiments) | Phase 3 In Progress (1/6 experiments)
+> **Last Updated**: February 28, 2026
 
 ---
 
@@ -54,9 +54,9 @@ Phase 2: Maximize Standard Transformer (Complete — 7 experiments)
 └─ Outcome: ~11.6 MAE plateau; standard transformer approaches
            exhausted → move to Phase 3
 
-Phase 3: Alternative Architectures (In Progress — 6 experiments planned)
+Phase 3: Alternative Architectures (In Progress — 1/6 experiments complete)
 ├─ Goal: break ~11.6 MAE plateau with different model architectures
-├─ Exp 1: Time-aware bidirectional GRU (replace temporal attention)
+├─ Exp 1: Time-aware bidirectional GRU — no improvement (MAE 11.72)
 ├─ Exp 2: Self-supervised pre-training (masked game prediction on 33K games)
 ├─ Exp 3: Multi-stat player contributions (10 stats + position from PlayerBox)
 ├─ Exp 4: Player interaction graph (self-attention between players in games)
@@ -302,6 +302,20 @@ Score buckets are team-relative: when the team was away, home/away buckets are s
 
 ---
 
+## Phase 3 Experiment Results
+
+> **Hardware**: RTX 2070 SUPER (8GB VRAM) | ~7 min/epoch
+> **Test Set**: 2024-2025 + 2025-2026 seasons
+> **Baseline**: Phase 2 Exp 5a (Spread MAE 11.61, Win AUC 0.687)
+
+| # | Experiment | Config | Spread MAE | Win AUC | Win Acc | Brier | Best Epoch | Params |
+| - | ---------- | ------ | ---------- | ------- | ------- | ----- | ---------- | ------ |
+| 1 | Time-aware bidirectional GRU | `phase3_exp1_gru` | 11.72 | 0.677 | 61.9% | 0.2286 | 9 (ES 24) | 31M |
+
+**Exp 1 findings**: Replaced 3-layer temporal transformer + 8-query attention pool with a 2-layer bidirectional GRU + 4-query attention pool. GRU provides exponential decay natively (no learned positional encoding needed), with calendar distance as a 64-d input feature. Validation MAE matched Phase 2 best (11.34 vs 11.34) but test set regressed (11.72 vs 11.61), suggesting slight overfitting. Model is 8M params lighter (31M vs 39M) and trains at comparable speed. **Conclusion**: The temporal module is not the bottleneck — the transformer's attention mechanism is not what limits spread prediction accuracy. The plateau comes from elsewhere (data, features, or fusion).
+
+---
+
 ## Loss Function
 
 ### Current Configuration (Exp 4)
@@ -489,8 +503,8 @@ configs/transformer/
 
 Same prediction target (final game scores), same data pipeline. Diversify architecture choices to break the ~11.6 MAE plateau. Six experiments planned across four lines:
 
-**Line A — GRU Temporal**:
-- **Exp 1**: Replace temporal attention (3-layer transformer + pool) with a time-aware bidirectional GRU. GRU gates provide exponential decay natively — the inductive bias the transformer must learn from positional encoding. Calendar distance embedded as 64-d input feature. Same MultiQueryAttentionPool over GRU hidden states.
+**Line A — GRU Temporal** (Complete):
+- **Exp 1**: Replace temporal attention (3-layer transformer + pool) with a time-aware bidirectional GRU. GRU gates provide exponential decay natively — the inductive bias the transformer must learn from positional encoding. Calendar distance embedded as 64-d input feature. Same MultiQueryAttentionPool over GRU hidden states. **Result**: No improvement (MAE 11.72 vs 11.61). Temporal module is not the bottleneck.
 
 **Line B — Pre-Training**:
 - **Exp 2**: Self-supervised pre-training via masked game prediction on all 33K games (6x more than supervised training). Pre-train per-game encoder + temporal module, then fine-tune with prediction heads. Expand training seasons from 5 to 8+.

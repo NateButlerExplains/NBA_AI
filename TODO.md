@@ -1,36 +1,15 @@
 # NBA AI TODO
 
-> **Last Updated**: February 27, 2026
-> **Current Sprint**: Sprint 23 — Phase 3 Exp 1 (GRU Temporal)
-
----
-
-## Active Sprint
-
-### Sprint 23: Phase 3 Exp 1 — Time-Aware Bidirectional GRU
-
-**Goal**: Replace temporal attention with a bidirectional GRU to test whether the exponential-decay inductive bias breaks the ~11.6 MAE plateau.
-
-**Status**: IN PROGRESS
-
-**Tasks**:
-
-- [x] Create `temporal_gru.py` — Phase2TemporalGRU module
-- [x] Add `temporal_type` config field + GRU params to config.py
-- [x] Wire temporal module dispatch in phase2_model.py
-- [x] Create experiment config `phase3_exp1_gru.yaml`
-- [x] Verify forward/backward pass + backward compatibility
-- [x] Update ARCHITECTURE.md with Phase 3 roadmap
-- [ ] Run full training and evaluate on test set
-- [ ] Compare results with Phase 2 Exp 5a baseline
+> **Last Updated**: February 28, 2026
+> **Current Sprint**: Between sprints — planning Phase 3 Exp 2
 
 ---
 
 ## Backlog
 
-### Phase 3: Alternative Architectures (6 experiments planned)
+### Phase 3: Alternative Architectures (1/6 experiments complete)
 
-- [ ] Exp 1: Time-aware bidirectional GRU (IN PROGRESS)
+- [x] Exp 1: Time-aware bidirectional GRU — no improvement (MAE 11.72 vs 11.61)
 - [ ] Exp 2: Self-supervised pre-training + fine-tune (masked game prediction on 33K games)
 - [ ] Exp 3: Multi-stat player contributions (10 stats + position — blocked on box score backfill)
 - [ ] Exp 4: Player interaction graph (self-attention between players within games)
@@ -63,6 +42,12 @@
 ---
 
 ## Completed Sprints
+
+### Sprint 23: Phase 3 Exp 1 — GRU Temporal (Feb 27-28, 2026)
+
+**Summary**: Replaced temporal transformer with a time-aware bidirectional GRU (2 layers, 256 hidden per direction, 64-d calendar-distance embedding, 4-query attention pool). 31M params vs 39M.
+
+**Result**: No improvement. Test MAE 11.72 (vs Exp 5a baseline 11.61), Win AUC 0.677 (vs 0.687). Validation MAE matched baseline (11.34) but didn't generalize — slight overfitting. Temporal module confirmed as not the bottleneck.
 
 ### Sprint 22: Phase 2 Final Experiments (Feb 26-27, 2026)
 
