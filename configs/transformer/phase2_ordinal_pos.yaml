@@ -13,6 +13,10 @@
 #
 # vs Exp 1: Only change is temporal_pos_encoding: days_before -> ordinal.
 #   Same speed per epoch.
+#
+# ACTUAL RESULTS:
+#   Not formally tracked — used as quick ablation during Exp 1 development.
+#   Confirmed calendar distance (days_before) outperforms ordinal position.
 # =============================================================================
 
 data:

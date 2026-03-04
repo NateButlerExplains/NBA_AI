@@ -38,6 +38,12 @@
 #
 # Expected: spread collapse should resolve (mean |pred| >> 3.68), coverage
 # should recover to ~78%+. If fusion fix works, MAE and AUC should improve.
+#
+# ACTUAL RESULTS:
+#   Test: Spread MAE 11.61, RMSE 14.85, Home MAE 9.72, Away MAE 9.64,
+#     Win Acc 63.0%, Win AUC 0.687, Brier 0.2273, 90% Coverage 72.7%
+#   Best epoch 8, early stopped epoch 23. ~39M params.
+#   PHASE 2 BEST. Fusion residual was the key fix.
 # =============================================================================
 
 data:

@@ -24,6 +24,12 @@
 #
 # Reference results:
 #   Phase 2 Exp 5a:  Spread MAE 11.61, Win AUC 0.687
+#
+# ACTUAL RESULTS:
+#   Val:  Spread MAE 11.34 (matched baseline)
+#   Test: Spread MAE 11.72, Win AUC 0.677, Win Acc 61.9%, Brier 0.2286
+#   Best epoch 9, early stopped at 24. 31M params.
+#   Conclusion: No improvement. Temporal module is not the bottleneck.
 # =============================================================================
 
 data:

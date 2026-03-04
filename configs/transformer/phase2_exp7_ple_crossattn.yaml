@@ -25,6 +25,13 @@
 # Reference results:
 #   Exp 5a:  Spread MAE 11.61, Win AUC 0.687 (Phase 2 best)
 #   Exp 6:   Spread MAE 11.84 (regressed: derived spread + model reduction)
+#
+# ACTUAL RESULTS:
+#   Test: Spread MAE 11.73, Win AUC 0.669, Win Acc 62.2%, Brier 0.2306
+#   Best epoch 7, early stopped epoch 22. ~39M params.
+#   REGRESSED. All three changes together hurt. Cross-attention fusion too
+#   aggressive — replaces proven interaction features. PLE adds complexity
+#   without gain. Phase 2 exploration exhausted.
 # =============================================================================
 
 data:

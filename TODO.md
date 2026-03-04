@@ -1,18 +1,20 @@
 # NBA AI TODO
 
-> **Last Updated**: February 28, 2026
-> **Current Sprint**: Between sprints — planning Phase 3 Exp 2
+> **Last Updated**: March 4, 2026
+> **Current Sprint**: Sprint 27 — Phase 3 Exp 5 (Heterogeneous Graph)
 
 ---
 
 ## Backlog
 
-### Phase 3: Alternative Architectures (1/6 experiments complete)
+### Phase 3: Alternative Architectures (5/6 experiments complete)
 
 - [x] Exp 1: Time-aware bidirectional GRU — no improvement (MAE 11.72 vs 11.61)
-- [ ] Exp 2: Self-supervised pre-training + fine-tune (masked game prediction on 33K games)
-- [ ] Exp 3: Multi-stat player contributions (10 stats + position — blocked on box score backfill)
-- [ ] Exp 4: Player interaction graph (self-attention between players within games)
+- [x] Exp 2: Self-supervised pre-training — no improvement (MAE 11.61 val, 11.84 test vs 11.61 baseline)
+- [x] Exp 3a: Full PlayerBox (16 stats + position) — MAE 11.48, AUC 0.707, Win Acc 65.3%
+- [x] Exp 3b: + Extended training data (15 seasons) — MAE 11.03, AUC 0.685, Win Acc 62.7% (spread improved, win regressed)
+- [x] ~~Exp 3c: + Wider model (hidden=640)~~ — skipped (3b showed overfitting with 39M, 65M would be worse)
+- [x] Exp 4: Player interaction self-attention — **NEW BEST** (MAE 10.83, AUC 0.705, Win Acc 65.1%, ECE 0.0142)
 - [ ] Exp 5: Full heterogeneous graph (HIGFormer-inspired multi-pass architecture)
 - [ ] Exp 6: Best-of-everything (combine winners)
 
@@ -42,6 +44,26 @@
 ---
 
 ## Completed Sprints
+
+### Sprint 26: Phase 3 Exp 4 — Player Interaction Self-Attention (Mar 3-4, 2026)
+
+**Summary**: Added 1-layer TransformerEncoder self-attention (256-d, 4 heads, FF=1024, pre-norm, GELU) between players within each historical game, before attention pooling. ~790K new params (+2% over 3a), ~40M total. Uses 15 training seasons (like 3b). Players now exchange information before pooling, enabling the model to learn player complementarity (e.g., "LeBron + AD together" produces a different representation than encoding them independently).
+
+**Result**: **NEW BEST** across spread metrics while recovering win classification. Spread MAE 10.83 (-0.20 vs 3b, -0.65 vs 3a), RMSE 14.56, Home MAE 9.33, Away MAE 9.46. Win Accuracy 65.1% (recovered from 3b's 62.7%, near 3a's 65.3%), Win AUC 0.705 (recovered from 3b's 0.685, near 3a's 0.707), Brier 0.2180, ECE 0.0142 (best calibration ever), 90% Coverage 82.2%. Best val MAE 10.83 at epoch 9, manually stopped at epoch 15 (overfitting). Key insight: Player interaction fixed 3b's win classification regression while keeping the spread improvement from more data.
+
+### Sprint 25: Phase 3 Exp 3 — Full PlayerBox Integration (Mar 2-3, 2026)
+
+**Summary**: Expanded PlayerContributionEncoder from 1 stat (points) to 16 box score stats (min, pts, oreb, dreb, ast, stl, blk, tov, pf, fga, fgm, fg3a, fg3m, fta, ftm, plus_minus) with position embedding (Guard/Forward/Center/Unknown → 8-d) and plus_minus availability indicator. Stat MLP processes [16 stats + pm_avail] → 64-d, concatenated with player_embed(128) + position(8) = 200 → Linear(200, 256). PlayerFormEncoder similarly expanded to full stats. Three sub-experiments: 3a (feature isolation), 3b (data scaling), 3c (capacity scaling).
+
+**Exp 3a Result**: First improvement beyond the ~11.6 MAE plateau. Spread MAE 11.48 (-0.13), Win AUC 0.707 (+0.020), Win Accuracy 65.3% (+2.3pp), Brier 0.2204 (-0.007), 90% Coverage 78.2% (+5.5pp). Best val MAE 11.14. Confirms feature ceiling was the bottleneck — rebounds, assists, defense, shooting efficiency, and plus/minus provide signal not learnable from game scores alone.
+
+**Exp 3b Result**: Extended to 15 training seasons (2008-2023). Best val MAE 10.62 at epoch 10, test MAE 11.03 (-0.45), AUC 0.685 (-0.022), Win Acc 62.7% (-2.6pp). Early stopped manually at epoch 15 (overfitting — train loss dropping, val loss climbing since epoch 10). More data improved spread significantly but win classification regressed. Exp 3c (wider model) skipped — overfitting with 39M params means 65M would be worse.
+
+### Sprint 24: Phase 3 Exp 2 — Self-Supervised Pre-Training (Mar 1-2, 2026)
+
+**Summary**: BERT-style masked reconstruction on 31K games (25 seasons, 2001-2026). 40% masking, predict team_score/opp_score/margin at masked positions. Pre-trains player_embed + per_game_encoder + temporal_attention. Fine-tune with 3-phase gradual unfreezing (frozen → top block → all) and discriminative LR (0.9x/layer).
+
+**Result**: No improvement. Pre-training converged in 11 epochs (~23s) on 687 team-season samples. Fine-tuning best at epoch 8: val MAE 11.61 (matches baseline), val AUC 0.678 (below 0.687). Test: MAE 11.84, AUC 0.669. Full unfreezing (epochs 11-23) did not improve. Pre-trained representations provide no advantage over random initialization. Combined with Exp 1, confirms the bottleneck is features/data, not encoder quality.
 
 ### Sprint 23: Phase 3 Exp 1 — GRU Temporal (Feb 27-28, 2026)
 

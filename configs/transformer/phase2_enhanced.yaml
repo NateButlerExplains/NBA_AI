@@ -10,6 +10,10 @@
 #   3. Temporal Pool Queries 4 → 8: more capacity to represent seasonal aspects
 #
 # Baseline reference: Spread MAE 11.70, Win AUC 0.674 (phase2_baseline.yaml)
+#
+# ACTUAL RESULTS:
+#   Test: Spread MAE 11.67, Win AUC 0.682
+#   Conclusion: All three changes helped. New best at the time.
 # =============================================================================
 
 data:

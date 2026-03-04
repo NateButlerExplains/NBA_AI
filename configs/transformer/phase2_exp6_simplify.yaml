@@ -36,6 +36,12 @@
 #
 # Expected: significant MAE improvement from eliminating spread head collapse
 # and reducing overfitting. Target: 11.1 or better.
+#
+# ACTUAL RESULTS:
+#   Test: Spread MAE 11.84, Win AUC 0.668, Win Acc 61.4%, Brier 0.2338
+#   Best epoch 7, early stopped epoch 17. ~33M params.
+#   REGRESSED. Derived spread constraint hurt — independent spread head learns
+#   patterns beyond raw score difference. Model reduction also cost performance.
 # =============================================================================
 
 data:
