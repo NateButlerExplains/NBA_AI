@@ -31,6 +31,12 @@ TOTAL_MEAN = 216.0
 TOTAL_STD = 20.0
 POINTS_NORM = 30.0
 
+# Fixed domain divisors for 16 PlayerBox stats (same order as STAT_COLUMNS)
+STAT_NORMS = np.array([
+    48.0, 30.0, 5.0, 12.0, 10.0, 3.0, 3.0, 5.0,
+    6.0, 25.0, 15.0, 12.0, 8.0, 12.0, 10.0, 30.0,
+], dtype=np.float32)
+
 
 def _normalize_scores(team_score: float, opp_score: float) -> list[float]:
     """Normalize game scores to [team, opponent, margin, total] (team-relative)."""
@@ -54,6 +60,7 @@ def _encode_team_context(
     roster_ids: Optional[np.ndarray] = None,
     max_appearances: int = 40,
     enable_player_form: bool = False,
+    n_player_stats: int = 0,
 ) -> dict:
     """Encode a team's context games into tensor arrays.
 
@@ -74,27 +81,46 @@ def _encode_team_context(
     # Track per-game team-is-away flag for GameStates swapping
     team_is_away = np.zeros(n_games, dtype=bool)
 
+    # Player stats arrays (only when n_player_stats > 0)
+    use_stats = n_player_stats > 0
+    if use_stats:
+        player_stats_arr = np.zeros((n_games, max_players, n_player_stats), dtype=np.float32)
+        player_positions = np.full((n_games, max_players), 3, dtype=np.int64)  # 3 = UNK default
+        player_pm_available = np.zeros((n_games, max_players), dtype=np.float32)
+
     for i, gf in enumerate(context):
         # Opponent and location relative to THIS team
         if gf.home_team == team:
             opponent_ids[i] = TEAM_TO_IDX.get(gf.away_team, 0)
             location[i] = 1  # home
             players = gf.home_player_points
+            players_stats = gf.home_player_stats
             # Team-relative scores: team is home, so team_score=home, opp=away
             scores[i] = _normalize_scores(gf.home_score, gf.away_score)
         else:
             opponent_ids[i] = TEAM_TO_IDX.get(gf.home_team, 0)
             location[i] = 0  # away
             players = gf.away_player_points
+            players_stats = gf.away_player_stats
             team_is_away[i] = True
             # Team-relative scores: team is away, so team_score=away, opp=home
             scores[i] = _normalize_scores(gf.away_score, gf.home_score)
 
-        # Player contributions (remap raw NBA IDs to sequential indices)
-        for j, (pid, pts) in enumerate(players[:max_players]):
-            player_ids[i, j] = player_id_map.get(pid, 0)
-            player_points[i, j] = pts / POINTS_NORM
-            player_mask[i, j] = False
+        # Player contributions
+        if use_stats and players_stats:
+            for j, (pid, stats, pos_idx, pm_avail) in enumerate(players_stats[:max_players]):
+                player_ids[i, j] = player_id_map.get(pid, 0)
+                player_stats_arr[i, j] = np.array(stats, dtype=np.float32) / STAT_NORMS
+                player_points[i, j] = stats[1] / POINTS_NORM  # pts is index 1
+                player_positions[i, j] = pos_idx
+                player_pm_available[i, j] = float(pm_avail)
+                player_mask[i, j] = False
+        else:
+            # Legacy path: only points
+            for j, (pid, pts) in enumerate(players[:max_players]):
+                player_ids[i, j] = player_id_map.get(pid, 0)
+                player_points[i, j] = pts / POINTS_NORM
+                player_mask[i, j] = False
 
         # Days before target
         days_before_arr[i] = min(days_before[i], 179)
@@ -186,6 +212,11 @@ def _encode_team_context(
         "gs_lengths": gs_lengths,
     }
 
+    if use_stats:
+        result["player_stats"] = player_stats_arr
+        result["player_positions"] = player_positions
+        result["player_pm_available"] = player_pm_available
+
     # Player form tensors: per-roster-player appearance history
     if enable_player_form and roster_ids is not None:
         R = len(roster_ids)
@@ -194,6 +225,10 @@ def _encode_team_context(
         form_points = np.zeros((R, A), dtype=np.float32)
         form_days = np.zeros((R, A), dtype=np.int64)
         form_mask = np.ones((R, A), dtype=bool)  # True=padding
+
+        if use_stats:
+            form_stats = np.zeros((R, A, n_player_stats), dtype=np.float32)
+            form_pm_available = np.zeros((R, A), dtype=np.float32)
 
         for r, rid in enumerate(roster_ids):
             if rid == 0:
@@ -209,12 +244,18 @@ def _encode_team_context(
                         form_points[r, app_idx] = player_points[g, p]
                         form_days[r, app_idx] = days_before_arr[g]
                         form_mask[r, app_idx] = False
+                        if use_stats:
+                            form_stats[r, app_idx] = player_stats_arr[g, p]
+                            form_pm_available[r, app_idx] = player_pm_available[g, p]
                         app_idx += 1
                         break
 
         result["roster_form_points"] = form_points
         result["roster_form_days"] = form_days
         result["roster_form_mask"] = form_mask
+        if use_stats:
+            result["roster_form_stats"] = form_stats
+            result["roster_form_pm_available"] = form_pm_available
 
     return result
 
@@ -241,6 +282,7 @@ class Phase2Dataset(Dataset):
         enable_augmentation: bool = False,
         enable_player_form: bool = False,
         max_player_appearances: int = 40,
+        n_player_stats: int = 0,
     ):
         self.game_features = game_features
         self.gs_cache = gs_cache
@@ -250,6 +292,7 @@ class Phase2Dataset(Dataset):
         self.enable_augmentation = enable_augmentation
         self.enable_player_form = enable_player_form
         self.max_player_appearances = max_player_appearances
+        self.n_player_stats = n_player_stats
 
         self.builder = Phase2SequenceBuilder(
             game_features=game_features,
@@ -291,6 +334,7 @@ class Phase2Dataset(Dataset):
             roster_ids=home_roster,
             max_appearances=self.max_player_appearances,
             enable_player_form=self.enable_player_form,
+            n_player_stats=self.n_player_stats,
         )
         away_data = _encode_team_context(
             sample.away_context, sample.away_team,
@@ -299,6 +343,7 @@ class Phase2Dataset(Dataset):
             roster_ids=away_roster,
             max_appearances=self.max_player_appearances,
             enable_player_form=self.enable_player_form,
+            n_player_stats=self.n_player_stats,
         )
 
         # Build result dict
@@ -372,6 +417,7 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
 
     # Check if player form tensors are present
     has_form = "home_roster_form_points" in batch[0]
+    has_stats = "home_player_stats" in batch[0]
 
     # Determine max dimensions
     max_home_games = max(s["home_scores"].shape[0] for s in batch)
@@ -403,6 +449,13 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
         player_points = torch.zeros(B, max_games, max_players)
         player_mask = torch.ones(B, max_games, max_players, dtype=torch.bool)
 
+        # Player stats features (only when present)
+        if has_stats:
+            n_stats = batch[0][prefix + "player_stats"].shape[-1]
+            player_stats_t = torch.zeros(B, max_games, max_players, n_stats)
+            player_positions_t = torch.full((B, max_games, max_players), 3, dtype=torch.int64)
+            player_pm_available_t = torch.zeros(B, max_games, max_players)
+
         # GameStates features
         gs_periods = torch.zeros(B, max_gs_recent, max_gs_rows, dtype=torch.int64)
         gs_clock = torch.zeros(B, max_gs_recent, max_gs_rows, dtype=torch.int64)
@@ -428,6 +481,11 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
             player_points[i, :ng, :np_] = s[prefix + "player_points"]
             player_mask[i, :ng, :np_] = s[prefix + "player_mask"]
 
+            if has_stats:
+                player_stats_t[i, :ng, :np_] = s[prefix + "player_stats"]
+                player_positions_t[i, :ng, :np_] = s[prefix + "player_positions"]
+                player_pm_available_t[i, :ng, :np_] = s[prefix + "player_pm_available"]
+
             gs_periods[i, :nr, :ngr] = s[prefix + "gs_periods"]
             gs_clock[i, :nr, :ngr] = s[prefix + "gs_clock_buckets"]
             gs_home_score[i, :nr, :ngr] = s[prefix + "gs_home_score_buckets"]
@@ -451,8 +509,14 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
         result[prefix + "gs_margin_buckets"] = gs_margin
         result[prefix + "gs_lengths"] = gs_lengths
 
+        if has_stats:
+            result[prefix + "player_stats"] = player_stats_t
+            result[prefix + "player_positions"] = player_positions_t
+            result[prefix + "player_pm_available"] = player_pm_available_t
+
     # Player form tensors (fixed shape R×A, just stack)
     if has_form:
+        has_form_stats = "home_roster_form_stats" in batch[0]
         for prefix in ["home_", "away_"]:
             result[prefix + "roster_form_points"] = torch.stack(
                 [s[prefix + "roster_form_points"] for s in batch]
@@ -463,6 +527,13 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
             result[prefix + "roster_form_mask"] = torch.stack(
                 [s[prefix + "roster_form_mask"] for s in batch]
             )
+            if has_form_stats:
+                result[prefix + "roster_form_stats"] = torch.stack(
+                    [s[prefix + "roster_form_stats"] for s in batch]
+                )
+                result[prefix + "roster_form_pm_available"] = torch.stack(
+                    [s[prefix + "roster_form_pm_available"] for s in batch]
+                )
 
     # Target game features (no padding needed)
     result["home_roster"] = torch.stack([s["home_roster"] for s in batch])

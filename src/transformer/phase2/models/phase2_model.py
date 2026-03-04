@@ -66,6 +66,15 @@ class Phase2Model(nn.Module):
             n_teams=config.n_teams,
             use_ple=config.use_ple,
             n_ple_bins=config.n_ple_bins,
+            n_player_stats=config.n_player_stats,
+            stat_hidden_dim=config.stat_hidden_dim,
+            n_positions=config.n_positions,
+            position_dim=config.position_dim,
+            interaction_layers=config.player_interaction_layers,
+            interaction_heads=config.player_interaction_heads,
+            interaction_ff_dim=config.player_interaction_ff_dim,
+            interaction_dropout=config.player_interaction_dropout,
+            n_pool_queries=config.player_contribution_n_pool_queries,
         )
 
         # Temporal module (transformer or GRU)
@@ -106,6 +115,8 @@ class Phase2Model(nn.Module):
                 n_heads=config.player_form_heads,
                 ff_dim=config.player_form_ff_dim,
                 dropout=config.player_form_dropout,
+                n_player_stats=config.n_player_stats,
+                stat_hidden_dim=config.stat_hidden_dim,
             )
 
         # Roster encoder (uses shared player_embed, optionally wider with form)
@@ -188,6 +199,10 @@ class Phase2Model(nn.Module):
                 dynamics[b, recent_positions[:n_avail]] = dynamics_recent[b, :n_avail]
 
         # 3. Per-game encoder
+        player_stats = batch.get(p + "player_stats")
+        player_positions = batch.get(p + "player_positions")
+        player_pm_available = batch.get(p + "player_pm_available")
+
         game_reprs = self.per_game_encoder(
             scores=scores,
             opponent_ids=opponent_ids,
@@ -197,6 +212,9 @@ class Phase2Model(nn.Module):
             player_mask=player_mask,
             dynamics=dynamics,
             is_recent=is_recent,
+            player_stats=player_stats,
+            player_positions=player_positions,
+            player_pm_available=player_pm_available,
         )  # (B, G, h)
 
         # 4. Temporal attention
@@ -211,10 +229,14 @@ class Phase2Model(nn.Module):
         if self.form_encoder is not None:
             form_key = p + "roster_form_points"
             if form_key in batch:
+                form_stats = batch.get(p + "roster_form_stats")
+                form_pm_avail = batch.get(p + "roster_form_pm_available")
                 form_vectors = self.form_encoder(
                     points=batch[p + "roster_form_points"],
                     days=batch[p + "roster_form_days"],
                     mask=batch[p + "roster_form_mask"],
+                    stats=form_stats,
+                    pm_available=form_pm_avail,
                 )  # (B, R, form_dim)
 
         roster_repr = self.roster_encoder(roster_ids, form_vectors)  # (B, h)

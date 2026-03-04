@@ -171,6 +171,29 @@ class Phase2TemporalAttention(nn.Module):
             hidden_dim, n_pool_queries, num_heads, dropout
         )
 
+    def forward_positions(
+        self,
+        game_embeddings: torch.Tensor,
+        days_before: torch.Tensor,
+        game_mask: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """Return per-position contextualized embeddings (B, G, h) before pooling.
+
+        Args:
+            game_embeddings: (B, n_games, hidden_dim)
+            days_before: (B, n_games) int64
+            game_mask: (B, n_games) bool, True=padding
+
+        Returns:
+            (B, n_games, hidden_dim)
+        """
+        x = self.pos_encoder(game_embeddings, days_before)
+
+        for layer in self.layers:
+            x = layer(x, mask=game_mask)
+
+        return self.norm(x)
+
     def forward(
         self,
         game_embeddings: torch.Tensor,
@@ -186,11 +209,5 @@ class Phase2TemporalAttention(nn.Module):
         Returns:
             (B, hidden_dim)
         """
-        x = self.pos_encoder(game_embeddings, days_before)
-
-        for layer in self.layers:
-            x = layer(x, mask=game_mask)
-
-        x = self.norm(x)
-
+        x = self.forward_positions(game_embeddings, days_before, game_mask)
         return self.pool(x, mask=game_mask)

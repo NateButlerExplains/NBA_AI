@@ -34,6 +34,8 @@ class Phase2DataConfig:
     num_workers: int = 2
     pin_memory: bool = True
     enable_augmentation: bool = True
+    mask_ratio: float = 0.0  # 0.0 = disabled (supervised), 0.4 = pre-training
+    n_player_stats: int = 0       # 0 = legacy, 16 = full (must match cache)
 
 
 @dataclass
@@ -52,6 +54,19 @@ class Phase2ModelConfig:
     player_contribution_dim: int = 256
     player_contribution_heads: int = 4
     player_contribution_dropout: float = 0.2
+
+    # Player stats (Phase 3+)
+    n_player_stats: int = 0       # 0 = legacy (points only), 16 = full box score
+    stat_hidden_dim: int = 64     # Stat MLP output dimension
+    n_positions: int = 4          # G/F/C/UNK
+    position_dim: int = 8         # Position embedding dimension
+
+    # Player interaction (Phase 3 Exp 4+)
+    player_interaction_layers: int = 0       # 0 = disabled (backward compat)
+    player_interaction_heads: int = 4
+    player_interaction_ff_dim: int = 1024
+    player_interaction_dropout: float = 0.2
+    player_contribution_n_pool_queries: int = 1  # 1 = single query (default), 4 = multi-query
 
     # GameStates encoder
     gs_embed_dim: int = 16
@@ -173,6 +188,12 @@ class Phase2TrainingConfig:
     wandb_project: str = "nba-phase2"
     wandb_run_name: Optional[str] = None
     experiment_name: str = "phase2_baseline"
+
+    # Pre-training / fine-tuning
+    pretrained_checkpoint: str = ""  # Path to transferable_weights.pt
+    freeze_pretrained_epochs: int = 0  # Epochs to freeze pre-trained components
+    unfreeze_top_epochs: int = 0  # Epochs with only top block unfrozen
+    lr_decay_factor: float = 1.0  # Per-layer LR decay (1.0 = uniform, 0.9 = discriminative)
 
     # Reproducibility
     seed: int = 42

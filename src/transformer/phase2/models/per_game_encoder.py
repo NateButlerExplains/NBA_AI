@@ -26,35 +26,90 @@ class PlayerContributionEncoder(nn.Module):
         contribution_dim: int = 256,
         n_heads: int = 4,
         dropout: float = 0.2,
+        n_player_stats: int = 0,
+        stat_hidden_dim: int = 64,
+        n_positions: int = 4,
+        position_dim: int = 8,
+        interaction_layers: int = 0,
+        interaction_heads: int = 4,
+        interaction_ff_dim: int = 1024,
+        interaction_dropout: float = 0.2,
+        n_pool_queries: int = 1,
     ):
         super().__init__()
 
         self.player_embed = player_embed  # Shared reference
         embed_dim = player_embed.embedding_dim  # 128
+        self.n_player_stats = n_player_stats
+        self.contribution_dim = contribution_dim
+        self.n_pool_queries = n_pool_queries
+
+        if n_player_stats > 0:
+            # Full stats path: stat MLP + position embedding + wider projection
+            self.stat_mlp = nn.Sequential(
+                nn.Linear(n_player_stats + 1, stat_hidden_dim),
+                nn.LayerNorm(stat_hidden_dim),
+                nn.GELU(),
+                nn.Linear(stat_hidden_dim, stat_hidden_dim),
+                nn.LayerNorm(stat_hidden_dim),
+                nn.GELU(),
+            )
+            self.position_emb = nn.Embedding(n_positions, position_dim)
+            proj_input_dim = embed_dim + stat_hidden_dim + position_dim
+        else:
+            # Legacy path: points only
+            proj_input_dim = embed_dim + 1
 
         self.player_projection = nn.Sequential(
-            nn.Linear(embed_dim + 1, contribution_dim),
+            nn.Linear(proj_input_dim, contribution_dim),
             nn.LayerNorm(contribution_dim),
             nn.GELU(),
         )
 
+        # Player interaction self-attention (Exp 4+)
+        self.interaction = None
+        if interaction_layers > 0:
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=contribution_dim,
+                nhead=interaction_heads,
+                dim_feedforward=interaction_ff_dim,
+                dropout=interaction_dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            self.interaction = nn.TransformerEncoder(
+                encoder_layer, num_layers=interaction_layers
+            )
+
         # Attention pool over players
-        self.pool_query = nn.Parameter(torch.randn(1, 1, contribution_dim))
+        self.pool_queries = nn.Parameter(torch.randn(1, n_pool_queries, contribution_dim))
         self.pool_attention = nn.MultiheadAttention(
             contribution_dim, n_heads, dropout=dropout, batch_first=True
         )
+        if n_pool_queries > 1:
+            self.pool_projection = nn.Sequential(
+                nn.Linear(n_pool_queries * contribution_dim, contribution_dim),
+                nn.LayerNorm(contribution_dim),
+            )
 
     def forward(
         self,
         player_ids: torch.Tensor,
         player_points: torch.Tensor,
         player_mask: torch.Tensor,
+        player_stats: torch.Tensor = None,
+        player_positions: torch.Tensor = None,
+        player_pm_available: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
             player_ids: (B, G, P) int64
             player_points: (B, G, P) float32 (normalized by /30.0)
             player_mask: (B, G, P) bool, True=padding
+            player_stats: (B, G, P, 16) float32, optional — normalized box score stats
+            player_positions: (B, G, P) int64, optional — position index 0-3
+            player_pm_available: (B, G, P) float32, optional — binary indicator
 
         Returns:
             (B, G, contribution_dim)
@@ -63,23 +118,45 @@ class PlayerContributionEncoder(nn.Module):
 
         # Flatten to (B*G, P)
         ids_flat = player_ids.reshape(B * G, P)
-        points_flat = player_points.reshape(B * G, P)
         mask_flat = player_mask.reshape(B * G, P)
 
         # Embed players
         emb = self.player_embed(ids_flat)  # (B*G, P, 128)
-        points_feat = points_flat.unsqueeze(-1)  # (B*G, P, 1)
 
-        # Concat and project
-        combined = torch.cat([emb, points_feat], dim=-1)  # (B*G, P, 129)
+        if self.n_player_stats > 0 and player_stats is not None:
+            # Full stats path
+            stats_flat = player_stats.reshape(B * G, P, -1)  # (B*G, P, 16)
+            pm_flat = player_pm_available.reshape(B * G, P)  # (B*G, P)
+            pos_flat = player_positions.reshape(B * G, P)  # (B*G, P)
+
+            stat_input = torch.cat([stats_flat, pm_flat.unsqueeze(-1)], dim=-1)  # (B*G, P, 17)
+            stat_repr = self.stat_mlp(stat_input)  # (B*G, P, stat_hidden_dim)
+            pos_repr = self.position_emb(pos_flat)  # (B*G, P, position_dim)
+
+            combined = torch.cat([emb, stat_repr, pos_repr], dim=-1)  # (B*G, P, 128+64+8=200)
+        else:
+            # Legacy path
+            points_flat = player_points.reshape(B * G, P)
+            points_feat = points_flat.unsqueeze(-1)  # (B*G, P, 1)
+            combined = torch.cat([emb, points_feat], dim=-1)  # (B*G, P, 129)
+
         x = self.player_projection(combined)  # (B*G, P, contribution_dim)
 
+        # Player interaction self-attention (before pooling)
+        if self.interaction is not None:
+            x = self.interaction(x, src_key_padding_mask=mask_flat)
+
         # Attention pool
-        query = self.pool_query.expand(B * G, -1, -1)
+        queries = self.pool_queries.expand(B * G, -1, -1)  # (B*G, N, dim)
         pooled, _ = self.pool_attention(
-            query, x, x, key_padding_mask=mask_flat, need_weights=False
+            queries, x, x, key_padding_mask=mask_flat, need_weights=False
         )
-        pooled = pooled.squeeze(1)  # (B*G, contribution_dim)
+        # pooled: (B*G, N, dim)
+        if self.n_pool_queries > 1:
+            pooled = pooled.reshape(B * G, self.n_pool_queries * self.contribution_dim)
+            pooled = self.pool_projection(pooled)  # (B*G, dim)
+        else:
+            pooled = pooled.squeeze(1)  # (B*G, contribution_dim)
 
         return pooled.reshape(B, G, -1)
 
@@ -113,6 +190,15 @@ class PerGameEncoder(nn.Module):
         n_teams: int = 30,
         use_ple: bool = False,
         n_ple_bins: int = 16,
+        n_player_stats: int = 0,
+        stat_hidden_dim: int = 64,
+        n_positions: int = 4,
+        position_dim: int = 8,
+        interaction_layers: int = 0,
+        interaction_heads: int = 4,
+        interaction_ff_dim: int = 1024,
+        interaction_dropout: float = 0.2,
+        n_pool_queries: int = 1,
     ):
         super().__init__()
 
@@ -141,6 +227,15 @@ class PerGameEncoder(nn.Module):
             contribution_dim=contribution_dim,
             n_heads=contribution_heads,
             dropout=contribution_dropout,
+            n_player_stats=n_player_stats,
+            stat_hidden_dim=stat_hidden_dim,
+            n_positions=n_positions,
+            position_dim=position_dim,
+            interaction_layers=interaction_layers,
+            interaction_heads=interaction_heads,
+            interaction_ff_dim=interaction_ff_dim,
+            interaction_dropout=interaction_dropout,
+            n_pool_queries=n_pool_queries,
         )
 
         # Context combine
@@ -170,6 +265,9 @@ class PerGameEncoder(nn.Module):
         player_mask: torch.Tensor,
         dynamics: torch.Tensor = None,
         is_recent: torch.Tensor = None,
+        player_stats: torch.Tensor = None,
+        player_positions: torch.Tensor = None,
+        player_pm_available: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -197,7 +295,12 @@ class PerGameEncoder(nn.Module):
         loc_repr = self.location_emb(location)  # (B, G, 32)
 
         # Player contribution features
-        player_repr = self.player_encoder(player_ids, player_points, player_mask)  # (B, G, 256)
+        player_repr = self.player_encoder(
+            player_ids, player_points, player_mask,
+            player_stats=player_stats,
+            player_positions=player_positions,
+            player_pm_available=player_pm_available,
+        )  # (B, G, 256)
 
         # Combine context features
         context = torch.cat([score_repr, opp_repr, loc_repr, player_repr], dim=-1)

@@ -1,0 +1,163 @@
+# =============================================================================
+# EXPERIMENT 4 (Phase 3): Player Interaction — Self-Attention Within Games
+# Date: March 2026
+# =============================================================================
+# PURPOSE: Add 1-layer self-attention between players within each historical
+# game (before pooling) to learn player complementarity, usage context, and
+# lineup depth — signal that independent encoding + pooling cannot capture.
+#
+# ARCHITECTURE CHANGE:
+#   After player_projection (B*G, P, 256), insert:
+#     1-layer TransformerEncoder (pre-norm, 4 heads, FF=1024, GELU)
+#   Then attention_pool as before.
+#   ~790K new params (+2% over Exp 3a's ~39M), ~40M total.
+#
+# BASELINE: Exp 3b — MAE 11.03, AUC 0.685 (15 seasons)
+#            Exp 3a — MAE 11.48, AUC 0.707 (5 seasons)
+#
+# RESULT: NEW BEST — best val MAE 10.83 at epoch 9, stopped at epoch 15
+#   Spread MAE: 10.83  (was 11.03 in 3b, 11.48 in 3a)
+#   Spread RMSE: 14.56
+#   Home MAE: 9.33, Away MAE: 9.46
+#   Win Accuracy: 65.1% (recovered from 3b's 62.7%, near 3a's 65.3%)
+#   Win AUC: 0.705 (recovered from 3b's 0.685, near 3a's 0.707)
+#   Brier Score: 0.2180
+#   ECE: 0.0142 (best calibration)
+#   90% Coverage: 0.822
+#   Player interaction fixed 3b's win classification regression while
+#   keeping the spread improvement from more data.
+# =============================================================================
+
+data:
+  train_seasons:
+    - "2008-2009"
+    - "2009-2010"
+    - "2010-2011"
+    - "2011-2012"
+    - "2012-2013"
+    - "2013-2014"
+    - "2014-2015"
+    - "2015-2016"
+    - "2016-2017"
+    - "2017-2018"
+    - "2018-2019"
+    - "2019-2020"
+    - "2020-2021"
+    - "2021-2022"
+    - "2022-2023"
+  val_seasons:
+    - "2023-2024"
+  test_seasons:
+    - "2024-2025"
+    - "2025-2026"
+  cache_dir: "data/phase3_cache"
+  n_recent_games: 5
+  max_context_games: 82
+  min_history_games: 3
+  max_players_per_game: 15
+  max_roster_size: 15
+  batch_size: 4
+  num_workers: 2
+  pin_memory: true
+  enable_augmentation: true
+  n_player_stats: 16
+
+model:
+  hidden_dim: 512
+  player_embed_dim: 128
+  n_players: 3000
+  n_teams: 30
+  score_dim: 128
+  opponent_dim: 64
+  location_dim: 32
+  player_contribution_dim: 256
+  player_contribution_heads: 4
+  player_contribution_dropout: 0.2
+
+  # Player stats (Phase 3)
+  n_player_stats: 16
+  stat_hidden_dim: 64
+  n_positions: 4
+  position_dim: 8
+
+  # Player interaction (Exp 4)
+  player_interaction_layers: 1
+  player_interaction_heads: 4
+  player_interaction_ff_dim: 1024
+  player_interaction_dropout: 0.2
+
+  gs_embed_dim: 16
+  gs_encoder_layers: 4
+  gs_encoder_heads: 8
+  gs_encoder_ff_dim: 2048
+  gs_encoder_dropout: 0.1
+  gs_max_seq_len: 1000
+  temporal_layers: 3
+  temporal_heads: 8
+  temporal_ff_dim: 2048
+  temporal_dropout: 0.1
+  temporal_max_days: 180
+  temporal_n_pool_queries: 8
+  temporal_pos_encoding: "days_before"
+  roster_layers: 2
+  roster_heads: 8
+  roster_ff_dim: 2048
+  roster_dropout: 0.2
+  rest_embed_dim: 64
+  max_rest_days: 30
+  fusion_dropout: 0.1
+  prediction_hidden_dim: 256
+  prediction_dropout: 0.3
+  spread_min_std: 1.0
+  score_min_std: 5.0
+
+  # Player form encoder
+  enable_player_form: true
+  player_form_dim: 128
+  player_form_days_dim: 32
+  player_form_heads: 4
+  player_form_ff_dim: 512
+  player_form_dropout: 0.2
+  max_player_appearances: 40
+
+optimizer:
+  optimizer: "adamw"
+  learning_rate: 0.0001
+  weight_decay: 0.1
+  betas:
+    - 0.9
+    - 0.98
+  eps: 0.00000001
+  scheduler: "cosine"
+  warmup_steps: 0
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.1
+  max_grad_norm: 1.0
+
+training:
+  max_epochs: 100
+  patience: 10
+  early_stopping_metric: "val_spread_mae"
+  smoothing_window: 3
+  min_delta: 0.0001
+  ema_decay: 0.999
+  use_ema: true
+  spread_loss_weight: 1.0
+  score_loss_weight: 0.5
+  win_prob_loss_weight: 0.3
+  consistency_loss_weight: 0.1
+  nll_weight: 1.0
+  mse_weight: 0.3
+  gradient_accumulation_steps: 8
+  checkpoint_dir: "checkpoints/phase3"
+  save_every_n_epochs: 5
+  save_best_only: true
+  keep_n_checkpoints: 3
+  log_every_n_steps: 50
+  use_wandb: false
+  wandb_project: "nba-phase3"
+  experiment_name: "phase3_exp4_interaction"
+  seed: 42
+  use_amp: true
+  amp_dtype: "float16"
+  device: "cuda"

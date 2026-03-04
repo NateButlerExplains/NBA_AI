@@ -102,8 +102,11 @@ class Phase2SequenceBuilder:
 
     def _extract_roster(self, game_features: PerGameFeatures, is_home: bool) -> list[int]:
         """Extract player IDs from a game's player data (keys only, no points)."""
+        stats = game_features.home_player_stats if is_home else game_features.away_player_stats
+        if stats:
+            return [entry[0] for entry in stats]
         players = game_features.home_player_points if is_home else game_features.away_player_points
-        return [pid for pid, _ in players]
+        return [entry[0] for entry in players]
 
     def _compute_rest_days(self, context: list[PerGameFeatures], target_date: str) -> int:
         """Compute rest days: days since team's last game before target."""

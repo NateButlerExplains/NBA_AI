@@ -11,6 +11,7 @@ Adapts Phase 1 trainer pattern with:
 import collections
 import logging
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -58,12 +59,20 @@ class Phase2Trainer:
         train_loader: DataLoader,
         val_loader: DataLoader,
         test_loader: Optional[DataLoader] = None,
+        pretrained_params: set[str] | None = None,
     ):
         self.model = model
         self.config = config
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.test_loader = test_loader
+
+        # Pre-trained weight tracking (must be set before _setup_optimizer)
+        self.pretrained_params = pretrained_params or set()
+        self._current_unfreeze_phase = 0  # 0=frozen, 1=top, 2=all
+        self.freeze_pretrained_epochs = config.training.freeze_pretrained_epochs
+        self.unfreeze_top_epochs = config.training.unfreeze_top_epochs
+        self.lr_decay_factor = config.training.lr_decay_factor
 
         # Device setup
         self.device = self._setup_device(config.training.device)
@@ -97,6 +106,10 @@ class Phase2Trainer:
         if config.training.use_ema:
             self.ema = EMA(self.model, decay=config.training.ema_decay)
 
+        # Apply initial freeze if we have pre-trained params
+        if self.pretrained_params and self.freeze_pretrained_epochs > 0:
+            self._apply_freeze_phase(0)
+
         # Metrics
         self.metrics_calculator = MetricsCalculator()
 
@@ -128,6 +141,17 @@ class Phase2Trainer:
     def _setup_optimizer(self) -> AdamW:
         opt_config = self.config.optimizer
 
+        # Check if we need discriminative LR
+        use_discriminative = (
+            self.pretrained_params
+            and self.lr_decay_factor < 1.0
+            and self._current_unfreeze_phase >= 2
+        )
+
+        if use_discriminative:
+            return self._setup_discriminative_optimizer()
+
+        # Standard optimizer
         decay_params = []
         no_decay_params = []
 
@@ -150,6 +174,151 @@ class Phase2Trainer:
             betas=tuple(opt_config.betas),
             eps=opt_config.eps,
         )
+
+    def _setup_discriminative_optimizer(self) -> AdamW:
+        """Set up optimizer with per-layer discriminative learning rates."""
+        opt_config = self.config.optimizer
+        base_lr = opt_config.learning_rate
+        decay = self.lr_decay_factor
+
+        # Define layer groups from top (highest LR) to bottom (lowest LR)
+        # Layer ordering: prediction_heads > fusion > temporal layers (top to bottom) > per_game_encoder > player_embed
+        n_temporal = self.config.model.temporal_layers
+
+        layer_prefixes = []
+        # Top layers (highest LR)
+        layer_prefixes.append(("prediction_heads.", "prediction_heads"))
+        layer_prefixes.append(("fusion.", "fusion"))
+        layer_prefixes.append(("team_combine.", "team_combine"))
+        layer_prefixes.append(("roster_encoder.", "roster_encoder"))
+        layer_prefixes.append(("rest_embed.", "rest_embed"))
+        layer_prefixes.append(("gs_encoder.", "gs_encoder"))
+
+        # Temporal layers top to bottom
+        for i in range(n_temporal - 1, -1, -1):
+            layer_prefixes.append((f"temporal_attention.layers.{i}.", f"temporal_layer_{i}"))
+
+        # Also include temporal_attention components not in layers
+        layer_prefixes.append(("temporal_attention.norm.", "temporal_norm"))
+        layer_prefixes.append(("temporal_attention.pool.", "temporal_pool"))
+        layer_prefixes.append(("temporal_attention.pos_encoder.", "temporal_pos"))
+
+        # Bottom layers (lowest LR)
+        layer_prefixes.append(("per_game_encoder.", "per_game_encoder"))
+        layer_prefixes.append(("player_embed.", "player_embed"))
+
+        # If form_encoder exists
+        if hasattr(self.model, 'form_encoder') and self.model.form_encoder is not None:
+            layer_prefixes.append(("form_encoder.", "form_encoder"))
+
+        # Assign parameters to groups with decaying LR
+        param_groups = []
+        assigned = set()
+
+        for depth, (prefix, group_name) in enumerate(layer_prefixes):
+            lr = base_lr * (decay ** depth)
+            decay_group = []
+            no_decay_group = []
+
+            for name, param in self.model.named_parameters():
+                if not param.requires_grad or name in assigned:
+                    continue
+                if name.startswith(prefix):
+                    assigned.add(name)
+                    if "bias" in name or "norm" in name or "embedding" in name or "emb" in name:
+                        no_decay_group.append(param)
+                    else:
+                        decay_group.append(param)
+
+            if decay_group:
+                param_groups.append({
+                    "params": decay_group,
+                    "lr": lr,
+                    "weight_decay": opt_config.weight_decay,
+                })
+            if no_decay_group:
+                param_groups.append({
+                    "params": no_decay_group,
+                    "lr": lr,
+                    "weight_decay": 0.0,
+                })
+
+        # Any remaining unassigned parameters get base LR
+        remaining_decay = []
+        remaining_no_decay = []
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad or name in assigned:
+                continue
+            if "bias" in name or "norm" in name or "embedding" in name or "emb" in name:
+                remaining_no_decay.append(param)
+            else:
+                remaining_decay.append(param)
+
+        if remaining_decay:
+            param_groups.append({
+                "params": remaining_decay,
+                "lr": base_lr,
+                "weight_decay": opt_config.weight_decay,
+            })
+        if remaining_no_decay:
+            param_groups.append({
+                "params": remaining_no_decay,
+                "lr": base_lr,
+                "weight_decay": 0.0,
+            })
+
+        # Log LR assignment
+        for depth, (prefix, group_name) in enumerate(layer_prefixes):
+            lr = base_lr * (decay ** depth)
+            logger.info(f"  Discriminative LR: {group_name} = {lr:.2e}")
+
+        return AdamW(
+            param_groups,
+            lr=base_lr,  # default LR (overridden per group)
+            betas=tuple(opt_config.betas),
+            eps=opt_config.eps,
+        )
+
+    def _apply_freeze_phase(self, phase: int):
+        """Apply freezing based on phase: 0=frozen, 1=top unfrozen, 2=all unfrozen."""
+        if not self.pretrained_params:
+            return
+
+        if phase == 0:
+            # Freeze all pre-trained parameters
+            frozen_count = 0
+            for name, param in self.model.named_parameters():
+                if name in self.pretrained_params:
+                    param.requires_grad = False
+                    frozen_count += 1
+            logger.info(f"Freeze phase 0: froze {frozen_count} pre-trained parameters")
+
+        elif phase == 1:
+            # Unfreeze top temporal block only
+            unfrozen = 0
+            # Find the top layer index
+            n_layers = self.config.model.temporal_layers
+            top_layer_prefix = f"temporal_attention.layers.{n_layers - 1}."
+
+            for name, param in self.model.named_parameters():
+                if name in self.pretrained_params:
+                    if name.startswith(top_layer_prefix) or name.startswith("temporal_attention.norm."):
+                        param.requires_grad = True
+                        unfrozen += 1
+                    else:
+                        param.requires_grad = False
+            logger.info(f"Freeze phase 1: unfroze top temporal block ({unfrozen} params)")
+
+        elif phase == 2:
+            # Unfreeze all
+            for name, param in self.model.named_parameters():
+                param.requires_grad = True
+            logger.info("Freeze phase 2: all parameters unfrozen")
+
+        self._current_unfreeze_phase = phase
+        # Rebuild optimizer with new param groups
+        self.optimizer = self._setup_optimizer()
+        self.scheduler = self._setup_scheduler()
 
     def _setup_scheduler(self):
         opt_config = self.config.optimizer
@@ -183,11 +352,13 @@ class Phase2Trainer:
             self.optimizer, T_max=main_steps, eta_min=min_lr,
         )
 
-        return SequentialLR(
-            self.optimizer,
-            schedulers=[warmup_scheduler, main_scheduler],
-            milestones=[warmup_steps],
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "Detected call of `lr_scheduler.step\\(\\)` before")
+            return SequentialLR(
+                self.optimizer,
+                schedulers=[warmup_scheduler, main_scheduler],
+                milestones=[warmup_steps],
+            )
 
     def _setup_wandb(self):
         try:
@@ -214,6 +385,16 @@ class Phase2Trainer:
         try:
             for epoch in range(self.state.epoch, self.config.training.max_epochs):
                 self.state.epoch = epoch
+
+                # Check for unfreezing phase transitions
+                if self.pretrained_params:
+                    if (self._current_unfreeze_phase == 0
+                            and epoch >= self.freeze_pretrained_epochs):
+                        self._apply_freeze_phase(1)
+                    elif (self._current_unfreeze_phase == 1
+                            and epoch >= self.freeze_pretrained_epochs + self.unfreeze_top_epochs):
+                        self._apply_freeze_phase(2)
+
                 epoch_start = time.time()
 
                 # Train
@@ -548,8 +729,13 @@ class Phase2Trainer:
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
         self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        try:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        except ValueError as e:
+            # Parameter groups may differ if checkpoint was saved during a different
+            # freeze phase. Model weights are loaded correctly; skip optimizer/scheduler.
+            logger.warning(f"Skipping optimizer/scheduler restore (param group mismatch): {e}")
 
         state = checkpoint["state"]
         self.state.epoch = state["epoch"]

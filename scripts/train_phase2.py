@@ -79,6 +79,7 @@ def create_dataloaders(
         max_roster_size=config.data.max_roster_size,
         enable_player_form=config.model.enable_player_form,
         max_player_appearances=config.model.max_player_appearances,
+        n_player_stats=config.data.n_player_stats,
     )
 
     logging.info("Creating training dataset...")
@@ -149,12 +150,53 @@ def create_model(config: Phase2ExperimentConfig) -> Phase2Model:
     return model
 
 
+def load_pretrained_weights(model: Phase2Model, weights_path: str) -> set[str]:
+    """Load pre-trained weights into Phase2Model. Returns set of loaded parameter names."""
+    logger = logging.getLogger(__name__)
+
+    state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+    logger.info(f"Loading pre-trained weights from {weights_path} ({len(state_dict)} tensors)")
+
+    # Load matching parameters
+    model_state = model.state_dict()
+    loaded = set()
+    skipped = []
+
+    for name, tensor in state_dict.items():
+        if name in model_state:
+            if model_state[name].shape == tensor.shape:
+                model_state[name] = tensor
+                loaded.add(name)
+            else:
+                skipped.append(f"{name}: shape mismatch {tensor.shape} vs {model_state[name].shape}")
+        else:
+            skipped.append(f"{name}: not in model")
+
+    model.load_state_dict(model_state)
+
+    logger.info(f"Loaded {len(loaded)} pre-trained parameters")
+    if skipped:
+        for s in skipped:
+            logger.warning(f"  Skipped: {s}")
+
+    # Log parameter norms for verification
+    for name in ["player_embed.weight", "per_game_encoder.context_combine.0.weight",
+                  "temporal_attention.layers.0.self_attn.in_proj_weight"]:
+        if name in loaded:
+            norm = model_state[name].norm().item()
+            logger.info(f"  {name}: norm={norm:.4f}")
+
+    return loaded
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train Phase 2 NBA Transformer")
 
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config")
     parser.add_argument("--quick-test", action="store_true", help="Quick smoke test")
     parser.add_argument("--resume", type=str, default=None, help="Checkpoint filename to resume from")
+    parser.add_argument("--pretrained", type=str, default=None,
+                        help="Path to pre-trained transferable_weights.pt")
     parser.add_argument("--experiment-name", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--log-level", type=str, default="INFO",
@@ -212,6 +254,12 @@ def main():
     # Create model
     model = create_model(config)
 
+    # Load pre-trained weights if specified
+    pretrained_path = args.pretrained or config.training.pretrained_checkpoint
+    pretrained_params = set()
+    if pretrained_path:
+        pretrained_params = load_pretrained_weights(model, pretrained_path)
+
     # Create trainer
     trainer = Phase2Trainer(
         model=model,
@@ -219,6 +267,7 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         test_loader=test_loader,
+        pretrained_params=pretrained_params if pretrained_path else None,
     )
 
     # Resume if specified

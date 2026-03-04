@@ -33,6 +33,30 @@ TEAM_TO_IDX = {
     "SAC": 25, "SAS": 26, "TOR": 27, "UTA": 28, "WAS": 29,
 }
 
+# Historical team codes → current franchise codes
+HISTORICAL_TO_CURRENT = {
+    "NJN": "BKN",  # New Jersey Nets → Brooklyn Nets
+    "SEA": "OKC",  # Seattle SuperSonics → Oklahoma City Thunder
+    "NOH": "NOP",  # New Orleans Hornets → New Orleans Pelicans
+    "NOK": "NOP",  # New Orleans/OKC Hornets → New Orleans Pelicans
+    "VAN": "MEM",  # Vancouver Grizzlies → Memphis Grizzlies
+    "CHH": "CHA",  # Charlotte Hornets (old) → Charlotte Hornets (current)
+}
+
+# 16 PlayerBox stats in order
+STAT_COLUMNS = [
+    "min", "pts", "oreb", "dreb", "ast", "stl", "blk", "tov",
+    "pf", "fga", "fgm", "fg3a", "fg3m", "fta", "ftm", "plus_minus",
+]
+
+# Position mapping: DB positions -> 4 categories
+POSITION_MAP = {
+    "PG": 0, "SG": 0, "G": 0,      # Guard
+    "SF": 1, "PF": 1, "F": 1,      # Forward
+    "C": 2,                          # Center
+    "GF": 3, "NA": 3, "": 3, None: 3,  # Unknown
+}
+
 
 @dataclass
 class PerGameFeatures:
@@ -52,6 +76,8 @@ class PerGameFeatures:
     reg_away_score: int
     home_player_points: list[tuple[int, int]] = field(default_factory=list)
     away_player_points: list[tuple[int, int]] = field(default_factory=list)
+    home_player_stats: list = field(default_factory=list)  # [(pid, [16 floats], pos_idx, pm_available), ...]
+    away_player_stats: list = field(default_factory=list)
 
 
 def _parse_players_data(players_data_str: Optional[str]) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
@@ -106,10 +132,112 @@ def _get_regulation_scores(game_id: str, home_score: int, away_score: int,
     return reg_home, reg_away, is_overtime
 
 
+def _batch_get_regulation_scores(game_ids: list[str], db_path: Optional[str] = None) -> dict:
+    """Batch-fetch regulation-end scores for all games. Returns {game_id: (reg_home, reg_away)}."""
+    if not game_ids:
+        return {}
+
+    result = {}
+    # Query in chunks to avoid SQLite variable limit
+    chunk_size = 500
+    with get_db(db_path) as conn:
+        for i in range(0, len(game_ids), chunk_size):
+            chunk = game_ids[i:i + chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            rows = conn.execute(
+                f"""
+                SELECT game_id, home_score, away_score
+                FROM GameStates
+                WHERE game_id IN ({placeholders}) AND period = 4
+                ORDER BY game_id, play_id DESC
+                """,
+                chunk,
+            ).fetchall()
+
+            # Group by game_id, take first row (highest play_id due to DESC)
+            seen = set()
+            for game_id, home_score, away_score in rows:
+                if game_id not in seen:
+                    seen.add(game_id)
+                    result[game_id] = (home_score, away_score)
+
+    return result
+
+
+def _batch_query_playerbox(
+    game_ids: list[str],
+    db_path: Optional[str] = None,
+    max_players: int = 15,
+) -> dict:
+    """Batch-fetch PlayerBox data for all games. Returns {game_id: {team_abbrev: [(pid, stats, pos_idx, pm_avail), ...]}}."""
+    if not game_ids:
+        return {}
+
+    result = {}
+    chunk_size = 500
+
+    with get_db(db_path) as conn:
+        for i in range(0, len(game_ids), chunk_size):
+            chunk = game_ids[i:i + chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+
+            rows = conn.execute(
+                f"""
+                SELECT pb.game_id, pb.player_id, t.abbreviation, pb.position,
+                       pb.min, pb.pts, pb.oreb, pb.dreb, pb.ast, pb.stl, pb.blk,
+                       pb.tov, pb.pf, pb.fga, pb.fgm, pb.fg3a, pb.fg3m, pb.fta,
+                       pb.ftm, pb.plus_minus
+                FROM PlayerBox pb
+                JOIN Teams t ON pb.team_id = t.team_id
+                WHERE pb.game_id IN ({placeholders})
+                  AND pb.min > 0
+                ORDER BY pb.game_id, t.abbreviation, pb.min DESC
+                """,
+                chunk,
+            ).fetchall()
+
+            # Group by game_id and team
+            for row in rows:
+                game_id = row[0]
+                player_id = row[1]
+                team_abbrev = row[2]
+                position = row[3]
+
+                # Map historical team codes
+                team_abbrev = HISTORICAL_TO_CURRENT.get(team_abbrev, team_abbrev)
+
+                # Extract 16 stats, coalesce NULL to 0.0
+                stats = [float(row[4 + j]) if row[4 + j] is not None else 0.0 for j in range(16)]
+
+                # Position index
+                pos_idx = POSITION_MAP.get(position, 3)
+
+                # plus_minus availability (last stat, index 15)
+                pm_avail = row[4 + 15] is not None
+
+                if game_id not in result:
+                    result[game_id] = {}
+                if team_abbrev not in result[game_id]:
+                    result[game_id][team_abbrev] = []
+
+                result[game_id][team_abbrev].append(
+                    (player_id, stats, pos_idx, pm_avail)
+                )
+
+    # Trim to max_players per team (already sorted by minutes DESC from SQL)
+    for game_id in result:
+        for team in result[game_id]:
+            result[game_id][team] = result[game_id][team][:max_players]
+
+    return result
+
+
 def build_cache(
     seasons: list[str],
     cache_dir: str = "data/phase2_cache",
     db_path: Optional[str] = None,
+    skip_gamestates: bool = False,
+    player_mapping_path: Optional[str] = None,
 ) -> dict:
     """
     Build the Phase 2 feature cache from the database.
@@ -144,10 +272,23 @@ def build_cache(
 
     logger.info(f"Fetched {len(rows)} games from database")
 
+    # Batch-fetch regulation scores (avoid N+1 pattern)
+    game_id_list = [row[0] for row in rows]
+    reg_scores = _batch_get_regulation_scores(game_id_list, db_path)
+
+    # Batch-fetch PlayerBox data
+    playerbox_data = _batch_query_playerbox(game_id_list, db_path)
+    n_with_playerbox = sum(1 for gid in game_id_list if gid in playerbox_data)
+    logger.info(f"PlayerBox data: {n_with_playerbox}/{len(game_id_list)} games")
+
     game_features = {}
     season_index = defaultdict(list)
 
     for game_id, home_team, away_team, date_utc, season, home_score, away_score, players_data in rows:
+        # Map historical team codes to current franchise codes
+        home_team = HISTORICAL_TO_CURRENT.get(home_team, home_team)
+        away_team = HISTORICAL_TO_CURRENT.get(away_team, away_team)
+
         home_players, away_players = _parse_players_data(players_data)
 
         game_date = str(date_utc)[:10] if date_utc else ""
@@ -155,10 +296,24 @@ def build_cache(
         margin = home_score - away_score
         total = home_score + away_score
 
-        # Get regulation scores
-        reg_home, reg_away, is_overtime = _get_regulation_scores(
-            game_id, home_score, away_score, db_path
-        )
+        # Get regulation scores from batch query
+        reg_data = reg_scores.get(game_id)
+        if reg_data is not None:
+            reg_home, reg_away = reg_data
+            is_overtime = (home_score != reg_home) or (away_score != reg_away)
+        else:
+            reg_home, reg_away, is_overtime = home_score, away_score, False
+
+        # Get PlayerBox data for this game
+        pb_game = playerbox_data.get(game_id, {})
+        home_player_stats = pb_game.get(home_team, [])
+        away_player_stats = pb_game.get(away_team, [])
+
+        # If we have PlayerBox data, also derive player_points from it
+        if home_player_stats:
+            home_players = [(pid, int(stats[1])) for pid, stats, _, _ in home_player_stats]
+        if away_player_stats:
+            away_players = [(pid, int(stats[1])) for pid, stats, _, _ in away_player_stats]
 
         features = PerGameFeatures(
             game_id=game_id,
@@ -175,6 +330,8 @@ def build_cache(
             reg_away_score=reg_away,
             home_player_points=home_players,
             away_player_points=away_players,
+            home_player_stats=home_player_stats,
+            away_player_stats=away_player_stats,
         )
 
         game_features[game_id] = features
@@ -211,24 +368,41 @@ def build_cache(
     with open(mapping_path, "w") as f:
         json.dump(TEAM_TO_IDX, f, indent=2)
 
-    # Build player ID mapping: raw NBA API IDs -> sequential indices (0=padding)
-    all_player_ids = set()
-    for gf in game_features.values():
-        for pid, _ in gf.home_player_points:
-            all_player_ids.add(pid)
-        for pid, _ in gf.away_player_points:
-            all_player_ids.add(pid)
+    if player_mapping_path:
+        # Load external player mapping for consistency with pre-training cache
+        with open(player_mapping_path) as f:
+            player_id_map = {int(k): v for k, v in json.load(f).items()}
+        logger.info(f"Loaded external player mapping: {len(player_id_map)} players from {player_mapping_path}")
+    else:
+        # Build player ID mapping: raw NBA API IDs -> sequential indices (0=padding)
+        all_player_ids = set()
+        for gf in game_features.values():
+            if gf.home_player_stats:
+                for entry in gf.home_player_stats:
+                    all_player_ids.add(entry[0])
+                for entry in gf.away_player_stats:
+                    all_player_ids.add(entry[0])
+            else:
+                for entry in gf.home_player_points:
+                    all_player_ids.add(entry[0])
+                for entry in gf.away_player_points:
+                    all_player_ids.add(entry[0])
 
-    # Sort for reproducibility, 0 is reserved for padding
-    player_id_map = {pid: idx + 1 for idx, pid in enumerate(sorted(all_player_ids))}
-    player_mapping_path = cache_path / "player_mapping.json"
-    with open(player_mapping_path, "w") as f:
+        # Sort for reproducibility, 0 is reserved for padding
+        player_id_map = {pid: idx + 1 for idx, pid in enumerate(sorted(all_player_ids))}
+
+    # Always save the mapping (whether loaded or generated)
+    player_mapping_path_out = cache_path / "player_mapping.json"
+    with open(player_mapping_path_out, "w") as f:
         json.dump({str(k): v for k, v in player_id_map.items()}, f)
     logger.info(f"Saved player mapping: {len(player_id_map)} unique players "
-                f"(indices 1-{len(player_id_map)}, 0=padding)")
+                f"(indices 1-{max(player_id_map.values()) if player_id_map else 0}, 0=padding)")
 
     # Build GameStates cache
-    _build_gamestates_cache(list(game_features.keys()), cache_path, db_path)
+    if not skip_gamestates:
+        _build_gamestates_cache(list(game_features.keys()), cache_path, db_path)
+    else:
+        logger.info("Skipping GameStates cache (skip_gamestates=True)")
 
     return {
         "game_features": game_features,
@@ -273,6 +447,10 @@ def _dict_to_per_game_features(d: dict) -> PerGameFeatures:
     d = dict(d)
     d["home_player_points"] = [tuple(p) for p in d.get("home_player_points", [])]
     d["away_player_points"] = [tuple(p) for p in d.get("away_player_points", [])]
+    # Convert player stats nested lists back to list of tuples: (pid, [stats], pos_idx, pm_avail)
+    for key in ("home_player_stats", "away_player_stats"):
+        raw = d.get(key, [])
+        d[key] = [(entry[0], entry[1], entry[2], entry[3]) for entry in raw] if raw else []
     return PerGameFeatures(**d)
 
 
@@ -285,7 +463,8 @@ def load_cache(cache_dir: str = "data/phase2_cache") -> dict:
         gid: _dict_to_per_game_features(d) for gid, d in raw_features.items()
     }
     season_index = torch.load(cache_path / "season_index.pt", weights_only=False)
-    gs_cache = torch.load(cache_path / "gamestates_cache.pt", weights_only=False)
+    gs_cache_path = cache_path / "gamestates_cache.pt"
+    gs_cache = torch.load(gs_cache_path, weights_only=False) if gs_cache_path.exists() else {}
 
     with open(cache_path / "team_mapping.json") as f:
         team_mapping = json.load(f)
@@ -325,7 +504,13 @@ if __name__ == "__main__":
         help="Seasons to cache",
     )
     parser.add_argument("--cache-dir", default="data/phase2_cache")
+    parser.add_argument("--skip-gamestates", action="store_true",
+                        help="Skip building GameStates cache (for pre-training)")
+    parser.add_argument("--player-mapping", type=str, default=None,
+                        help="Path to external player_mapping.json")
 
     args = parser.parse_args()
-    result = build_cache(args.seasons, args.cache_dir)
+    result = build_cache(args.seasons, args.cache_dir,
+                         skip_gamestates=args.skip_gamestates,
+                         player_mapping_path=args.player_mapping)
     print(f"\nCache built: {result['n_games']} games")
