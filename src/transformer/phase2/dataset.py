@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from src.transformer.phase2.cache_builder import TEAM_TO_IDX, PerGameFeatures
+from src.transformer.phase2.cache_builder import TEAM_TO_IDX, PerGameFeatures, HISTORICAL_TO_CURRENT
 from src.transformer.phase2.sequence_builder import Phase2SequenceBuilder
 
 logger = logging.getLogger(__name__)
@@ -32,10 +32,21 @@ TOTAL_STD = 20.0
 POINTS_NORM = 30.0
 
 # Fixed domain divisors for 16 PlayerBox stats (same order as STAT_COLUMNS)
-STAT_NORMS = np.array([
+STAT_NORMS_16 = np.array([
     48.0, 30.0, 5.0, 12.0, 10.0, 3.0, 3.0, 5.0,
     6.0, 25.0, 15.0, 12.0, 8.0, 12.0, 10.0, 30.0,
 ], dtype=np.float32)
+STAT_NORMS_17 = np.array([
+    48.0, 30.0, 5.0, 12.0, 10.0, 3.0, 3.0, 5.0,
+    6.0, 25.0, 15.0, 12.0, 8.0, 12.0, 10.0, 30.0,
+    20.0,  # years_in_league
+], dtype=np.float32)
+# Default: 16 stats (set dynamically based on n_player_stats)
+STAT_NORMS = STAT_NORMS_16
+
+# Team efficiency normalization constants (mean, std from historical data)
+EFFICIENCY_MEANS = np.array([0.539, 0.574, 0.121, 0.262, 0.381, 0.621, 111.3, 0.0], dtype=np.float32)
+EFFICIENCY_STDS = np.array([0.068, 0.063, 0.034, 0.092, 0.099, 0.095, 7.534, 13.0], dtype=np.float32)
 
 
 def _normalize_scores(team_score: float, opp_score: float) -> list[float]:
@@ -46,6 +57,29 @@ def _normalize_scores(team_score: float, opp_score: float) -> list[float]:
         (team_score - opp_score) / MARGIN_STD,
         (team_score + opp_score - TOTAL_MEAN) / TOTAL_STD,
     ]
+
+
+def _compute_gs_summary(gs_data: dict, team_is_away: bool) -> np.ndarray:
+    """Compute 6 summary features from GameStates margin_buckets."""
+    margin_buckets = gs_data["margin_buckets"]
+    if team_is_away:
+        margin_buckets = 120 - margin_buckets  # Invert for away team perspective
+
+    margins = margin_buckets.astype(np.float32) - 60.0  # Convert to actual margins
+
+    max_lead = np.max(margins) / 30.0
+    max_deficit = np.min(margins) / 30.0
+    # Count sign changes (lead changes)
+    signs = np.sign(margins)
+    signs = signs[signs != 0]  # Remove ties
+    lead_changes = np.sum(signs[1:] != signs[:-1]) / 20.0 if len(signs) > 1 else 0.0
+    score_volatility = np.std(margins) / 15.0 if len(margins) > 1 else 0.0
+    final_margin = margins[-1] if len(margins) > 0 else 0.0
+    close_game = 1.0 if abs(final_margin) <= 5 else 0.0
+    blowout = 1.0 if abs(final_margin) >= 20 else 0.0
+
+    return np.array([max_lead, max_deficit, lead_changes, score_volatility, close_game, blowout],
+                    dtype=np.float32)
 
 
 def _encode_team_context(
@@ -61,6 +95,9 @@ def _encode_team_context(
     max_appearances: int = 40,
     enable_player_form: bool = False,
     n_player_stats: int = 0,
+    n_efficiency_features: int = 0,
+    player_experience: Optional[dict] = None,
+    season_start_year: Optional[int] = None,
 ) -> dict:
     """Encode a team's context games into tensor arrays.
 
@@ -83,10 +120,18 @@ def _encode_team_context(
 
     # Player stats arrays (only when n_player_stats > 0)
     use_stats = n_player_stats > 0
+    stat_norms = STAT_NORMS_17[:n_player_stats] if n_player_stats == 17 else STAT_NORMS_16[:n_player_stats]
     if use_stats:
         player_stats_arr = np.zeros((n_games, max_players, n_player_stats), dtype=np.float32)
         player_positions = np.full((n_games, max_players), 3, dtype=np.int64)  # 3 = UNK default
         player_pm_available = np.zeros((n_games, max_players), dtype=np.float32)
+
+    # Efficiency features (only when enabled)
+    use_efficiency = n_efficiency_features > 0
+    if use_efficiency:
+        efficiency_features = np.zeros((n_games, n_efficiency_features), dtype=np.float32)
+        gs_summary_features = np.zeros((n_games, 6), dtype=np.float32)
+        context_flags = np.zeros((n_games, 2), dtype=np.float32)
 
     for i, gf in enumerate(context):
         # Opponent and location relative to THIS team
@@ -110,7 +155,13 @@ def _encode_team_context(
         if use_stats and players_stats:
             for j, (pid, stats, pos_idx, pm_avail) in enumerate(players_stats[:max_players]):
                 player_ids[i, j] = player_id_map.get(pid, 0)
-                player_stats_arr[i, j] = np.array(stats, dtype=np.float32) / STAT_NORMS
+                raw_stats = np.array(stats, dtype=np.float32)
+                if n_player_stats == 17 and player_experience is not None and season_start_year is not None:
+                    # Append years_in_league as 17th stat
+                    from_year = player_experience.get(pid, season_start_year)
+                    years = min(max(season_start_year - from_year, 0), 20)
+                    raw_stats = np.append(raw_stats, float(years))
+                player_stats_arr[i, j] = raw_stats / stat_norms
                 player_points[i, j] = stats[1] / POINTS_NORM  # pts is index 1
                 player_positions[i, j] = pos_idx
                 player_pm_available[i, j] = float(pm_avail)
@@ -121,6 +172,25 @@ def _encode_team_context(
                 player_ids[i, j] = player_id_map.get(pid, 0)
                 player_points[i, j] = pts / POINTS_NORM
                 player_mask[i, j] = False
+
+        # Efficiency features (team-relative)
+        if use_efficiency:
+            if gf.home_team == team:
+                eff = gf.home_team_efficiency
+            else:
+                eff = gf.away_team_efficiency
+            if eff:
+                eff_arr = np.array(eff, dtype=np.float32)
+                efficiency_features[i] = (eff_arr - EFFICIENCY_MEANS) / EFFICIENCY_STDS
+
+            # Context flags
+            context_flags[i, 0] = float(gf.is_overtime)
+            context_flags[i, 1] = float(gf.is_playoff)
+
+            # GS summary (computed from cached margin_buckets)
+            gs_data = gs_cache.get(gf.game_id)
+            if gs_data is not None:
+                gs_summary_features[i] = _compute_gs_summary(gs_data, team_is_away[i])
 
         # Days before target
         days_before_arr[i] = min(days_before[i], 179)
@@ -217,6 +287,11 @@ def _encode_team_context(
         result["player_positions"] = player_positions
         result["player_pm_available"] = player_pm_available
 
+    if use_efficiency:
+        result["efficiency_features"] = efficiency_features
+        result["gs_summary_features"] = gs_summary_features
+        result["context_flags"] = context_flags
+
     # Player form tensors: per-roster-player appearance history
     if enable_player_form and roster_ids is not None:
         R = len(roster_ids)
@@ -260,6 +335,64 @@ def _encode_team_context(
     return result
 
 
+def _build_h2h_records(game_features: dict[str, PerGameFeatures]) -> list[tuple]:
+    """Build sorted list of (date_str, home_idx, away_idx, margin) for H2H lookups."""
+    records = []
+    for gf in game_features.values():
+        home_idx = TEAM_TO_IDX.get(gf.home_team, -1)
+        away_idx = TEAM_TO_IDX.get(gf.away_team, -1)
+        if home_idx < 0 or away_idx < 0:
+            continue
+        records.append((gf.game_date, home_idx, away_idx, gf.home_score - gf.away_score))
+    records.sort(key=lambda x: x[0])
+    return records
+
+
+def _compute_h2h_features(h2h_records: list[tuple], target_date: str) -> np.ndarray:
+    """
+    Compute (30, 30, 3) H2H feature matrix from games strictly before target_date.
+
+    Edge features per directed pair (i, j):
+      [0] win_rate: fraction of times i beat j, centered at 0.5 -> [-0.5, 0.5]
+      [1] avg_margin: mean margin when i was home vs j (normalized by 13)
+      [2] n_meetings: min(total_meetings, 20) / 20
+    """
+    n_teams = 30
+    h2h = np.zeros((n_teams, n_teams, 3), dtype=np.float32)
+
+    # Accumulate stats
+    wins = np.zeros((n_teams, n_teams), dtype=np.float32)
+    games = np.zeros((n_teams, n_teams), dtype=np.float32)
+    margin_sum = np.zeros((n_teams, n_teams), dtype=np.float32)
+
+    # Binary search for cutoff
+    import bisect
+    cutoff = bisect.bisect_left([r[0] for r in h2h_records], target_date)
+
+    for i in range(cutoff):
+        _, home_idx, away_idx, margin = h2h_records[i]
+
+        # Home perspective: home vs away
+        games[home_idx, away_idx] += 1
+        margin_sum[home_idx, away_idx] += margin
+        if margin > 0:
+            wins[home_idx, away_idx] += 1
+
+        # Away perspective: away vs home
+        games[away_idx, home_idx] += 1
+        margin_sum[away_idx, home_idx] += -margin
+        if margin < 0:
+            wins[away_idx, home_idx] += 1
+
+    # Compute features
+    mask = games > 0
+    h2h[mask, 0] = wins[mask] / games[mask] - 0.5  # win rate centered at 0
+    h2h[mask, 1] = margin_sum[mask] / games[mask] / MARGIN_STD  # normalized avg margin
+    h2h[:, :, 2] = np.minimum(games, 20) / 20.0  # capped meeting count
+
+    return h2h
+
+
 class Phase2Dataset(Dataset):
     """
     Phase 2 dataset with full-season context and per-player contributions.
@@ -283,6 +416,9 @@ class Phase2Dataset(Dataset):
         enable_player_form: bool = False,
         max_player_appearances: int = 40,
         n_player_stats: int = 0,
+        enable_team_gat: bool = False,
+        n_efficiency_features: int = 0,
+        player_experience: Optional[dict] = None,
     ):
         self.game_features = game_features
         self.gs_cache = gs_cache
@@ -293,6 +429,15 @@ class Phase2Dataset(Dataset):
         self.enable_player_form = enable_player_form
         self.max_player_appearances = max_player_appearances
         self.n_player_stats = n_player_stats
+        self.enable_team_gat = enable_team_gat
+        self.n_efficiency_features = n_efficiency_features
+        self.player_experience = player_experience or {}
+
+        # Build H2H records for GAT if enabled
+        self.h2h_records = None
+        if enable_team_gat:
+            self.h2h_records = _build_h2h_records(game_features)
+            logger.info(f"Built H2H records: {len(self.h2h_records)} game records for GAT")
 
         self.builder = Phase2SequenceBuilder(
             game_features=game_features,
@@ -326,24 +471,34 @@ class Phase2Dataset(Dataset):
         for i, pid in enumerate(sample.away_roster[:self.max_roster]):
             away_roster[i] = self.player_id_map.get(pid, 0)
 
+        # Determine season start year for player experience
+        target_gf = self.game_features[game_id]
+        season_start_year = int(target_gf.season.split("-")[0]) if target_gf.season else None
+
         # Encode both teams
-        home_data = _encode_team_context(
-            sample.home_context, sample.home_team,
-            sample.home_days_before, sample.home_recent_indices,
-            self.gs_cache, self.player_id_map, self.max_players, self.max_roster,
-            roster_ids=home_roster,
+        common_kwargs = dict(
+            gs_cache=self.gs_cache,
+            player_id_map=self.player_id_map,
+            max_players=self.max_players,
+            max_roster=self.max_roster,
             max_appearances=self.max_player_appearances,
             enable_player_form=self.enable_player_form,
             n_player_stats=self.n_player_stats,
+            n_efficiency_features=self.n_efficiency_features,
+            player_experience=self.player_experience,
+            season_start_year=season_start_year,
+        )
+        home_data = _encode_team_context(
+            sample.home_context, sample.home_team,
+            sample.home_days_before, sample.home_recent_indices,
+            roster_ids=home_roster,
+            **common_kwargs,
         )
         away_data = _encode_team_context(
             sample.away_context, sample.away_team,
             sample.away_days_before, sample.away_recent_indices,
-            self.gs_cache, self.player_id_map, self.max_players, self.max_roster,
             roster_ids=away_roster,
-            max_appearances=self.max_player_appearances,
-            enable_player_form=self.enable_player_form,
-            n_player_stats=self.n_player_stats,
+            **common_kwargs,
         )
 
         # Build result dict
@@ -371,6 +526,12 @@ class Phase2Dataset(Dataset):
         result["target_away_score"] = torch.tensor(
             sample.target_away_score, dtype=torch.float32
         )
+
+        # H2H features for Team GAT
+        if self.enable_team_gat and self.h2h_records is not None:
+            target_date = self.game_features[game_id].game_date
+            h2h = _compute_h2h_features(self.h2h_records, target_date)
+            result["h2h_features"] = torch.from_numpy(h2h)  # (30, 30, 3)
 
         # Home/away augmentation: 50% chance of swapping
         if self.enable_augmentation and random.random() < 0.5:
@@ -415,9 +576,10 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
 
     B = len(batch)
 
-    # Check if player form tensors are present
+    # Check if optional feature tensors are present
     has_form = "home_roster_form_points" in batch[0]
     has_stats = "home_player_stats" in batch[0]
+    has_efficiency = "home_efficiency_features" in batch[0]
 
     # Determine max dimensions
     max_home_games = max(s["home_scores"].shape[0] for s in batch)
@@ -456,6 +618,13 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
             player_positions_t = torch.full((B, max_games, max_players), 3, dtype=torch.int64)
             player_pm_available_t = torch.zeros(B, max_games, max_players)
 
+        # Efficiency features (only when present)
+        if has_efficiency:
+            n_eff = batch[0][prefix + "efficiency_features"].shape[-1]
+            efficiency_t = torch.zeros(B, max_games, n_eff)
+            gs_summary_t = torch.zeros(B, max_games, 6)
+            context_flags_t = torch.zeros(B, max_games, 2)
+
         # GameStates features
         gs_periods = torch.zeros(B, max_gs_recent, max_gs_rows, dtype=torch.int64)
         gs_clock = torch.zeros(B, max_gs_recent, max_gs_rows, dtype=torch.int64)
@@ -486,6 +655,11 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
                 player_positions_t[i, :ng, :np_] = s[prefix + "player_positions"]
                 player_pm_available_t[i, :ng, :np_] = s[prefix + "player_pm_available"]
 
+            if has_efficiency:
+                efficiency_t[i, :ng] = s[prefix + "efficiency_features"]
+                gs_summary_t[i, :ng] = s[prefix + "gs_summary_features"]
+                context_flags_t[i, :ng] = s[prefix + "context_flags"]
+
             gs_periods[i, :nr, :ngr] = s[prefix + "gs_periods"]
             gs_clock[i, :nr, :ngr] = s[prefix + "gs_clock_buckets"]
             gs_home_score[i, :nr, :ngr] = s[prefix + "gs_home_score_buckets"]
@@ -513,6 +687,11 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
             result[prefix + "player_stats"] = player_stats_t
             result[prefix + "player_positions"] = player_positions_t
             result[prefix + "player_pm_available"] = player_pm_available_t
+
+        if has_efficiency:
+            result[prefix + "efficiency_features"] = efficiency_t
+            result[prefix + "gs_summary_features"] = gs_summary_t
+            result[prefix + "context_flags"] = context_flags_t
 
     # Player form tensors (fixed shape R×A, just stack)
     if has_form:
@@ -542,5 +721,9 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
     result["away_rest_days"] = torch.stack([s["away_rest_days"] for s in batch])
     result["target_home_scores"] = torch.stack([s["target_home_score"] for s in batch])
     result["target_away_scores"] = torch.stack([s["target_away_score"] for s in batch])
+
+    # H2H features for Team GAT (fixed 30×30×3, just stack)
+    if "h2h_features" in batch[0]:
+        result["h2h_features"] = torch.stack([s["h2h_features"] for s in batch])
 
     return result

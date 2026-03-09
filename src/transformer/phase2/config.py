@@ -36,6 +36,7 @@ class Phase2DataConfig:
     enable_augmentation: bool = True
     mask_ratio: float = 0.0  # 0.0 = disabled (supervised), 0.4 = pre-training
     n_player_stats: int = 0       # 0 = legacy, 16 = full (must match cache)
+    n_efficiency_features: int = 0  # 0 = disabled, 8 = full (must match model)
 
 
 @dataclass
@@ -61,12 +62,32 @@ class Phase2ModelConfig:
     n_positions: int = 4          # G/F/C/UNK
     position_dim: int = 8         # Position embedding dimension
 
+    # Team efficiency features (Phase 3 Exp 7+)
+    n_efficiency_features: int = 0    # 0 = disabled, 8 = full
+    efficiency_hidden_dim: int = 64
+    gs_summary_dim: int = 32
+    flag_dim: int = 16
+    season_efficiency_dim: int = 64
+
     # Player interaction (Phase 3 Exp 4+)
     player_interaction_layers: int = 0       # 0 = disabled (backward compat)
     player_interaction_heads: int = 4
     player_interaction_ff_dim: int = 1024
     player_interaction_dropout: float = 0.2
     player_contribution_n_pool_queries: int = 1  # 1 = single query (default), 4 = multi-query
+
+    # Roster-conditioned temporal (Phase 3 Exp 5+)
+    enable_roster_context: bool = False
+    roster_context_heads: int = 8
+    roster_context_dropout: float = 0.1
+
+    # Team interaction GAT (Phase 3 Exp 6+)
+    enable_team_gat: bool = False
+    team_gat_hidden: int = 64
+    team_gat_layers: int = 3
+    team_gat_heads: int = 4
+    team_gat_dropout: float = 0.1
+    h2h_edge_features: int = 3
 
     # GameStates encoder
     gs_embed_dim: int = 16

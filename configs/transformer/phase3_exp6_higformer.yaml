@@ -1,31 +1,19 @@
 # =============================================================================
-# EXPERIMENT 4b (Phase 3): Multi-Query Player Pooling
+# EXPERIMENT 6 (Phase 3): HIGFormer-Inspired — Outcome Pre-training + Team GAT
 # Date: March 2026
 # =============================================================================
-# PURPOSE: Replace single learned query for player attention pooling with 4
-# queries, each specializing in different lineup aspects (scoring, defense,
-# playmaking, depth). Concat + project back to 256-d. Stacks on top of Exp 4's
-# player interaction self-attention.
+# PURPOSE: Combine two HIGFormer-inspired components on top of Exp 4 baseline:
+#   1. Per-match outcome pre-training (teaches encoder outcome semantics)
+#   2. Team Interaction GAT (captures H2H matchup dynamics via graph attention)
 #
-# ARCHITECTURE CHANGE:
-#   pool_queries: (1,1,256) -> (1,4,256)
-#   After attention: (B*G, 4, 256) -> concat -> Linear(1024, 256) + LN -> (B*G, 256)
-#   Output dim unchanged — zero downstream changes.
-#   ~263K new params (+0.7% over Exp 4's ~40M), ~40.3M total.
+# BASE: Exp 4 (MAE 10.83, AUC 0.705, Win Acc 65.1%, ECE 0.0142)
 #
-# BASELINE: Exp 4 — MAE 10.83, AUC 0.705, Win Acc 65.1%, ECE 0.0142
+# NEW COMPONENTS:
+#   - enable_team_gat: true → 3-layer GAT with H2H edge features
+#   - Pre-trained weights from outcome pre-training (player_embed + per_game_encoder)
+#   - Gradual unfreezing: 3 epochs frozen → 2 epochs top block → full discriminative LR
 #
-# RESULT: No improvement — every metric regressed vs Exp 4
-#   Best val MAE: 10.53 (raw) at epoch 13, early stopped at epoch 23
-#   Spread MAE: 10.92  (was 10.83 in Exp 4)
-#   Spread RMSE: 15.00  (was 14.56)
-#   Home MAE: 9.39, Away MAE: 9.62
-#   Win Accuracy: 64.0% (was 65.1%)
-#   Win AUC: 0.685 (was 0.705)
-#   Brier Score: 0.2255 (was 0.2180)
-#   ECE: 0.0349 (was 0.0142)
-#   90% Coverage: 0.791 (was 0.822)
-#   Single query sufficient for 15 players — multi-query fragmented representation.
+# RESULT: [TO BE FILLED]
 # =============================================================================
 
 data:
@@ -86,8 +74,13 @@ model:
   player_interaction_ff_dim: 1024
   player_interaction_dropout: 0.2
 
-  # Multi-query player pooling (Exp 4b)
-  player_contribution_n_pool_queries: 4
+  # Team interaction GAT (Exp 6)
+  enable_team_gat: true
+  team_gat_hidden: 64
+  team_gat_layers: 3
+  team_gat_heads: 4
+  team_gat_dropout: 0.1
+  h2h_edge_features: 3
 
   gs_embed_dim: 16
   gs_encoder_layers: 4
@@ -159,7 +152,14 @@ training:
   log_every_n_steps: 50
   use_wandb: false
   wandb_project: "nba-phase3"
-  experiment_name: "phase3_exp4b_multiquery"
+  experiment_name: "phase3_exp6_higformer"
+
+  # Pre-training transfer
+  pretrained_checkpoint: "checkpoints/phase3/pretrain_exp6_outcome/transferable_weights.pt"
+  freeze_pretrained_epochs: 3
+  unfreeze_top_epochs: 2
+  lr_decay_factor: 0.9
+
   seed: 42
   use_amp: true
   amp_dtype: "float16"

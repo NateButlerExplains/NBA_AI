@@ -80,6 +80,9 @@ def create_dataloaders(
         enable_player_form=config.model.enable_player_form,
         max_player_appearances=config.model.max_player_appearances,
         n_player_stats=config.data.n_player_stats,
+        enable_team_gat=config.model.enable_team_gat,
+        n_efficiency_features=config.data.n_efficiency_features,
+        player_experience=cache.get("player_experience", {}),
     )
 
     logging.info("Creating training dataset...")

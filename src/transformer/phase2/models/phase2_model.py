@@ -15,6 +15,7 @@ from src.transformer.phase2.models.temporal_attention import Phase2TemporalAtten
 from src.transformer.phase2.models.per_game_encoder import PerGameEncoder
 from src.transformer.phase2.models.roster_encoder import Phase2RosterEncoder
 from src.transformer.phase2.models.fusion import Phase2Fusion
+from src.transformer.phase2.models.team_gat import TeamInteractionGAT
 
 
 class Phase2Model(nn.Module):
@@ -53,6 +54,19 @@ class Phase2Model(nn.Module):
             max_seq_len=config.gs_max_seq_len,
         )
 
+        # Team interaction GAT (Phase 3 Exp 6+)
+        self.team_gat_enabled = config.enable_team_gat
+        self.team_gat = None
+        if config.enable_team_gat:
+            self.team_gat = TeamInteractionGAT(
+                n_teams=config.n_teams,
+                hidden_dim=config.team_gat_hidden,
+                n_layers=config.team_gat_layers,
+                n_heads=config.team_gat_heads,
+                dropout=config.team_gat_dropout,
+                edge_features=config.h2h_edge_features,
+            )
+
         # Per-game encoder (uses shared player_embed)
         self.per_game_encoder = PerGameEncoder(
             player_embed=self.player_embed,
@@ -75,7 +89,34 @@ class Phase2Model(nn.Module):
             interaction_ff_dim=config.player_interaction_ff_dim,
             interaction_dropout=config.player_interaction_dropout,
             n_pool_queries=config.player_contribution_n_pool_queries,
+            has_team_gat=config.enable_team_gat,
+            n_efficiency_features=config.n_efficiency_features,
+            efficiency_hidden_dim=config.efficiency_hidden_dim,
+            gs_summary_dim=config.gs_summary_dim,
+            flag_dim=config.flag_dim,
         )
+
+        # Roster-conditioned temporal (Phase 3 Exp 5+)
+        self.roster_context_enabled = config.enable_roster_context
+        if config.enable_roster_context:
+            self.roster_overlap_embed = nn.Embedding(16, h)
+            self.traj_query_proj = nn.Sequential(
+                nn.Linear(config.player_embed_dim, h),
+                nn.LayerNorm(h),
+                nn.GELU(),
+            )
+            self.trajectory_attn = nn.MultiheadAttention(
+                h, config.roster_context_heads,
+                dropout=config.roster_context_dropout,
+                batch_first=True,
+            )
+            self.traj_no_history = nn.Parameter(torch.zeros(h))
+            self.reinjection_norm = nn.LayerNorm(h)
+            self.reinjection_crossattn = nn.MultiheadAttention(
+                h, config.roster_context_heads,
+                dropout=config.roster_context_dropout,
+                batch_first=True,
+            )
 
         # Temporal module (transformer or GRU)
         if config.temporal_type == "gru":
@@ -135,8 +176,19 @@ class Phase2Model(nn.Module):
             nn.Embedding(config.max_rest_days, config.rest_embed_dim),
         )
 
-        # Per-team combine: concat([season(h), roster(h), rest(rest_embed_dim)]) -> h
-        team_combine_input = h * 2 + config.rest_embed_dim
+        # Season-level efficiency projection (Phase 3 Exp 7+)
+        self.season_efficiency_proj = None
+        season_eff_dim = 0
+        if config.n_efficiency_features > 0:
+            season_eff_dim = config.season_efficiency_dim
+            self.season_efficiency_proj = nn.Sequential(
+                nn.Linear(config.n_efficiency_features, season_eff_dim),
+                nn.LayerNorm(season_eff_dim),
+                nn.GELU(),
+            )
+
+        # Per-team combine: concat([season(h), roster(h), rest(rest_embed_dim), season_eff]) -> h
+        team_combine_input = h * 2 + config.rest_embed_dim + season_eff_dim
         self.team_combine = nn.Sequential(
             nn.Linear(team_combine_input, h),
             nn.LayerNorm(h),
@@ -203,6 +255,18 @@ class Phase2Model(nn.Module):
         player_positions = batch.get(p + "player_positions")
         player_pm_available = batch.get(p + "player_pm_available")
 
+        # Compute H2H team representations if GAT is enabled
+        h2h_team_repr = None
+        if self.team_gat_enabled and self.team_gat is not None:
+            h2h_features = batch.get("h2h_features")
+            if h2h_features is not None:
+                h2h_team_repr = self.team_gat(h2h_features)  # (B, 30, gat_hidden)
+
+        # Extract efficiency features if present
+        efficiency_features = batch.get(p + "efficiency_features")
+        gs_summary_features = batch.get(p + "gs_summary_features")
+        context_flags = batch.get(p + "context_flags")
+
         game_reprs = self.per_game_encoder(
             scores=scores,
             opponent_ids=opponent_ids,
@@ -215,7 +279,63 @@ class Phase2Model(nn.Module):
             player_stats=player_stats,
             player_positions=player_positions,
             player_pm_available=player_pm_available,
+            h2h_team_repr=h2h_team_repr,
+            efficiency_features=efficiency_features,
+            gs_summary_features=gs_summary_features,
+            context_flags=context_flags,
         )  # (B, G, h)
+
+        # 3b. Roster-conditioned temporal: two-pass heterogeneous message passing
+        if self.roster_context_enabled:
+            roster_ids = batch[p[:-1] + "_roster"]  # (B, R=15)
+            P = roster_ids.shape[1]
+
+            # Build per-player game presence mask: which games did each roster player appear in?
+            # player_ids: (B, G, 15) — players per historical game
+            # roster_ids: (B, 15) — tonight's roster
+            roster_exp = roster_ids.unsqueeze(2).unsqueeze(3)  # (B, R, 1, 1)
+            game_exp = player_ids.unsqueeze(1)                  # (B, 1, G, 15)
+            presence = (roster_exp == game_exp).any(dim=-1)     # (B, R, G)
+
+            # Absence mask for attention: absent games + padded games + padded roster slots
+            absence = ~presence | game_mask.unsqueeze(1)                  # (B, R, G)
+            absence = absence | (roster_ids == 0).unsqueeze(-1)           # (B, R, G)
+
+            # Roster overlap embedding: how many roster players appeared in each game
+            overlap_count = presence.sum(dim=1).clamp(max=15)             # (B, G)
+            game_reprs = game_reprs + self.roster_overlap_embed(overlap_count.long())
+
+            # Pass 1: Game→Player trajectory extraction
+            # Player queries: project player embeddings to hidden_dim
+            roster_emb = self.traj_query_proj(self.player_embed(roster_ids))  # (B, R, h)
+
+            # Expand game_reprs for batched per-player attention
+            game_reprs_exp = game_reprs.unsqueeze(1).expand(-1, P, -1, -1).contiguous()  # (B, R, G, h)
+
+            # Batched cross-attention: (B*R, 1, h) queries, (B*R, G, h) keys/values
+            BxP = B * P
+            traj_out, _ = self.trajectory_attn(
+                roster_emb.reshape(BxP, 1, h),
+                game_reprs_exp.reshape(BxP, G, h),
+                game_reprs_exp.reshape(BxP, G, h),
+                key_padding_mask=absence.reshape(BxP, G),
+                need_weights=False,
+            )
+            player_trajectories = traj_out.squeeze(1).reshape(B, P, h)  # (B, R, h)
+
+            # Players with zero historical appearances → learned fallback
+            no_games = absence.all(dim=-1)  # (B, R)
+            player_trajectories = player_trajectories.masked_fill(no_games.unsqueeze(-1), 0)
+            player_trajectories = player_trajectories + no_games.unsqueeze(-1).float() * self.traj_no_history
+
+            # Pass 2: Player→Game re-injection
+            game_reprs_norm = self.reinjection_norm(game_reprs)
+            reinjected, _ = self.reinjection_crossattn(
+                game_reprs_norm, player_trajectories, player_trajectories,
+                key_padding_mask=(roster_ids == 0),  # mask padding roster slots
+                need_weights=False,
+            )
+            game_reprs = game_reprs + reinjected  # residual
 
         # 4. Temporal attention
         season_repr = self.temporal_attention(
@@ -246,8 +366,21 @@ class Phase2Model(nn.Module):
         rest_repr = self.rest_embed[0](rest_days)  # (B, rest_embed_dim)
 
         # 7. Per-team combine
+        combine_parts = [season_repr, roster_repr, rest_repr]
+
+        # Season-average efficiency features
+        if self.season_efficiency_proj is not None and efficiency_features is not None:
+            # Compute masked mean across context games
+            eff_mask = ~game_mask  # True = valid game
+            eff_masked = efficiency_features * eff_mask.unsqueeze(-1).float()
+            eff_sum = eff_masked.sum(dim=1)  # (B, n_eff)
+            eff_count = eff_mask.sum(dim=1, keepdim=True).float().clamp(min=1)  # (B, 1)
+            eff_mean = eff_sum / eff_count  # (B, n_eff)
+            season_eff_repr = self.season_efficiency_proj(eff_mean)  # (B, season_eff_dim)
+            combine_parts.append(season_eff_repr)
+
         team_repr = self.team_combine(
-            torch.cat([season_repr, roster_repr, rest_repr], dim=-1)
+            torch.cat(combine_parts, dim=-1)
         )  # (B, h)
 
         return team_repr
@@ -286,12 +419,30 @@ class Phase2Model(nn.Module):
         if self.form_encoder is not None:
             components["form_encoder"] = self.form_encoder
 
+        if self.team_gat is not None:
+            components["team_gat"] = self.team_gat
+
+        if self.season_efficiency_proj is not None:
+            components["season_efficiency_proj"] = self.season_efficiency_proj
+
         counts = {}
         total = 0
         for name, module in components.items():
             n = sum(p.numel() for p in module.parameters())
             counts[name] = n
             total += n
+
+        if self.roster_context_enabled:
+            rc_modules = nn.ModuleList([
+                self.roster_overlap_embed,
+                self.traj_query_proj,
+                self.trajectory_attn,
+                self.reinjection_norm,
+                self.reinjection_crossattn,
+            ])
+            rc_params = sum(p.numel() for p in rc_modules.parameters())
+            rc_params += self.traj_no_history.numel()
+            counts["roster_context"] = rc_params
 
         # Shared params are counted under player_embed and not double-counted
         # in per_game_encoder and roster_encoder. Compute actual total.

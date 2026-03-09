@@ -1,7 +1,7 @@
 # NBA Prediction Architecture
 
-> **Status**: Phase 1 Complete (15 experiments) | Phase 2 Complete (7 experiments) | Phase 3 In Progress (5/6 experiments)
-> **Last Updated**: March 4, 2026
+> **Status**: Phase 1 Complete (15 experiments) | Phase 2 Complete (7 experiments) | Phase 3 In Progress (9/10 experiments)
+> **Last Updated**: March 9, 2026
 
 ---
 
@@ -54,16 +54,20 @@ Phase 2: Maximize Standard Transformer (Complete — 7 experiments)
 └─ Outcome: ~11.6 MAE plateau; standard transformer approaches
            exhausted → move to Phase 3
 
-Phase 3: Alternative Architectures (In Progress — 5/6 experiments complete)
-├─ Goal: break ~11.6 MAE plateau with different model architectures
+Phase 3: Alternative Architectures & Data (In Progress — 9/10 experiments complete)
+├─ Goal: break ~11.6 MAE plateau with architectures, features, and ensembling
 ├─ Exp 1: Time-aware bidirectional GRU — no improvement (MAE 11.72)
 ├─ Exp 2: Self-supervised pre-training — no improvement (MAE 11.61)
 ├─ Exp 3a: Full PlayerBox (16 stats + position) — MAE 11.48, AUC 0.707
 ├─ Exp 3b: + Extended data (15 seasons) — MAE 11.03, AUC 0.685 (spread ↓, win ↓)
 ├─ Exp 3c: + Wider model — SKIPPED (overfitting risk)
-├─ Exp 4: Player interaction self-attention — NEW BEST (MAE 10.83, AUC 0.705)
-├─ Exp 5: Full heterogeneous graph (HIGFormer-inspired multi-pass)
-└─ Exp 6: Best-of-everything (combine winners from Exps 1-5)
+├─ Exp 4: Player interaction self-attention — CURRENT BEST (MAE 10.83, AUC 0.705)
+├─ Exp 4b: Multi-query player pooling (4 queries) — no improvement (MAE 10.92)
+├─ Exp 5: Heterogeneous player-game graph (two-pass message passing) — best spread (MAE 10.61), win ↓
+├─ Exp 6: HIGFormer-inspired (pre-training + team GAT) — regressed (MAE 11.52)
+├─ Exp 7: Kitchen sink features (TeamBox efficiency + GS summaries + flags) — marginal (MAE 10.77), win ↓
+├─ Exp 8: Hybrid transformer + XGBoost — no improvement (MAE 10.85, AUC 0.706)
+└─ Exp 9: Deep ensemble (3 seeds, averaged predictions)
 ```
 
 ---
@@ -307,7 +311,7 @@ Score buckets are team-relative: when the team was away, home/away buckets are s
 
 | Metric | Phase 1 Best | Phase 2 Best | Phase 3 Best | XGBoost |
 | ------ | ------------ | ------------ | ------------ | ------- |
-| Spread MAE | 12.20 | 11.61 | **10.83** (Exp 4) | ~10.1 |
+| Spread MAE | 12.20 | 11.61 | **10.61** (Exp 5) | ~10.1 |
 | Win Accuracy | 57.6% | 63.0% | **65.3%** (3a) | — |
 | Win AUC | 0.592 | 0.687 | **0.707** (3a) | — |
 | Brier Score | 0.2471 | 0.2273 | **0.2180** (Exp 4) | — |
@@ -329,6 +333,11 @@ Score buckets are team-relative: when the team was away, home/away buckets are s
 | 3b | + Extended data (15 seasons) | `phase3_exp3b_extended` | 11.03 | 0.685 | 62.7% | — | — | 10 (ES 15) | 39M |
 | 3c | + Wider model (hidden=640) | — | — | — | — | — | — | SKIPPED | 61M |
 | **4** | **Player interaction self-attention** | `phase3_exp4_interaction` | **10.83** | **0.705** | **65.1%** | **0.2180** | **82.2%** | 9 (ES 15) | 40M |
+| 4b | Multi-query player pooling (4 queries) | `phase3_exp4b_multiquery` | 10.92 | 0.685 | 64.0% | 0.2255 | 79.1% | 13 (ES 23) | 40.3M |
+| 5 | Heterogeneous player-game graph | `phase3_exp5_roster_temporal` | 10.61 | 0.693 | 63.7% | 0.2235 | 80.8% | 12 (ES 20) | 42.2M |
+| 6 | HIGFormer (pre-training + team GAT) | `phase3_exp6_higformer` | 11.52 | 0.646 | 60.1% | 0.2362 | — | 22 (ES 27) | 40.2M |
+| 7 | Kitchen sink features | `phase3_exp7_kitchen_sink` | 10.77 | 0.696 | 63.5% | 0.2212 | 81.4% | 10 (ES 20) | 40.1M |
+| 8 | Hybrid transformer + XGBoost | `phase3_exp8_hybrid` | 10.85 | 0.706 | 64.5% | 0.2187 | N/A | — | XGB |
 
 **Exp 1 findings**: Replaced 3-layer temporal transformer + 8-query attention pool with a 2-layer bidirectional GRU + 4-query attention pool. GRU provides exponential decay natively (no learned positional encoding needed), with calendar distance as a 64-d input feature. Validation MAE matched Phase 2 best (11.34 vs 11.34) but test set regressed (11.72 vs 11.61), suggesting slight overfitting. Model is 8M params lighter (31M vs 39M) and trains at comparable speed. **Conclusion**: The temporal module is not the bottleneck — the transformer's attention mechanism is not what limits spread prediction accuracy. The plateau comes from elsewhere (data, features, or fusion).
 
@@ -339,6 +348,14 @@ Score buckets are team-relative: when the team was away, home/away buckets are s
 **Exp 3b findings**: Same model as 3a but with 15 training seasons (2008-2023) instead of 5. Best val MAE 10.62 at epoch 10 — best validation score ever. Test MAE 11.03 (-0.45 vs 3a), but Win AUC regressed to 0.685 (-0.022) and Win Acc to 62.7% (-2.6pp). Early stopped manually at epoch 15 due to overfitting (train loss continued dropping while val loss climbed from epoch 10). **Conclusion**: More data substantially improved spread prediction (11.48 → 11.03) but hurt win classification, suggesting the model is learning better score distributions from historical data but the additional older seasons introduce noise for binary win prediction. The overfitting at 39M params with 15 seasons ruled out Exp 3c (wider model at 61M params would overfit worse).
 
 **Exp 4 findings**: Added 1-layer TransformerEncoder self-attention (256-d, 4 heads, FF=1024, pre-norm, GELU) between players within each historical game, before attention pooling. ~790K new params (+2%), ~40M total. Uses 15 training seasons (like 3b). Previously, players were encoded independently and pooled via attention to a learned query with no player-to-player interaction. Self-attention lets players exchange information, enabling the model to learn complementarity (e.g., "LeBron + AD together" produces a different representation than encoding them independently). Best val MAE 10.83 at epoch 9, manually stopped at epoch 15 (overfitting). **Result**: New best across spread metrics while recovering win classification. Spread MAE 10.83 (-0.20 vs 3b), RMSE 14.56, Home MAE 9.33, Away MAE 9.46. Win Accuracy 65.1% (recovered from 3b's 62.7%), Win AUC 0.705 (recovered from 3b's 0.685), Brier 0.2180, ECE 0.0142 (best calibration ever), 90% Coverage 82.2%. **Conclusion**: Player interaction fixed 3b's win classification regression while keeping the spread improvement from more data. Learning player complementarity adds real signal — the way players combine matters, not just their individual stats.
+
+**Exp 4b findings**: Replaced single learned pool query with 4 queries (concat + Linear(1024,256) + LN), inspired by the temporal module's successful 8-query `MultiQueryAttentionPool`. ~263K new params (+0.7%), ~40.3M total. Hypothesis: multiple queries could specialize in different lineup aspects (scoring, defense, playmaking, depth). Best val MAE 10.53 (raw) at epoch 13, early stopped at epoch 23. Test: Spread MAE 10.92, RMSE 15.00, Win Acc 64.0%, AUC 0.685, Brier 0.2255, ECE 0.0349, 90% Coverage 79.1%. **Result**: Every metric regressed vs Exp 4. **Conclusion**: The single pool query is already sufficient to collapse 15 players into a lineup representation. Unlike temporal pooling (82 games with diverse patterns needing multiple aspects), player pooling operates on a small, homogeneous set where one attention pass captures the lineup well. Multi-query fragmented the representation without benefit.
+
+**Exp 5 findings**: Two-pass heterogeneous message passing (Game→Player, Player→Game) inserted between per-game encoder and temporal attention. ~2.2M new params (+5.4%), ~42.2M total. Pass 1 lets each roster player attend to historical games they appeared in (building a seasonal trajectory); Pass 2 re-injects player trajectories into game representations via cross-attention. Includes roster overlap embedding and learned fallback for players with no historical appearances. Best val MAE 10.03 at epoch 12 (best validation score ever), early stopped at epoch 20. Test: Spread MAE 10.61, RMSE 14.72, Home MAE 9.36, Away MAE 9.46. Win Acc 63.7% (was 65.1%), AUC 0.693 (was 0.705), Brier 0.2235, ECE 0.0354 (was 0.0142), 90% Coverage 80.8%. **Result**: New best spread MAE but win classification and calibration regressed. **Conclusion**: The HGT architecture learns better score distributions from player trajectory context (new best spread 10.61, still behind XGBoost ~10.1), but the added complexity hurts probability calibration. The recurring spread vs classification tradeoff (also seen in 3b) suggests these objectives may need different architectural emphasis. Exp 4 remains the best balanced model across all metrics. The remaining ~0.5 gap to XGBoost likely requires team efficiency features (Four Factors, pace) rather than more architectural sophistication.
+
+**Exp 6 findings**: HIGFormer-inspired two-component experiment on Exp 4 base: (1) per-match outcome pre-training — BCE+MSE loss predicting win/loss and margin from player stats with scores masked (plus_minus also zeroed to prevent leakage), training player_embed + per_game_encoder on ~38K samples across 15 seasons, converged at epoch 9 with val_acc 84.4%; (2) Team Interaction GAT — 3-layer graph attention network over 30 team nodes with H2H edge features (win rate, avg margin, meeting count), ~152K new params, gated residual into opponent representation. Fine-tuned with gradual unfreezing (3 epochs frozen → 2 epochs top block → full discriminative LR 0.9x/layer). Best smoothed val MAE 10.79 at epoch 22, early stopped at epoch 27. Test: Spread MAE 11.52, RMSE 15.72, Home MAE 9.55, Away MAE 9.71. Win Acc 60.1% (was 65.1%), AUC 0.646 (was 0.705), Brier 0.2362, ECE 0.0464 (was 0.0142). **Result**: Regressed on every metric vs Exp 4. **Conclusion**: Both components failed. The outcome pre-training likely initialized the encoder in a suboptimal basin for the full supervised task — predicting wins from box scores (a simpler task) doesn't produce representations useful for predicting spreads from full game context (a harder task). The H2H GAT added complexity without useful signal; historical head-to-head records have minimal predictive value in the NBA due to roster turnover. This is the third architecture experiment (after Exp 1 GRU and Exp 2 masked reconstruction) that failed to improve over the baseline. **The conclusion is definitive: architecture innovation has diminishing returns. The gap to XGBoost (~10.1) is features, not architecture.**
+
+**Exp 7 findings**: Kitchen sink feature injection on Exp 4 base. Four feature groups added: (1) Per-game TeamBox efficiency (8 features: eFG%, TS%, TOV%, FT Rate, 3PA Rate, AST Ratio, Pace, Net Points) encoded via 2-layer MLP → 64-d; (2) GameStates summary (6 features: max_lead, max_deficit, lead_changes, score_volatility, close_game_flag, blowout_flag) encoded via Linear → 32-d; (3) Context flags (is_overtime, is_playoff) encoded via Linear → 16-d; (4) Player experience (years_in_league as 17th player stat). Per-game context widened from 480 to 592. Season-average efficiency projected to 64-d and added to team_combine (1088 → 1152). ~96K new params (+0.24%), ~40.1M total. Early stopped at epoch 20. Test: Spread MAE 10.77 (-0.06 vs Exp 4), RMSE 14.67, Home MAE 9.36, Away MAE 9.53. Win Acc 63.5% (was 65.1%), AUC 0.696 (was 0.705), Brier 0.2212, ECE 0.0240 (was 0.0142), 90% Coverage 81.4%. **Result**: Marginal spread improvement but win classification and calibration regressed — same pattern as Exp 5 and 3b. **Conclusion**: The TeamBox efficiency features that power XGBoost's advantage provide only marginal signal when added to the transformer. The model already learns much of this signal implicitly from box score stats (Exp 3a/4) — e.g., eFG% is derivable from fgm/fga/fg3m which are already in the 16-stat vector. The explicit efficiency features are largely redundant with what the transformer already extracts. The recurring spread↓/win↓ tradeoff across Exps 3b, 5, and 7 suggests optimizing for tighter spreads comes at the cost of binary classification, possibly because the model becomes more "hedging" (predicting closer games). The gap to XGBoost (~10.1) may be inherent to the probabilistic transformer approach vs XGBoost's point estimation.
 
 ---
 
@@ -525,6 +542,7 @@ configs/transformer/
 ├── phase3_exp3b_extended.yaml  # Phase 3 Exp 3b: + extended data (15 seasons)
 ├── phase3_exp3c_wider.yaml     # Phase 3 Exp 3c: + wider model (hidden=640)
 ├── phase3_exp4_interaction.yaml # Phase 3 Exp 4: player interaction self-attention
+├── phase3_exp4b_multiquery.yaml # Phase 3 Exp 4b: multi-query player pooling (4 queries)
 ├── phase2_ordinal_pos.yaml     # Ablation: ordinal vs days-before positional encoding
 ├── combined_v1.yaml            # Phase 1 best: all features + SimpleFusion
 ├── combined_v2.yaml            # Phase 1: CrossAttentionFusion variant
@@ -537,51 +555,196 @@ configs/transformer/
 
 ## Project Roadmap
 
-### Phase 3 — Alternative Architectures, Direct Score Prediction
+### Phase 3 — Alternative Architectures & Data Utilization
 
-Same prediction target (final game scores), same data pipeline. Diversify architecture choices to break the ~11.6 MAE plateau. Six experiments planned across four lines:
+Same prediction target (final game scores). Break the ~11.6 MAE plateau via architecture, features, and ensembling. Ten experiments across six lines.
 
 **Line A — GRU Temporal** (Complete):
-- **Exp 1**: Replace temporal attention (3-layer transformer + pool) with a time-aware bidirectional GRU. GRU gates provide exponential decay natively — the inductive bias the transformer must learn from positional encoding. Calendar distance embedded as 64-d input feature. Same MultiQueryAttentionPool over GRU hidden states. **Result**: No improvement (MAE 11.72 vs 11.61). Temporal module is not the bottleneck.
+- **Exp 1**: Replace temporal attention with time-aware bidirectional GRU. **Result**: No improvement (MAE 11.72). Temporal module is not the bottleneck.
 
 **Line B — Pre-Training** (Complete):
-- **Exp 2**: BERT-style masked reconstruction on 31K games (25 seasons), 40% masking, gradual unfreezing fine-tune. Pre-training converged quickly (~23s, 687 samples). Val MAE matched baseline (11.61) but test regressed (11.84). **Result**: No improvement. Pre-trained representations offer no advantage over random initialization.
+- **Exp 2**: BERT-style masked reconstruction on 31K games, gradual unfreezing fine-tune. **Result**: No improvement (MAE 11.84). Pre-trained representations offer no advantage over random initialization.
 
 **Line C — Richer Player Data** (Complete):
-- **Exp 3a**: Expanded from 1 stat (points) to 16 box score stats + position embedding. Same training data/dims as Exp 5a. **Result**: MAE 11.48, AUC 0.707, Win Acc 65.3% — first improvement beyond the ~11.6 plateau. Feature ceiling confirmed as the bottleneck.
-- **Exp 3b**: Same model, extended training data (15 seasons, 2008-2023). **Result**: MAE 11.03 (best spread), AUC 0.685, Win Acc 62.7%. More data improved spread significantly but win classification regressed. Overfitting observed from epoch 10.
-- **Exp 3c**: Skipped — 3b showed overfitting at 39M params, wider model (65M) would be worse.
+- **Exp 3a**: 16 box score stats + position embedding. **Result**: MAE 11.48, AUC 0.707. Feature ceiling confirmed as bottleneck.
+- **Exp 3b**: Extended to 15 training seasons. **Result**: MAE 11.03 (best spread), AUC 0.685 (win regressed). Overfitting from epoch 10.
+- **Exp 3c**: Skipped — overfitting risk at wider model.
 
-**Line D — Player Interaction / Heterogeneous Graph** (Exp 4 Complete):
-- **Exp 4**: Added 1-layer TransformerEncoder self-attention (256-d, 4 heads, FF=1024, pre-norm, GELU) between players within each game, before attention pooling. ~790K new params (+2%), ~40M total. Uses 15 training seasons (like 3b). **Result**: NEW BEST — MAE 10.83, AUC 0.705, Win Acc 65.1%, ECE 0.0142 (best calibration). Fixed 3b's win classification regression while keeping spread improvement. Player complementarity adds real signal.
-- **Exp 5**: Full multi-pass heterogeneous architecture: (1) player interaction within games, (2) per-player trajectory tracking across games, (3) temporal aggregation enriched by player context, (4) team fusion.
-- **Exp 6**: Combine winners from all lines into the best possible direct prediction model.
+**Line D — Player Interaction** (Complete):
+- **Exp 4**: Self-attention between players before pooling. **Result**: CURRENT BEST — MAE 10.83, AUC 0.705, ECE 0.0142.
+- **Exp 4b**: Multi-query pooling (4 queries). **Result**: No improvement (MAE 10.92). Single query sufficient.
 
-### Future Avenues (Phase 4+)
+**Line E — Graph Architectures** (In Progress):
+- **Exp 5**: Heterogeneous player-game graph — two-pass message passing. See details below.
+- **Exp 6**: HIGFormer-inspired — per-match pre-training + team interaction graph. See details below.
 
-1. **Player Props**: Predict individual player stats (pts/reb/ast/blk/stl) alongside game scores. Builds on whichever Phase 3 architecture wins. The per-player encoding pipeline is already in place; extend prediction heads to player-level outputs.
-
-2. **Live Prediction**: Game states as additional input for in-progress games. The GameStates encoder already processes score trajectories — extend to real-time updates for live win probability and final score projections.
-
-3. **Generative / Next-State Prediction**: Predict the next game state (like LLMs do next-token) if direct prediction approaches plateau. A generative model could simulate game trajectories and produce distributional predictions through sampling.
-
-### Cross-Cutting Concerns
-
-These are not tied to a specific phase — they represent fundamental improvements applicable across all architectures:
-
-1. **Data Utilization**: 20+ NBA seasons available in the database, but only using 5 for training. More historical data could help the model learn longer-term patterns, though older seasons may have different dynamics (pace, three-point revolution, etc.).
-
-2. **Compute Utilization**: Under 50% VRAM on an RTX 2070 SUPER (8GB), training runs complete in hours, and we have not needed AWS. There is substantial headroom to scale model size, batch size, or data volume before hitting compute limits.
-
-3. **Temporal Freshness**: The strict chronological train/test split means the model cannot learn from recent team quality changes (trades, injuries, hot streaks). Current setup: train on 2018-2023, test on 2024-2026. The model has never seen any 2024+ data during training. Continuous learning or rolling updates could ensure every game serves as training data, context, or test data — no wasted information.
-
-4. **Player/Team Signal Preservation**: The encoding pipeline may have bottlenecks where player and team identity gets washed out. Players go through attention pooling (variable players) to 256-d, then into 512-d game context, then pooled again across games, then combined. Individual identity is compressed through multiple bottlenecks. The model needs to know LeBron is LeBron, not just "a player who scored 27." Teams and players vary season-to-season and within-season — the representation must preserve this granularity rather than averaging a star player into the whole team signal.
+**Line F — Feature Engineering, Hybridization, Ensembling** (In Progress):
+- **Exp 7**: Kitchen sink features — TeamBox efficiency + GS summaries + context flags + player experience. **Result**: Marginal spread improvement (10.83 → 10.77), win classification regressed (AUC 0.705 → 0.696). Features provide small spread signal but trade off with calibration.
+- **Exp 8**: Hybrid transformer + XGBoost — 1536-d embeddings + 63 hand-crafted features → XGBoost with Optuna HPO. **Result**: No improvement. Combined MAE 10.85, embeddings-only MAE 10.86 — essentially same as transformer alone (10.83). Features-only MAE 11.27 but best win accuracy (65.4%). Win AUC 0.706 identical across all modes. Hybridization adds nothing when transformer already captures the signal.
+- **Exp 9**: Deep ensemble — 3 seeds, averaged predictions. See details below.
 
 ---
 
-## Research Foundation
+### Exp 5: Heterogeneous Player-Game Graph
 
-- **Sharp Sports Betting** (Millman 2021): Calibration > accuracy for profitability
-- **PTIN** (Wang+ 2024): Transformer architectures work for NBA prediction
-- **HGT** (Zhao+ 2024): Pre-training on play sequences improves downstream tasks
-- **NBAFM** (Zhang+ 2024): Foundation models generalize across prediction types
+**Hypothesis**: Two-pass message passing between game and player nodes provides signal orthogonal to existing components by connecting "who's playing tonight" to "how did their historical games go."
+
+**Architecture**: Inserted between per-game encoder (step 3) and temporal attention (step 4):
+- **Pass 1 — Game→Player**: Each roster player attends to game_reprs for games they appeared in, extracting a seasonal trajectory. Batched cross-attention: `(B*15, 1, h)` queries on `(B*15, G, h)` keys, masked by per-player game presence.
+- **Pass 2 — Player→Game**: Player trajectories re-injected into game_reprs via cross-attention. Enriches temporal attention with roster context.
+- **Roster overlap embedding**: `Embedding(16, 512)` — count of roster players per historical game.
+- **Fallback**: Players with zero historical appearances get learned `traj_no_history` parameter.
+- ~2.2M new params (+5.4%), ~42.2M total.
+- Config: `configs/transformer/phase3_exp5_roster_temporal.yaml`
+- Backward compat: `enable_roster_context: false` (default) preserves Exp 4 behavior.
+
+**Result**: Spread MAE 10.61 (-0.22 vs Exp 4), RMSE 14.72, Home MAE 9.36, Away MAE 9.46, Total MAE 14.99. Win Accuracy 63.7% (was 65.1%), Win AUC 0.693 (was 0.705), Brier 0.2235 (was 0.2180), ECE 0.0354 (was 0.0142), 90% Coverage 80.8% (was 82.2%). Best val MAE 10.03 at epoch 12, early stopped at epoch 20. **Conclusion**: The HGT architecture improved spread prediction (new best 10.61, still behind XGBoost ~10.1) but traded away win classification and calibration quality. The model learns better score distributions from player trajectory context but the added complexity makes probability calibration harder. The spread/classification tradeoff pattern (also seen in 3b) suggests these objectives may benefit from different architectural emphasis — Exp 4 remains the best balanced model across all metrics.
+
+### Exp 6: HIGFormer-Inspired (Complete — Regressed)
+
+Two HIGFormer-inspired components on Exp 4 base: (1) per-match outcome pre-training — BCE+MSE on win/loss and margin from player stats with scores and plus_minus masked, ~38K samples, val_acc 84.4% at convergence; (2) 3-layer Team Interaction GAT with H2H edge features (win rate, avg margin, meeting count), ~152K params, gated residual into opponent representation. Fine-tuned with gradual unfreezing (3 frozen → 2 top block → full discriminative LR).
+
+**Result**: Spread MAE 11.52 (was 10.83), Win Acc 60.1% (was 65.1%), AUC 0.646 (was 0.705), ECE 0.0464 (was 0.0142). Regressed on every metric. Outcome pre-training likely initialized the encoder in a suboptimal basin — predicting wins from box scores is too different from the full supervised task. H2H records have minimal predictive value due to roster turnover. Third failed architecture experiment (after Exp 1 GRU, Exp 2 masked reconstruction). **Architecture innovation has hit diminishing returns.**
+
+### Exp 7: Kitchen Sink Features (Complete — Marginal)
+
+**Hypothesis**: The XGBoost baseline (MAE ~10.1) beats our transformer (MAE 10.83) primarily due to hand-crafted team efficiency features. Four Factors capture ~95% of point differential variance. Adding TeamBox-derived features alongside low-effort Tier 1 data items should close most of this gap.
+
+**Data pipeline changes** (cache_builder.py):
+- New `_batch_query_teambox()`: fetch all 63,486 TeamBox rows, derive 8 per-game team features:
+  - Pace: `FGA + 0.44*FTA - OREB + TOV`
+  - eFG%: `(FGM + 0.5*FG3M) / FGA`
+  - TOV%: `TOV / (FGA + 0.44*FTA + TOV)`
+  - FT Rate: `FTA / FGA`
+  - 3PA Rate: `FG3A / FGA`
+  - TS%: `PTS / (2 * (FGA + 0.44*FTA))`
+  - AST Ratio: `AST / FGM`
+  - Bench pts: `TeamBox.PTS - SUM(top-15 PlayerBox.PTS)` (captures 16th+ player signal)
+- GameStates summary stats (6 floats per context game, single-pass over ~487 events):
+  - max_lead, max_deficit, lead_changes, score_volatility, close_game_flag, blowout_flag
+  - Currently 87-94% of context games get zero dynamics — this recovers that signal.
+- Tier 1 flags: `is_playoff` (from Games.season_type), `is_overtime` (already computed, just pass through)
+- Player experience: `game_season - Players.from_year`, clamped [0, 20], as 17th player stat
+
+**Model changes** (per_game_encoder.py):
+- `team_efficiency_proj`: `Linear(8, 64) → LN → GELU` — 64-d team efficiency per game
+- `game_context_proj`: `Linear(8, 32) → LN → GELU` — 32-d GS summary + flags per game
+- Widen `context_combine`: `Linear(576, 512)` (was 480 → 512)
+- `n_player_stats`: 16 → 17 (add experience)
+- ~50K new params (negligible)
+
+**Config** (config.py):
+- `n_team_stats: int = 0` (0=disabled, 8=full), `team_stat_dim: int = 64`
+- `n_game_context: int = 0` (0=disabled, 8=full), `game_context_dim: int = 32`
+
+**Evidence**: Richer features have been the single biggest lever in this project's history (1→16 stats was the largest jump). TeamBox efficiency metrics are the exact features XGBoost uses to beat us. Cache rebuild required.
+
+**Expected**: MAE 10.2-10.5 (0.3-0.6 improvement).
+
+**Actual**: MAE 10.77, AUC 0.696, Win Acc 63.5%, ECE 0.0240. Only -0.06 spread improvement with win regression. The transformer already learns most efficiency signal from raw box score stats — explicit features are largely redundant.
+
+### Exp 8: Hybrid Transformer + XGBoost (Complete — No Improvement)
+
+**Hypothesis**: The transformer learns temporal patterns and player interactions that are hard to hand-engineer. XGBoost learns sharp decision boundaries on tabular features. Combining both gets the best of each. GCN+RF hybrid achieved 71.54% vs 66.9% GCN-alone in published NBA work — a 5% boost from hybridization.
+
+**Implementation**:
+1. **Embedding extraction** (`scripts/extract_embeddings.py`): Extract 1536-d vectors (512 home + 512 away + 512 matchup) from frozen Exp 4 checkpoint via `_encode_team()` and `fusion()`. 21,811 games total.
+2. **Feature engineering** (`scripts/engineer_features.py`): 63 rolling features from TeamBox/Games — efficiency (eFG%, TS%, TOV%, FTR, 3PA rate, AST ratio, ORtg, DRtg, net rating) × 3 windows (5/10/20) + EWM spans (10/20) + win records + rest/B2B + H2H + venue-specific win% + absolute team metrics. Differenced (home - away) where appropriate.
+3. **XGBoost training** (`scripts/train_hybrid.py`): Separate spread regressor, total regressor, and win classifier. Optuna HPO (100 trials each), early stopping (50 rounds). Three ablation modes: combined, embeddings-only, features-only.
+
+**Expected**: MAE 9.8-10.2 (match or beat standalone XGBoost ~10.1).
+
+**Actual** (test set):
+
+| Mode | Spread MAE | Total MAE | Win AUC | Win Acc | ECE |
+|------|-----------|-----------|---------|---------|-----|
+| Combined (1599-d) | 10.85 | 14.82 | 0.706 | 64.5% | 0.0231 |
+| Embeddings only (1536-d) | 10.86 | 14.91 | 0.706 | 65.3% | 0.0278 |
+| Features only (63-d) | 11.27 | 14.68 | 0.706 | 65.4% | 0.0271 |
+| Transformer (Exp 4) | 10.83 | — | 0.705 | 65.1% | 0.0142 |
+
+**Conclusion**: Hybridization provides no improvement. The XGBoost head on frozen embeddings matches but doesn't beat the transformer's own prediction head (10.86 vs 10.83). Adding 63 hand-crafted features provides zero marginal signal — the transformer already captures this from raw box scores. Win AUC is identical (0.706) across all modes, confirming a hard ceiling. Features-only XGBoost achieves best total MAE (14.68) and win accuracy (65.4%) but worst spread — different strengths, but combining them doesn't help. The GCN+RF 5% boost from literature does not replicate here because our transformer is already much stronger than a GCN baseline.
+
+### Exp 9: Deep Ensemble — 3 Seeds (Planned)
+
+**Hypothesis**: Different random seeds converge to different local minima. Averaging reduces variance without increasing bias. Deep ensembles are the gold standard for uncertainty and typically improve MAE by 2-5% relative.
+
+**Implementation**:
+1. Train 3 copies of best single-model config (Exp 7 or whichever is best) with seeds 42, 137, 256.
+2. New ensemble inference module (`src/transformer/phase2/ensemble.py`):
+   - Spread: average 3 mu values; sigma via mixture-of-Gaussians: `sigma^2 = mean(sigma_i^2) + mean(mu_i^2) - mean(mu_i)^2`
+   - Win probability: average logits, then sigmoid (logit averaging > probability averaging for calibration)
+   - Scores: average mu values
+3. Evaluate on same test set.
+
+**No code changes to model/data.** Just run same config 3 times + averaging script.
+
+**Expected**: 0.1-0.3 MAE improvement over best single model. If Exp 7 achieves 10.4, ensemble reaches 10.1-10.3. Also improves calibration (ECE) and OOD robustness.
+
+### Future Avenues (Phase 4+)
+
+1. **Player Props**: Predict individual player stats (pts/reb/ast/blk/stl) alongside game scores.
+2. **Live Prediction**: Game states as additional input for in-progress games.
+3. **Generative / Next-State Prediction**: Predict next game state if direct prediction approaches plateau.
+
+---
+
+## Research Findings (March 2026)
+
+### Prediction Ceiling Analysis
+
+| Metric | Theoretical Min | Vegas Closing | Best ML | Our Best (Exp 4) |
+|--------|----------------|---------------|---------|-------------------|
+| Spread MAE | ~7-8 | ~8-9 | ~9-10 | 10.83 |
+| RMSE | ~11-12 | ~12-13 | — | 14.56 |
+| Win Accuracy | — | ~68-72% | ~65-70% | 65.1% |
+| AUC | — | — | 0.72-0.78 | 0.705 |
+
+- **Irreducible randomness**: ~60-70% of total error (3PT shooting variance alone = ~12pt std dev per game)
+- **Missing information**: ~20-25% (real-time injuries, motivation, tactical adjustments)
+- **Model limitations**: ~10-15% (features, architecture, training) — the improvable portion
+- Three-point revolution has INCREASED randomness: avg miss went from ~9 to ~10.5 pts since 2016
+
+### What Consistently Works (from 18+ experiments)
+
+1. Richer input features (biggest single improvement: 1 stat → 16 box scores)
+2. More training data (5→15 seasons improved MAE by 0.45)
+3. Attention pooling everywhere (vs mean pooling)
+4. Fusion diff residual (most important architectural decision)
+5. Player interaction self-attention (complementarity signal)
+6. Team-relative score encoding, player form encoding, calendar-distance positional encoding
+
+### What Consistently Doesn't Work
+
+1. Alternative temporal architectures (GRU = transformer, not the bottleneck)
+2. Self-supervised pre-training (BERT-style masked reconstruction)
+3. Multi-query player pooling (single query sufficient for 15 players)
+4. Cross-attention fusion (too aggressive), PLE score encoding, derived spread from scores
+5. Model size reduction (512→256 hurt)
+
+### Data Utilization Gaps
+
+**Currently used**: Games (dates, teams, season), PlayerBox (16 stats, identity, position), GameStates (recent 5 only — full dynamics; all games — Q4 end scores only), Teams (mapping only).
+
+**Unused — Tier 1 (low effort)**:
+- `is_playoff` flag (6-17pt total scoring difference), `is_overtime` flag (5.9% of games)
+- GameStates summaries for non-recent games (87-94% get zero dynamics)
+- Player experience years (Players.from_year, zero NULLs)
+
+**Unused — Tier 2 (medium effort)**:
+- TeamBox (63K rows): pace, eFG%, TOV%, FTR, 3PA rate, TS%, bench contribution — the features XGBoost uses to beat us
+- 5-position categories (currently collapsed PG/SG/SF/PF/C → G/F/C/UNK)
+
+**Unused — Tier 3 (high effort)**:
+- PbP_Logs (16M events): assist networks, shot quality, lineup combinations
+- Not using: Betting data (by choice)
+
+### Key External References
+
+- **XGBoost baseline**: MAE ~10.1 with 43 engineered features — BEATS our 42M-param transformer. Gap is features, not architecture.
+- **DARKO**: Kalman filter + GBM, daily updates, beats all public metrics (lowest RMSE).
+- **ESPN BPI**: ~72% win accuracy, team-level only, adjusts for opponent strength/pace/travel/rest.
+- **Vegas**: Closing line is near-optimal unbiased estimator (<0.25pt avg error). Key inputs: (1) team efficiency, (2) player availability, (3) home court, (4) rest/B2B, (5) pace matchup.
+- **HIGFormer** (KDD 2025): Heterogeneous player-team interaction graph, typed edges, MoE gating, per-match pre-training.
+- **GCN+RF**: 71.54% win accuracy on NBA data — 5% boost from hybridization over GCN alone.
+- **NeurIPS 2023**: GBDTs win with skewed/irregular distributions; NNs win with large data + complex interactions.

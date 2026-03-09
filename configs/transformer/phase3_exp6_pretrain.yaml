@@ -1,31 +1,13 @@
 # =============================================================================
-# EXPERIMENT 4b (Phase 3): Multi-Query Player Pooling
+# EXPERIMENT 6 — Pre-training Config: Per-Match Outcome Prediction
 # Date: March 2026
 # =============================================================================
-# PURPOSE: Replace single learned query for player attention pooling with 4
-# queries, each specializing in different lineup aspects (scoring, defense,
-# playmaking, depth). Concat + project back to 256-d. Stacks on top of Exp 4's
-# player interaction self-attention.
+# PURPOSE: Teach per_game_encoder "what a winning game looks like" by predicting
+# win/loss + margin from player stats (score features masked).
 #
-# ARCHITECTURE CHANGE:
-#   pool_queries: (1,1,256) -> (1,4,256)
-#   After attention: (B*G, 4, 256) -> concat -> Linear(1024, 256) + LN -> (B*G, 256)
-#   Output dim unchanged — zero downstream changes.
-#   ~263K new params (+0.7% over Exp 4's ~40M), ~40.3M total.
-#
-# BASELINE: Exp 4 — MAE 10.83, AUC 0.705, Win Acc 65.1%, ECE 0.0142
-#
-# RESULT: No improvement — every metric regressed vs Exp 4
-#   Best val MAE: 10.53 (raw) at epoch 13, early stopped at epoch 23
-#   Spread MAE: 10.92  (was 10.83 in Exp 4)
-#   Spread RMSE: 15.00  (was 14.56)
-#   Home MAE: 9.39, Away MAE: 9.62
-#   Win Accuracy: 64.0% (was 65.1%)
-#   Win AUC: 0.685 (was 0.705)
-#   Brier Score: 0.2255 (was 0.2180)
-#   ECE: 0.0349 (was 0.0142)
-#   90% Coverage: 0.791 (was 0.822)
-#   Single query sufficient for 15 players — multi-query fragmented representation.
+# ~62K samples (31K games x 2 perspectives), all 15 training seasons.
+# Loss: BCE(win) + 0.3 * MSE(margin).
+# Output: transferable_weights.pt → player_embed + per_game_encoder weights.
 # =============================================================================
 
 data:
@@ -56,10 +38,10 @@ data:
   min_history_games: 3
   max_players_per_game: 15
   max_roster_size: 15
-  batch_size: 4
-  num_workers: 2
+  batch_size: 32
+  num_workers: 4
   pin_memory: true
-  enable_augmentation: true
+  enable_augmentation: false
   n_player_stats: 16
 
 model:
@@ -73,22 +55,16 @@ model:
   player_contribution_dim: 256
   player_contribution_heads: 4
   player_contribution_dropout: 0.2
-
-  # Player stats (Phase 3)
   n_player_stats: 16
   stat_hidden_dim: 64
   n_positions: 4
   position_dim: 8
-
-  # Player interaction (Exp 4)
   player_interaction_layers: 1
   player_interaction_heads: 4
   player_interaction_ff_dim: 1024
   player_interaction_dropout: 0.2
 
-  # Multi-query player pooling (Exp 4b)
-  player_contribution_n_pool_queries: 4
-
+  # Unused by pre-training model but needed for config parsing
   gs_embed_dim: 16
   gs_encoder_layers: 4
   gs_encoder_heads: 8
@@ -114,19 +90,10 @@ model:
   spread_min_std: 1.0
   score_min_std: 5.0
 
-  # Player form encoder
-  enable_player_form: true
-  player_form_dim: 128
-  player_form_days_dim: 32
-  player_form_heads: 4
-  player_form_ff_dim: 512
-  player_form_dropout: 0.2
-  max_player_appearances: 40
-
 optimizer:
   optimizer: "adamw"
-  learning_rate: 0.0001
-  weight_decay: 0.1
+  learning_rate: 0.0003
+  weight_decay: 0.05
   betas:
     - 0.9
     - 0.98
@@ -134,32 +101,23 @@ optimizer:
   scheduler: "cosine"
   warmup_steps: 0
   warmup_ratio: 0.05
-  min_lr_ratio: 0.1
+  min_lr_ratio: 0.01
   max_grad_norm: 1.0
 
 training:
-  max_epochs: 100
-  patience: 10
+  max_epochs: 30
+  patience: 5
   early_stopping_metric: "val_spread_mae"
   smoothing_window: 3
   min_delta: 0.0001
   ema_decay: 0.999
-  use_ema: true
-  spread_loss_weight: 1.0
-  score_loss_weight: 0.5
-  win_prob_loss_weight: 0.3
-  consistency_loss_weight: 0.1
-  nll_weight: 1.0
-  mse_weight: 0.3
-  gradient_accumulation_steps: 8
+  use_ema: false
+  gradient_accumulation_steps: 2
   checkpoint_dir: "checkpoints/phase3"
-  save_every_n_epochs: 5
   save_best_only: true
-  keep_n_checkpoints: 3
   log_every_n_steps: 50
   use_wandb: false
-  wandb_project: "nba-phase3"
-  experiment_name: "phase3_exp4b_multiquery"
+  experiment_name: "pretrain_exp6_outcome"
   seed: 42
   use_amp: true
   amp_dtype: "float16"

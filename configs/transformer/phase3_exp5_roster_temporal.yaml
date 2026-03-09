@@ -1,31 +1,35 @@
 # =============================================================================
-# EXPERIMENT 4b (Phase 3): Multi-Query Player Pooling
+# EXPERIMENT 5 (Phase 3): Heterogeneous Player-Game Graph
 # Date: March 2026
 # =============================================================================
-# PURPOSE: Replace single learned query for player attention pooling with 4
-# queries, each specializing in different lineup aspects (scoring, defense,
-# playmaking, depth). Concat + project back to 256-d. Stacks on top of Exp 4's
-# player interaction self-attention.
-#
-# ARCHITECTURE CHANGE:
-#   pool_queries: (1,1,256) -> (1,4,256)
-#   After attention: (B*G, 4, 256) -> concat -> Linear(1024, 256) + LN -> (B*G, 256)
-#   Output dim unchanged — zero downstream changes.
-#   ~263K new params (+0.7% over Exp 4's ~40M), ~40.3M total.
+# PURPOSE: Two-pass heterogeneous message passing between game and player nodes.
+# Pass 1 (Game→Player): each roster player attends to historical games they
+#   appeared in, building a player-level seasonal trajectory.
+# Pass 2 (Player→Game): player trajectories re-injected into game_reprs,
+#   enriching temporal attention with roster context.
+# Also includes roster overlap embedding (how many roster players per game).
+# ~2.2M new params (+5.5% over Exp 4's ~40M), ~42.2M total.
 #
 # BASELINE: Exp 4 — MAE 10.83, AUC 0.705, Win Acc 65.1%, ECE 0.0142
 #
-# RESULT: No improvement — every metric regressed vs Exp 4
-#   Best val MAE: 10.53 (raw) at epoch 13, early stopped at epoch 23
-#   Spread MAE: 10.92  (was 10.83 in Exp 4)
-#   Spread RMSE: 15.00  (was 14.56)
-#   Home MAE: 9.39, Away MAE: 9.62
-#   Win Accuracy: 64.0% (was 65.1%)
-#   Win AUC: 0.685 (was 0.705)
-#   Brier Score: 0.2255 (was 0.2180)
-#   ECE: 0.0349 (was 0.0142)
-#   90% Coverage: 0.791 (was 0.822)
-#   Single query sufficient for 15 players — multi-query fragmented representation.
+# ACTUAL RESULTS:
+#   Best val MAE: 10.03 at epoch 12, early stopped at epoch 20 (patience 7)
+#   Spread MAE:  10.61  (was 10.83 in Exp 4)
+#   Spread RMSE: 14.72
+#   Home MAE:    9.36,  Away MAE: 9.46
+#   Total MAE:   14.99
+#   Win Accuracy: 63.7%  (was 65.1%)
+#   Win AUC:     0.693   (was 0.705)
+#   Brier Score: 0.2235  (was 0.2180)
+#   ECE:         0.0354  (was 0.0142)
+#   90% Coverage: 0.808  (was 0.822)
+#   50% Coverage: 0.434
+#   Sharpness:   33.03
+#   N test games: 2113
+#
+#   RESULT: Spread MAE improved (10.83→10.61) but win classification regressed.
+#   Score prediction dramatically better (avg 9.41), but calibration and
+#   uncertainty worsened. Still behind XGBoost on spread (10.61 vs ~10.1).
 # =============================================================================
 
 data:
@@ -86,8 +90,10 @@ model:
   player_interaction_ff_dim: 1024
   player_interaction_dropout: 0.2
 
-  # Multi-query player pooling (Exp 4b)
-  player_contribution_n_pool_queries: 4
+  # Roster-conditioned temporal (Exp 5)
+  enable_roster_context: true
+  roster_context_heads: 8
+  roster_context_dropout: 0.1
 
   gs_embed_dim: 16
   gs_encoder_layers: 4
@@ -159,7 +165,7 @@ training:
   log_every_n_steps: 50
   use_wandb: false
   wandb_project: "nba-phase3"
-  experiment_name: "phase3_exp4b_multiquery"
+  experiment_name: "phase3_exp5_roster_temporal"
   seed: 42
   use_amp: true
   amp_dtype: "float16"

@@ -1,49 +1,42 @@
 # NBA AI TODO
 
-> **Last Updated**: March 4, 2026
-> **Current Sprint**: Sprint 27 — Phase 3 Exp 5 (Heterogeneous Graph)
+> **Last Updated**: March 5, 2026
+> **Current Sprint**: Sprint 28 — Phase 3 Exp 5 (Heterogeneous Graph)
 
 ---
 
 ## Backlog
 
-### Phase 3: Alternative Architectures (5/6 experiments complete)
+### Phase 3: Alternative Architectures & Data (6/10 experiments complete)
 
-- [x] Exp 1: Time-aware bidirectional GRU — no improvement (MAE 11.72 vs 11.61)
-- [x] Exp 2: Self-supervised pre-training — no improvement (MAE 11.61 val, 11.84 test vs 11.61 baseline)
-- [x] Exp 3a: Full PlayerBox (16 stats + position) — MAE 11.48, AUC 0.707, Win Acc 65.3%
-- [x] Exp 3b: + Extended training data (15 seasons) — MAE 11.03, AUC 0.685, Win Acc 62.7% (spread improved, win regressed)
-- [x] ~~Exp 3c: + Wider model (hidden=640)~~ — skipped (3b showed overfitting with 39M, 65M would be worse)
-- [x] Exp 4: Player interaction self-attention — **NEW BEST** (MAE 10.83, AUC 0.705, Win Acc 65.1%, ECE 0.0142)
-- [ ] Exp 5: Full heterogeneous graph (HIGFormer-inspired multi-pass architecture)
-- [ ] Exp 6: Best-of-everything (combine winners)
+- [x] Exp 1: Time-aware bidirectional GRU — no improvement (MAE 11.72)
+- [x] Exp 2: Self-supervised pre-training — no improvement (MAE 11.84)
+- [x] Exp 3a: Full PlayerBox (16 stats + position) — MAE 11.48, AUC 0.707
+- [x] Exp 3b: + Extended data (15 seasons) — MAE 11.03, AUC 0.685 (spread improved, win regressed)
+- [x] ~~Exp 3c: + Wider model~~ — skipped (overfitting risk)
+- [x] Exp 4: Player interaction self-attention — **CURRENT BEST** (MAE 10.83, AUC 0.705, ECE 0.0142)
+- [x] Exp 4b: Multi-query player pooling — no improvement (MAE 10.92)
+- [ ] Exp 5: Heterogeneous player-game graph (two-pass message passing) — IN PROGRESS
+- [ ] Exp 6: HIGFormer-inspired (per-match pre-training + team interaction graph)
+- [ ] Exp 7: Kitchen sink features (TeamBox efficiency + GS summaries + Tier 1 flags)
+- [ ] Exp 8: Hybrid transformer + XGBoost (transformer embeddings → GBM)
+- [ ] Exp 9: Deep ensemble (3 seeds, averaged predictions)
 
-### Future Avenues
+### Future Avenues (Phase 4+)
 
-- **Player props model** — predict individual player statistics using PlayerBox data
-- **Live prediction** — in-game win probability and score prediction using real-time play-by-play
-- **Generative next-state prediction** — predict the next game state rather than final scores
-
-### Cross-Cutting Concerns
-
-- **Data utilization** — expand to 20+ seasons of historical data (2000-2024)
-- **Compute scaling** — larger models, longer training, multi-GPU support
-- **Temporal freshness / continuous learning** — online updates as new games are played, handle distribution shift across seasons
-- **Player/team signal preservation** — better roster encoding, injury impact modeling, player embeddings that transfer across teams
-
-### Phase 1 Improvements (deferred)
-
-- Add spread/score consistency loss
-- Wire CRPS into MetricResults
-- Add comparison against Vegas closing lines (requires betting data integration)
-
-### Other
-
-- Historical data backfill: PlayerBox/TeamBox (2000-2022), InjuryReports (Dec 2018-2023)
+- **Player props** — predict individual player statistics
+- **Live prediction** — in-game win probability using real-time play-by-play
+- **Generative next-state prediction** — predict next game state rather than final scores
 
 ---
 
 ## Completed Sprints
+
+### Sprint 27: Phase 3 Exp 4b — Multi-Query Player Pooling (Mar 4, 2026)
+
+**Summary**: Replaced single learned pool query with 4 queries (concat + Linear(1024,256) + LN) in PlayerContributionEncoder. Inspired by temporal module's 8-query MultiQueryAttentionPool. ~263K new params (+0.7%), ~40.3M total. Backward compat via `player_contribution_n_pool_queries=1` default.
+
+**Result**: No improvement. Test: Spread MAE 10.92 (+0.09), RMSE 15.00, Win Acc 64.0% (-1.1pp), AUC 0.685 (-0.020), Brier 0.2255, ECE 0.0349, 90% Coverage 79.1%. Every metric regressed vs Exp 4. Best val MAE 10.53 (raw) at epoch 13, early stopped at epoch 23. Single query is already sufficient for collapsing 15 players — unlike temporal pooling over 82 games, player pooling operates on a small homogeneous set where multi-query fragments the representation without benefit.
 
 ### Sprint 26: Phase 3 Exp 4 — Player Interaction Self-Attention (Mar 3-4, 2026)
 

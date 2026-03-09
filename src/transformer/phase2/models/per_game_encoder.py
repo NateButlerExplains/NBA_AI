@@ -199,8 +199,14 @@ class PerGameEncoder(nn.Module):
         interaction_ff_dim: int = 1024,
         interaction_dropout: float = 0.2,
         n_pool_queries: int = 1,
+        has_team_gat: bool = False,
+        n_efficiency_features: int = 0,
+        efficiency_hidden_dim: int = 64,
+        gs_summary_dim: int = 32,
+        flag_dim: int = 16,
     ):
         super().__init__()
+        self.n_efficiency_features = n_efficiency_features
 
         # Score projection
         if use_ple:
@@ -238,12 +244,51 @@ class PerGameEncoder(nn.Module):
             n_pool_queries=n_pool_queries,
         )
 
+        # Efficiency feature encoders (Phase 3 Exp 7+)
+        self.efficiency_encoder = None
+        self.gs_summary_encoder = None
+        self.flag_encoder = None
+        efficiency_out_dim = 0
+        gs_summary_out_dim = 0
+        flag_out_dim = 0
+        if n_efficiency_features > 0:
+            efficiency_out_dim = efficiency_hidden_dim
+            self.efficiency_encoder = nn.Sequential(
+                nn.Linear(n_efficiency_features, efficiency_hidden_dim),
+                nn.LayerNorm(efficiency_hidden_dim),
+                nn.GELU(),
+                nn.Linear(efficiency_hidden_dim, efficiency_hidden_dim),
+                nn.LayerNorm(efficiency_hidden_dim),
+                nn.GELU(),
+            )
+            gs_summary_out_dim = gs_summary_dim
+            self.gs_summary_encoder = nn.Sequential(
+                nn.Linear(6, gs_summary_dim),
+                nn.LayerNorm(gs_summary_dim),
+                nn.GELU(),
+            )
+            flag_out_dim = flag_dim
+            self.flag_encoder = nn.Sequential(
+                nn.Linear(2, flag_dim),
+                nn.LayerNorm(flag_dim),
+                nn.GELU(),
+            )
+
         # Context combine
-        context_dim = score_dim + opponent_dim + location_dim + contribution_dim
+        context_dim = (score_dim + opponent_dim + location_dim + contribution_dim
+                       + efficiency_out_dim + gs_summary_out_dim + flag_out_dim)
         self.context_combine = nn.Sequential(
             nn.Linear(context_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
         )
+
+        # H2H team GAT gated residual (Phase 3 Exp 6+)
+        self.has_team_gat = has_team_gat
+        if has_team_gat:
+            self.opp_gate = nn.Sequential(
+                nn.Linear(opponent_dim * 2, opponent_dim),
+                nn.Sigmoid(),
+            )
 
         # Gated dynamics merge (for recent games with GameStates)
         # Instead of concat-with-zeros (which poisons 94% of games with zero input),
@@ -268,6 +313,10 @@ class PerGameEncoder(nn.Module):
         player_stats: torch.Tensor = None,
         player_positions: torch.Tensor = None,
         player_pm_available: torch.Tensor = None,
+        h2h_team_repr: torch.Tensor = None,
+        efficiency_features: torch.Tensor = None,
+        gs_summary_features: torch.Tensor = None,
+        context_flags: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -291,6 +340,15 @@ class PerGameEncoder(nn.Module):
         # Opponent features
         opp_repr = self.opponent_emb(opponent_ids)  # (B, G, 64)
 
+        # H2H team GAT gated residual
+        if self.has_team_gat and h2h_team_repr is not None:
+            # h2h_team_repr: (B, 30, 64) -> index by opponent_ids (B, G) -> (B, G, 64)
+            D = h2h_team_repr.shape[-1]
+            idx = opponent_ids.unsqueeze(-1).expand(-1, -1, D)  # (B, G, D)
+            h2h_opp = h2h_team_repr.gather(1, idx)  # (B, G, D)
+            gate = self.opp_gate(torch.cat([opp_repr, h2h_opp], dim=-1))  # (B, G, 64)
+            opp_repr = opp_repr + gate * h2h_opp
+
         # Location features
         loc_repr = self.location_emb(location)  # (B, G, 32)
 
@@ -303,7 +361,16 @@ class PerGameEncoder(nn.Module):
         )  # (B, G, 256)
 
         # Combine context features
-        context = torch.cat([score_repr, opp_repr, loc_repr, player_repr], dim=-1)
+        context_parts = [score_repr, opp_repr, loc_repr, player_repr]
+
+        if self.efficiency_encoder is not None and efficiency_features is not None:
+            context_parts.append(self.efficiency_encoder(efficiency_features))
+        if self.gs_summary_encoder is not None and gs_summary_features is not None:
+            context_parts.append(self.gs_summary_encoder(gs_summary_features))
+        if self.flag_encoder is not None and context_flags is not None:
+            context_parts.append(self.flag_encoder(context_flags))
+
+        context = torch.cat(context_parts, dim=-1)
         context = self.context_combine(context)  # (B, G, hidden_dim)
 
         # Gated dynamics merge for recent games only

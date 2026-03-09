@@ -76,8 +76,11 @@ class PerGameFeatures:
     reg_away_score: int
     home_player_points: list[tuple[int, int]] = field(default_factory=list)
     away_player_points: list[tuple[int, int]] = field(default_factory=list)
+    is_playoff: bool = False
     home_player_stats: list = field(default_factory=list)  # [(pid, [16 floats], pos_idx, pm_available), ...]
     away_player_stats: list = field(default_factory=list)
+    home_team_efficiency: list = field(default_factory=list)  # [8 floats: eFG, TS, TOV%, FTR, 3PAR, AST_R, Pace, Net]
+    away_team_efficiency: list = field(default_factory=list)
 
 
 def _parse_players_data(players_data_str: Optional[str]) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
@@ -232,6 +235,94 @@ def _batch_query_playerbox(
     return result
 
 
+def _batch_query_teambox(
+    game_ids: list[str],
+    db_path: Optional[str] = None,
+) -> dict:
+    """Batch-fetch TeamBox data and compute 8 efficiency features per team per game.
+
+    Returns {game_id: {team_abbrev: [8 floats]}}.
+    Features: eFG%, TS%, TOV%, FT_Rate, 3PA_Rate, AST_Ratio, Pace, Net_Points.
+    """
+    if not game_ids:
+        return {}
+
+    result = {}
+    chunk_size = 500
+
+    with get_db(db_path) as conn:
+        for i in range(0, len(game_ids), chunk_size):
+            chunk = game_ids[i:i + chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+
+            rows = conn.execute(
+                f"""
+                SELECT tb.game_id, t.abbreviation,
+                       tb.pts, tb.pts_allowed, tb.reb, tb.ast,
+                       tb.tov, tb.fga, tb.fgm, tb.fg3a, tb.fg3m,
+                       tb.fta, tb.ftm
+                FROM TeamBox tb
+                JOIN Teams t ON tb.team_id = t.team_id
+                WHERE tb.game_id IN ({placeholders})
+                """,
+                chunk,
+            ).fetchall()
+
+            for row in rows:
+                game_id, team_abbrev = row[0], row[1]
+                team_abbrev = HISTORICAL_TO_CURRENT.get(team_abbrev, team_abbrev)
+                pts, pts_allowed, reb, ast = row[2], row[3], row[4], row[5]
+                tov, fga, fgm, fg3a, fg3m = row[6], row[7], row[8], row[9], row[10]
+                fta, ftm = row[11], row[12]
+
+                # Compute efficiency features (guard against division by zero)
+                efg = (fgm + 0.5 * fg3m) / fga if fga > 0 else 0.0
+                tsa = 2 * (fga + 0.44 * fta)
+                ts = pts / tsa if tsa > 0 else 0.0
+                tov_denom = fga + 0.44 * fta + tov
+                tov_pct = tov / tov_denom if tov_denom > 0 else 0.0
+                ft_rate = fta / fga if fga > 0 else 0.0
+                three_pa_rate = fg3a / fga if fga > 0 else 0.0
+                ast_ratio = ast / fgm if fgm > 0 else 0.0
+                # Pace: approximate possessions (oreb not in TeamBox, added separately)
+                pace = fga + 0.44 * fta + tov  # oreb subtracted later if available
+                net_pts = pts - pts_allowed
+
+                efficiency = [efg, ts, tov_pct, ft_rate, three_pa_rate, ast_ratio, pace, net_pts]
+
+                if game_id not in result:
+                    result[game_id] = {}
+                result[game_id][team_abbrev] = efficiency
+
+    return result
+
+
+def _compute_oreb_from_playerbox(
+    playerbox_data: dict,
+) -> dict:
+    """Sum oreb per team per game from PlayerBox data (already fetched).
+
+    Returns {game_id: {team_abbrev: total_oreb}}.
+    PlayerBox stats order: min, pts, oreb(2), dreb, ast, stl, blk, tov, pf, fga, fgm, fg3a, fg3m, fta, ftm, pm
+    """
+    result = {}
+    for game_id, teams in playerbox_data.items():
+        result[game_id] = {}
+        for team, players in teams.items():
+            total_oreb = sum(p[1][2] for p in players)  # stats[2] = oreb
+            result[game_id][team] = total_oreb
+    return result
+
+
+def _build_player_experience(db_path: Optional[str] = None) -> dict:
+    """Build {player_id: from_year} mapping from Players table."""
+    with get_db(db_path) as conn:
+        rows = conn.execute(
+            "SELECT person_id, from_year FROM Players WHERE from_year IS NOT NULL"
+        ).fetchall()
+    return {int(pid): int(from_year) for pid, from_year in rows}
+
+
 def build_cache(
     seasons: list[str],
     cache_dir: str = "data/phase2_cache",
@@ -257,7 +348,7 @@ def build_cache(
     season_placeholders = ",".join(["?"] * len(seasons))
     query = f"""
         SELECT g.game_id, g.home_team, g.away_team, g.date_time_utc, g.season,
-               gs.home_score, gs.away_score, gs.players_data
+               gs.home_score, gs.away_score, gs.players_data, g.season_type
         FROM Games g
         JOIN GameStates gs ON gs.game_id = g.game_id AND gs.is_final_state = 1
         WHERE g.season IN ({season_placeholders})
@@ -281,10 +372,29 @@ def build_cache(
     n_with_playerbox = sum(1 for gid in game_id_list if gid in playerbox_data)
     logger.info(f"PlayerBox data: {n_with_playerbox}/{len(game_id_list)} games")
 
+    # Batch-fetch TeamBox efficiency features
+    teambox_data = _batch_query_teambox(game_id_list, db_path)
+    n_with_teambox = sum(1 for gid in game_id_list if gid in teambox_data)
+    logger.info(f"TeamBox data: {n_with_teambox}/{len(game_id_list)} games")
+
+    # Compute oreb from PlayerBox for Pace correction
+    oreb_data = _compute_oreb_from_playerbox(playerbox_data)
+
+    # Adjust Pace in teambox_data by subtracting oreb
+    for gid, teams in teambox_data.items():
+        oreb_game = oreb_data.get(gid, {})
+        for team_abbrev, eff in teams.items():
+            team_oreb = oreb_game.get(team_abbrev, 0)
+            eff[6] -= team_oreb  # Pace = fga + 0.44*fta + tov - oreb
+
+    # Build player experience mapping
+    player_experience = _build_player_experience(db_path)
+    logger.info(f"Player experience: {len(player_experience)} players with from_year data")
+
     game_features = {}
     season_index = defaultdict(list)
 
-    for game_id, home_team, away_team, date_utc, season, home_score, away_score, players_data in rows:
+    for game_id, home_team, away_team, date_utc, season, home_score, away_score, players_data, season_type in rows:
         # Map historical team codes to current franchise codes
         home_team = HISTORICAL_TO_CURRENT.get(home_team, home_team)
         away_team = HISTORICAL_TO_CURRENT.get(away_team, away_team)
@@ -315,6 +425,13 @@ def build_cache(
         if away_player_stats:
             away_players = [(pid, int(stats[1])) for pid, stats, _, _ in away_player_stats]
 
+        # Get TeamBox efficiency
+        tb_game = teambox_data.get(game_id, {})
+        home_eff = tb_game.get(home_team, [])
+        away_eff = tb_game.get(away_team, [])
+
+        is_playoff = (season_type == "Post Season")
+
         features = PerGameFeatures(
             game_id=game_id,
             game_date=game_date,
@@ -326,12 +443,15 @@ def build_cache(
             margin=margin,
             total=total,
             is_overtime=is_overtime,
+            is_playoff=is_playoff,
             reg_home_score=reg_home,
             reg_away_score=reg_away,
             home_player_points=home_players,
             away_player_points=away_players,
             home_player_stats=home_player_stats,
             away_player_stats=away_player_stats,
+            home_team_efficiency=home_eff,
+            away_team_efficiency=away_eff,
         )
 
         game_features[game_id] = features
@@ -397,6 +517,12 @@ def build_cache(
         json.dump({str(k): v for k, v in player_id_map.items()}, f)
     logger.info(f"Saved player mapping: {len(player_id_map)} unique players "
                 f"(indices 1-{max(player_id_map.values()) if player_id_map else 0}, 0=padding)")
+
+    # Save player experience mapping
+    exp_path = cache_path / "player_experience.json"
+    with open(exp_path, "w") as f:
+        json.dump({str(k): v for k, v in player_experience.items()}, f)
+    logger.info(f"Saved player experience: {len(player_experience)} players to {exp_path}")
 
     # Build GameStates cache
     if not skip_gamestates:
@@ -476,12 +602,20 @@ def load_cache(cache_dir: str = "data/phase2_cache") -> dict:
     else:
         player_id_map = {}
 
+    player_exp_path = cache_path / "player_experience.json"
+    if player_exp_path.exists():
+        with open(player_exp_path) as f:
+            player_experience = {int(k): v for k, v in json.load(f).items()}
+    else:
+        player_experience = {}
+
     return {
         "game_features": game_features,
         "season_index": season_index,
         "gs_cache": gs_cache,
         "team_mapping": team_mapping,
         "player_id_map": player_id_map,
+        "player_experience": player_experience,
     }
 
 

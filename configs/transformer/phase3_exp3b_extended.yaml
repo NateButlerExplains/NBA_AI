@@ -9,6 +9,16 @@
 #   - train_seasons: 2008-2009 through 2022-2023 (15 seasons, ~21K games)
 #
 # BASELINE: Exp 3a — MAE 11.48, AUC 0.707 (Exp 5a was MAE 11.61, AUC 0.687)
+#
+# ACTUAL RESULTS:
+#   Best val MAE: 10.62 at epoch 10, early stopped at epoch 15 (manual)
+#   Spread MAE:  11.03  (was 11.48 in Exp 3a)
+#   Win AUC:     0.685  (was 0.707 — regressed)
+#   Win Accuracy: 62.7%  (was 65.3% — regressed)
+#   Params: 39M
+#
+#   RESULT: More data improved spread (11.48→11.03) but hurt win classification.
+#   Overfitting at 39M params with 15 seasons ruled out Exp 3c (wider model).
 # =============================================================================
 
 data:

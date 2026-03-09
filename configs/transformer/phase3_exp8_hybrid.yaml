@@ -1,0 +1,69 @@
+# =============================================================================
+# EXPERIMENT 8 (Phase 3): Hybrid Transformer + XGBoost
+# Date: March 2026
+# =============================================================================
+# PURPOSE: Combine transformer's learned representations (512-d team embeddings,
+# 512-d matchup embedding) with hand-crafted rolling efficiency features via
+# XGBoost. The transformer learns temporal patterns and player interactions;
+# XGBoost learns sharp decision boundaries on tabular features.
+#
+# APPROACH:
+#   1. Extract 1536-d embeddings from frozen Exp 4 transformer (best balanced)
+#   2. Engineer 63 rolling features from TeamBox (efficiency, records, rest, H2H)
+#   3. Train XGBoost on [embeddings + features] with Optuna HPO (100 trials)
+#   4. Separate regressor (spread), regressor (total), classifier (win)
+#
+# BASELINE: Exp 4 — MAE 10.83, AUC 0.705, Win Acc 65.1%, ECE 0.0142
+#
+# RESULT: No improvement — hybridization adds nothing
+#   Combined:        Spread MAE 10.85, Win AUC 0.706, Win Acc 64.5%, ECE 0.0231
+#   Embeddings only: Spread MAE 10.86, Win AUC 0.706, Win Acc 65.3%, ECE 0.0278
+#   Features only:   Spread MAE 11.27, Win AUC 0.706, Win Acc 65.4%, ECE 0.0271
+#   Transformer already captures the signal; XGBoost head matches but doesn't beat it.
+# =============================================================================
+
+# Embedding extraction config (reuses Exp 4 model)
+embedding:
+  config: "configs/transformer/phase3_exp4_interaction.yaml"
+  checkpoint: "checkpoints/phase3/phase3_exp4_interaction/best.pt"
+  cache_dir: "data/phase3_cache"
+  batch_size: 8
+
+# Feature engineering config
+features:
+  db_path: "data/NBA_AI_full.sqlite"
+  rolling_windows: [5, 10, 20]
+  output_path: "data/hybrid/features.npz"
+
+# XGBoost training config
+xgboost:
+  n_trials: 100
+  output_dir: "checkpoints/phase3/phase3_exp8_hybrid"
+
+# Data splits (must match transformer)
+data:
+  train_seasons:
+    - "2008-2009"
+    - "2009-2010"
+    - "2010-2011"
+    - "2011-2012"
+    - "2012-2013"
+    - "2013-2014"
+    - "2014-2015"
+    - "2015-2016"
+    - "2016-2017"
+    - "2017-2018"
+    - "2018-2019"
+    - "2019-2020"
+    - "2020-2021"
+    - "2021-2022"
+    - "2022-2023"
+  val_seasons:
+    - "2023-2024"
+  test_seasons:
+    - "2024-2025"
+    - "2025-2026"
+
+training:
+  experiment_name: "phase3_exp8_hybrid"
+  seed: 42

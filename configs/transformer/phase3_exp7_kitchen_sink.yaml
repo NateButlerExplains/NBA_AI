@@ -1,31 +1,33 @@
 # =============================================================================
-# EXPERIMENT 4b (Phase 3): Multi-Query Player Pooling
+# EXPERIMENT 7 (Phase 3): Kitchen Sink Features
 # Date: March 2026
 # =============================================================================
-# PURPOSE: Replace single learned query for player attention pooling with 4
-# queries, each specializing in different lineup aspects (scoring, defense,
-# playmaking, depth). Concat + project back to 256-d. Stacks on top of Exp 4's
-# player interaction self-attention.
+# PURPOSE: Close the gap to XGBoost (~10.1 MAE) by injecting domain features:
+# TeamBox efficiency (Four Factors + Pace), GameStates summary stats,
+# context flags (OT/playoff), and player experience — the same signal
+# that powers XGBoost's advantage over our architecture.
 #
 # ARCHITECTURE CHANGE:
-#   pool_queries: (1,1,256) -> (1,4,256)
-#   After attention: (B*G, 4, 256) -> concat -> Linear(1024, 256) + LN -> (B*G, 256)
-#   Output dim unchanged — zero downstream changes.
-#   ~263K new params (+0.7% over Exp 4's ~40M), ~40.3M total.
+#   Per-game encoder: +efficiency_encoder(8→64), +gs_summary_encoder(6→32),
+#     +flag_encoder(2→16). context_combine widens 480→592.
+#   Team combine: +season_efficiency_proj(8→64). Widens 1088→1152.
+#   Player stats: 16→17 (add years_in_league).
+#   ~96K new params (+0.24% over Exp 4's ~40M).
 #
 # BASELINE: Exp 4 — MAE 10.83, AUC 0.705, Win Acc 65.1%, ECE 0.0142
 #
-# RESULT: No improvement — every metric regressed vs Exp 4
-#   Best val MAE: 10.53 (raw) at epoch 13, early stopped at epoch 23
-#   Spread MAE: 10.92  (was 10.83 in Exp 4)
-#   Spread RMSE: 15.00  (was 14.56)
-#   Home MAE: 9.39, Away MAE: 9.62
-#   Win Accuracy: 64.0% (was 65.1%)
-#   Win AUC: 0.685 (was 0.705)
-#   Brier Score: 0.2255 (was 0.2180)
-#   ECE: 0.0349 (was 0.0142)
-#   90% Coverage: 0.791 (was 0.822)
-#   Single query sufficient for 15 players — multi-query fragmented representation.
+# RESULT: Marginal spread improvement but win classification regressed.
+#   Spread MAE: 10.77  (was 10.83 in Exp 4)
+#   Spread RMSE: 14.67
+#   Home MAE: 9.36, Away MAE: 9.53
+#   Win Accuracy: 63.5% (was 65.1% in Exp 4)
+#   Win AUC: 0.696 (was 0.705 in Exp 4)
+#   Brier Score: 0.2212
+#   ECE: 0.0240 (was 0.0142 in Exp 4)
+#   90% Coverage: 81.4%
+#   Early stopped at epoch 20. Efficiency features provide small spread
+#   signal but trade off with win probability calibration — same pattern
+#   as Exp 5 and 3b. Still well behind XGBoost (~10.1).
 # =============================================================================
 
 data:
@@ -50,7 +52,7 @@ data:
   test_seasons:
     - "2024-2025"
     - "2025-2026"
-  cache_dir: "data/phase3_cache"
+  cache_dir: "data/phase3_exp7_cache"
   n_recent_games: 5
   max_context_games: 82
   min_history_games: 3
@@ -60,7 +62,8 @@ data:
   num_workers: 2
   pin_memory: true
   enable_augmentation: true
-  n_player_stats: 16
+  n_player_stats: 17
+  n_efficiency_features: 8
 
 model:
   hidden_dim: 512
@@ -74,8 +77,8 @@ model:
   player_contribution_heads: 4
   player_contribution_dropout: 0.2
 
-  # Player stats (Phase 3)
-  n_player_stats: 16
+  # Player stats (Phase 3) — 17 = 16 box score + 1 experience
+  n_player_stats: 17
   stat_hidden_dim: 64
   n_positions: 4
   position_dim: 8
@@ -86,8 +89,12 @@ model:
   player_interaction_ff_dim: 1024
   player_interaction_dropout: 0.2
 
-  # Multi-query player pooling (Exp 4b)
-  player_contribution_n_pool_queries: 4
+  # Team efficiency features (Exp 7)
+  n_efficiency_features: 8
+  efficiency_hidden_dim: 64
+  gs_summary_dim: 32
+  flag_dim: 16
+  season_efficiency_dim: 64
 
   gs_embed_dim: 16
   gs_encoder_layers: 4
@@ -159,7 +166,7 @@ training:
   log_every_n_steps: 50
   use_wandb: false
   wandb_project: "nba-phase3"
-  experiment_name: "phase3_exp4b_multiquery"
+  experiment_name: "phase3_exp7_kitchen_sink"
   seed: 42
   use_amp: true
   amp_dtype: "float16"

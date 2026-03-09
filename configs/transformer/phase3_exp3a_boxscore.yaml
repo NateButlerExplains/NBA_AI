@@ -18,6 +18,18 @@
 #   Player form: stat_mlp → 64, concat days(32) → 96 → proj → 128
 #
 # BASELINE: Exp 5a — MAE 11.61, AUC 0.687
+#
+# ACTUAL RESULTS:
+#   Best val MAE: 11.14 at epoch 11, early stopped at epoch 26
+#   Spread MAE:  11.48  (was 11.61 in Exp 5a)
+#   Win AUC:     0.707  (was 0.687)
+#   Win Accuracy: 65.3%
+#   Brier Score: 0.2204
+#   90% Coverage: 78.2%
+#   Params: 39M
+#
+#   RESULT: First improvement beyond the ~11.6 plateau. Full box score stats
+#   provide signal the model cannot learn from game scores alone.
 # =============================================================================
 
 data:
