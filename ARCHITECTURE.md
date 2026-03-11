@@ -1,7 +1,7 @@
 # NBA Prediction Architecture
 
-> **Status**: Phase 1 Complete (15 experiments) | Phase 2 Complete (7 experiments) | Phase 3 In Progress (9/10 experiments)
-> **Last Updated**: March 9, 2026
+> **Status**: Phase 1 Complete (15 experiments) | Phase 2 Complete (7 experiments) | Phase 3 Complete (10/10 experiments)
+> **Last Updated**: March 10, 2026
 
 ---
 
@@ -54,7 +54,7 @@ Phase 2: Maximize Standard Transformer (Complete — 7 experiments)
 └─ Outcome: ~11.6 MAE plateau; standard transformer approaches
            exhausted → move to Phase 3
 
-Phase 3: Alternative Architectures & Data (In Progress — 9/10 experiments complete)
+Phase 3: Alternative Architectures & Data (Complete — 10/10 experiments)
 ├─ Goal: break ~11.6 MAE plateau with architectures, features, and ensembling
 ├─ Exp 1: Time-aware bidirectional GRU — no improvement (MAE 11.72)
 ├─ Exp 2: Self-supervised pre-training — no improvement (MAE 11.61)
@@ -67,7 +67,7 @@ Phase 3: Alternative Architectures & Data (In Progress — 9/10 experiments comp
 ├─ Exp 6: HIGFormer-inspired (pre-training + team GAT) — regressed (MAE 11.52)
 ├─ Exp 7: Kitchen sink features (TeamBox efficiency + GS summaries + flags) — marginal (MAE 10.77), win ↓
 ├─ Exp 8: Hybrid transformer + XGBoost — no improvement (MAE 10.85, AUC 0.706)
-└─ Exp 9: Deep ensemble (3 seeds, averaged predictions)
+└─ Exp 9: Deep ensemble (3 seeds) — NEW BEST (MAE 10.66, AUC 0.718, Acc 66.5%)
 ```
 
 ---
@@ -338,6 +338,7 @@ Score buckets are team-relative: when the team was away, home/away buckets are s
 | 6 | HIGFormer (pre-training + team GAT) | `phase3_exp6_higformer` | 11.52 | 0.646 | 60.1% | 0.2362 | — | 22 (ES 27) | 40.2M |
 | 7 | Kitchen sink features | `phase3_exp7_kitchen_sink` | 10.77 | 0.696 | 63.5% | 0.2212 | 81.4% | 10 (ES 20) | 40.1M |
 | 8 | Hybrid transformer + XGBoost | `phase3_exp8_hybrid` | 10.85 | 0.706 | 64.5% | 0.2187 | N/A | — | XGB |
+| **9** | **Deep ensemble (3 seeds)** | `phase3_exp9_ensemble` | **10.66** | **0.718** | **66.5%** | **—** | **83.6%** | — | 3×40M |
 
 **Exp 1 findings**: Replaced 3-layer temporal transformer + 8-query attention pool with a 2-layer bidirectional GRU + 4-query attention pool. GRU provides exponential decay natively (no learned positional encoding needed), with calendar distance as a 64-d input feature. Validation MAE matched Phase 2 best (11.34 vs 11.34) but test set regressed (11.72 vs 11.61), suggesting slight overfitting. Model is 8M params lighter (31M vs 39M) and trains at comparable speed. **Conclusion**: The temporal module is not the bottleneck — the transformer's attention mechanism is not what limits spread prediction accuracy. The plateau comes from elsewhere (data, features, or fusion).
 
@@ -578,10 +579,10 @@ Same prediction target (final game scores). Break the ~11.6 MAE plateau via arch
 - **Exp 5**: Heterogeneous player-game graph — two-pass message passing. See details below.
 - **Exp 6**: HIGFormer-inspired — per-match pre-training + team interaction graph. See details below.
 
-**Line F — Feature Engineering, Hybridization, Ensembling** (In Progress):
+**Line F — Feature Engineering, Hybridization, Ensembling** (Complete):
 - **Exp 7**: Kitchen sink features — TeamBox efficiency + GS summaries + context flags + player experience. **Result**: Marginal spread improvement (10.83 → 10.77), win classification regressed (AUC 0.705 → 0.696). Features provide small spread signal but trade off with calibration.
 - **Exp 8**: Hybrid transformer + XGBoost — 1536-d embeddings + 63 hand-crafted features → XGBoost with Optuna HPO. **Result**: No improvement. Combined MAE 10.85, embeddings-only MAE 10.86 — essentially same as transformer alone (10.83). Features-only MAE 11.27 but best win accuracy (65.4%). Win AUC 0.706 identical across all modes. Hybridization adds nothing when transformer already captures the signal.
-- **Exp 9**: Deep ensemble — 3 seeds, averaged predictions. See details below.
+- **Exp 9**: Deep ensemble — 3 seeds (42, 137, 256) of Exp 4 config, ensemble averaging. **Result**: NEW BEST — MAE 10.66 (1.6% improvement), AUC 0.718 (broke 0.706 ceiling), Win Acc 66.5%. Variance reduction from averaging works. ECE regressed to 0.0378 (logit averaging slightly overconfident).
 
 ---
 
@@ -665,21 +666,30 @@ Two HIGFormer-inspired components on Exp 4 base: (1) per-match outcome pre-train
 
 **Conclusion**: Hybridization provides no improvement. The XGBoost head on frozen embeddings matches but doesn't beat the transformer's own prediction head (10.86 vs 10.83). Adding 63 hand-crafted features provides zero marginal signal — the transformer already captures this from raw box scores. Win AUC is identical (0.706) across all modes, confirming a hard ceiling. Features-only XGBoost achieves best total MAE (14.68) and win accuracy (65.4%) but worst spread — different strengths, but combining them doesn't help. The GCN+RF 5% boost from literature does not replicate here because our transformer is already much stronger than a GCN baseline.
 
-### Exp 9: Deep Ensemble — 3 Seeds (Planned)
+### Exp 9: Deep Ensemble — 3 Seeds (Complete — NEW BEST)
 
 **Hypothesis**: Different random seeds converge to different local minima. Averaging reduces variance without increasing bias. Deep ensembles are the gold standard for uncertainty and typically improve MAE by 2-5% relative.
 
 **Implementation**:
-1. Train 3 copies of best single-model config (Exp 7 or whichever is best) with seeds 42, 137, 256.
-2. New ensemble inference module (`src/transformer/phase2/ensemble.py`):
-   - Spread: average 3 mu values; sigma via mixture-of-Gaussians: `sigma^2 = mean(sigma_i^2) + mean(mu_i^2) - mean(mu_i)^2`
-   - Win probability: average logits, then sigmoid (logit averaging > probability averaging for calibration)
-   - Scores: average mu values
-3. Evaluate on same test set.
+1. Reuse Exp 4 seed 42 checkpoint (already trained).
+2. Train 2 additional copies with seeds 137 and 256 (identical Exp 4 config). Both early-stopped at epoch 21.
+3. Ensemble evaluation (`scripts/ensemble_evaluate.py`):
+   - Spread/score means: simple average of mu values
+   - Sigma: mixture-of-Gaussians: `sigma² = mean(sigma_i²) + var(mu_i)`
+   - Win probability: logit averaging
 
-**No code changes to model/data.** Just run same config 3 times + averaging script.
+**Expected**: MAE 10.5-10.7, improved calibration.
 
-**Expected**: 0.1-0.3 MAE improvement over best single model. If Exp 7 achieves 10.4, ensemble reaches 10.1-10.3. Also improves calibration (ECE) and OOD robustness.
+**Actual** (test set):
+
+| Model | Spread MAE | RMSE | Win AUC | Win Acc | ECE | 90% Cov |
+|-------|-----------|------|---------|---------|-----|---------|
+| Seed 42 | 10.82 | 14.56 | 0.706 | 65.0% | 0.0153 | 0.821 |
+| Seed 137 | 10.96 | 14.97 | 0.684 | 63.0% | 0.0339 | 0.799 |
+| Seed 256 | 10.71 | 14.50 | 0.703 | 64.2% | 0.0282 | 0.805 |
+| **ENSEMBLE** | **10.66** | **14.29** | **0.718** | **66.5%** | 0.0378 | 0.836 |
+
+**Conclusion**: The ensemble is the first approach to break the 0.706 AUC ceiling and achieve both better spread AND win predictions simultaneously. Individual seeds vary considerably (AUC 0.684-0.706), confirming that different local minima capture different signal. Averaging cancels noise while preserving shared signal. ECE regressed (0.0378 vs best single 0.0153) — the logit averaging makes the ensemble slightly overconfident, but this is a known trade-off that could be addressed with temperature scaling. Coverage improved to 0.836 (from 0.821) thanks to mixture-of-Gaussians sigma capturing inter-model disagreement.
 
 ### Future Avenues (Phase 4+)
 
@@ -693,12 +703,12 @@ Two HIGFormer-inspired components on Exp 4 base: (1) per-match outcome pre-train
 
 ### Prediction Ceiling Analysis
 
-| Metric | Theoretical Min | Vegas Closing | Best ML | Our Best (Exp 4) |
-|--------|----------------|---------------|---------|-------------------|
-| Spread MAE | ~7-8 | ~8-9 | ~9-10 | 10.83 |
-| RMSE | ~11-12 | ~12-13 | — | 14.56 |
-| Win Accuracy | — | ~68-72% | ~65-70% | 65.1% |
-| AUC | — | — | 0.72-0.78 | 0.705 |
+| Metric | Theoretical Min | Vegas Closing | Best ML | Our Best (Ensemble) |
+|--------|----------------|---------------|---------|---------------------|
+| Spread MAE | ~7-8 | ~8-9 | ~9-10 | 10.66 |
+| RMSE | ~11-12 | ~12-13 | — | 14.29 |
+| Win Accuracy | — | ~68-72% | ~65-70% | 66.5% |
+| AUC | — | — | 0.72-0.78 | 0.718 |
 
 - **Irreducible randomness**: ~60-70% of total error (3PT shooting variance alone = ~12pt std dev per game)
 - **Missing information**: ~20-25% (real-time injuries, motivation, tactical adjustments)
