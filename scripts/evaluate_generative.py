@@ -24,13 +24,19 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate generative model via rollout")
+    parser = argparse.ArgumentParser(
+        description="Evaluate generative model via rollout"
+    )
     parser.add_argument("--config", required=True, help="Path to YAML config file")
     parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint")
     parser.add_argument("--split", default="test", choices=["val", "test"])
     parser.add_argument("--n-rollouts", type=int, default=100, help="Rollouts per game")
-    parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
-    parser.add_argument("--max-games", type=int, default=None, help="Limit games to evaluate")
+    parser.add_argument(
+        "--temperature", type=float, default=1.0, help="Sampling temperature"
+    )
+    parser.add_argument(
+        "--max-games", type=int, default=None, help="Limit games to evaluate"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -41,9 +47,21 @@ def main() -> None:
     # ---- Config & dataset --------------------------------------------------
     config = GenerativeExperimentConfig.from_yaml(args.config)
 
-    ds = GenerativeDataset(config.data, split=args.split)
+    use_simple = config.model.use_simplified_context
+    use_compressed = config.model.use_scoring_events_only
+    max_se = config.model.max_scoring_events
+    ds = GenerativeDataset(
+        config.data,
+        split=args.split,
+        use_simplified_context=use_simple,
+        use_scoring_events_only=use_compressed,
+        max_scoring_events=max_se,
+    )
     loader = DataLoader(
-        ds, batch_size=1, shuffle=False, collate_fn=generative_collate,
+        ds,
+        batch_size=1,
+        shuffle=False,
+        collate_fn=generative_collate,
     )
 
     logger.info(f"Evaluating {args.split} split: {len(ds)} games")
@@ -89,7 +107,9 @@ def main() -> None:
 
         # Run rollouts
         result = rollout_engine.rollout(
-            batch, n_rollouts=args.n_rollouts, temperature=args.temperature,
+            batch,
+            n_rollouts=args.n_rollouts,
+            temperature=args.temperature,
         )
 
         # Ground truth
@@ -119,6 +139,7 @@ def main() -> None:
     # Win AUC
     try:
         from sklearn.metrics import roc_auc_score
+
         auc = float(roc_auc_score(win_true, win_probs))
     except (ValueError, ImportError):
         auc = float("nan")

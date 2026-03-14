@@ -1,0 +1,119 @@
+data:
+  train_seasons:
+    - "2008-2009"
+    - "2009-2010"
+    - "2010-2011"
+    - "2011-2012"
+    - "2012-2013"
+    - "2013-2014"
+    - "2014-2015"
+    - "2015-2016"
+    - "2016-2017"
+    - "2017-2018"
+    - "2018-2019"
+    - "2019-2020"
+    - "2020-2021"
+    - "2021-2022"
+    - "2022-2023"
+  val_seasons:
+    - "2023-2024"
+  test_seasons:
+    - "2024-2025"
+    - "2025-2026"
+  cache_dir: "data/generative_cache"
+  db_path: "data/NBA_AI_full.sqlite"
+  max_context_games: 82
+  min_history_games: 3
+  max_players_per_game: 13
+  max_seq_len: 700
+  n_player_stats: 16
+  # Compressed sequences are ~110 events → larger batches
+  batch_size: 32
+  num_workers: 2
+  pin_memory: true
+  # Score jitter still applies to score channels in state vector
+  score_jitter_std: 0.5
+
+model:
+  hidden_dim: 512
+  dropout: 0.1
+  n_teams: 30
+  # Simplified context encoder (from Exp 3)
+  use_simplified_context: true
+  n_rolling_features: 24
+  simple_context_hidden: 256
+  simple_team_embed_dim: 64
+  # Scoring-event compression (Exp 4)
+  use_scoring_events_only: true
+  max_scoring_events: 200
+  # State embedder: 8-dim input (7 original + inter-event time)
+  state_input_dim: 8
+  state_hidden_dim: 256
+  # Decoder — fewer layers sufficient for shorter sequences
+  decoder_layers: 6
+  decoder_heads: 8
+  decoder_ff_dim: 2048
+  decoder_dropout: 0.1
+  decoder_max_seq_len: 250
+  # Prediction heads
+  n_score_classes: 7
+  head_hidden_dim: 128
+  # 10% context dropout for CFG training
+  context_dropout: 0.10
+  # Uniform class weights — let the model learn natural distribution
+  # Exp 4 showed skewed weights cause +2 events to be ignored
+  score_class_weights:
+    - 1.0    # home+1
+    - 1.0    # home+2
+    - 1.0    # home+3
+    - 1.0    # away+1
+    - 1.0    # away+2
+    - 1.0    # away+3
+    - 1.0    # game_end
+
+optimizer:
+  optimizer: "adamw"
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  betas: [0.9, 0.98]
+  eps: 0.00000001
+  scheduler: "cosine"
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.01
+  max_grad_norm: 1.0
+
+training:
+  max_epochs: 50
+  patience: 15
+  early_stopping_metric: "val_spread_mae"
+  smoothing_window: 3
+  min_delta: 0.0001
+  score_loss_weight: 1.0
+  clock_loss_weight: 0.3
+  context_loss_weight: 1.0
+  pre_margin_weight: 1.0
+  pre_win_weight: 0.5
+  # Larger batch → fewer accumulation steps
+  gradient_accumulation_steps: 1
+  checkpoint_dir: "checkpoints/generative"
+  save_best_only: true
+  keep_n_checkpoints: 3
+  log_every_n_steps: 50
+  experiment_name: "gen_exp4b_uniform_weights"
+  seed: 42
+  use_amp: false
+  amp_dtype: "float16"
+  use_ema: true
+  ema_decay: 0.999
+  device: "cuda"
+  # No scheduled sampling for Exp 4 (simpler baseline first)
+  use_scheduled_sampling: false
+  ss_start_ratio: 1.0
+  ss_end_ratio: 0.8
+  ss_warmup_epochs: 5
+  ss_anneal_epochs: 20
+  # Inference — fewer steps for compressed mode
+  n_rollouts: 100
+  rollout_temperature: 1.0
+  max_rollout_steps: 200
+  guidance_scale: 1.5

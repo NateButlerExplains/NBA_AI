@@ -110,8 +110,20 @@ class GenerativeModelConfig:
     # Context dropout (anti-collapse)
     context_dropout: float = 0.1
 
+    # Simplified context encoder (Exp 3)
+    use_simplified_context: bool = False
+    n_rolling_features: int = 24
+    simple_context_hidden: int = 256
+    simple_team_embed_dim: int = 64
+
+    # Scoring-event compression (Exp 4)
+    use_scoring_events_only: bool = False
+    # Max scoring events per game (covers >99% of games)
+    max_scoring_events: int = 200
+
     # Score event class weights (inverse frequency)
-    # {no_score, home+1, home+2, home+3, away+1, away+2, away+3}
+    # Full mode: {no_score, home+1, home+2, home+3, away+1, away+2, away+3}
+    # Compressed mode: {home+1, home+2, home+3, away+1, away+2, away+3, game_end}
     score_class_weights: list[float] = field(
         default_factory=lambda: [1.0, 4.0, 4.5, 5.0, 4.0, 4.5, 5.0]
     )
@@ -176,6 +188,13 @@ class GenerativeTrainingConfig:
 
     # Device
     device: str = "cuda"
+
+    # Scheduled sampling (Exp 3)
+    use_scheduled_sampling: bool = False
+    ss_start_ratio: float = 1.0
+    ss_end_ratio: float = 0.8
+    ss_warmup_epochs: int = 5
+    ss_anneal_epochs: int = 20
 
     # Inference
     n_rollouts: int = 100

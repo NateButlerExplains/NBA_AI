@@ -287,11 +287,25 @@ class GenerativeTrainer:
 
     # ---- Train epoch -------------------------------------------------------
 
+    def _get_teacher_forcing_ratio(self, epoch: int) -> float:
+        """Compute teacher forcing ratio for scheduled sampling."""
+        cfg = self.config.training
+        if not cfg.use_scheduled_sampling:
+            return 1.0
+        if epoch < cfg.ss_warmup_epochs:
+            return cfg.ss_start_ratio
+        progress = min(
+            (epoch - cfg.ss_warmup_epochs) / max(cfg.ss_anneal_epochs, 1),
+            1.0,
+        )
+        return cfg.ss_start_ratio + progress * (cfg.ss_end_ratio - cfg.ss_start_ratio)
+
     def _train_epoch(self, epoch: int) -> dict:
         """Single training epoch with gradient accumulation."""
         self.model.train()
         accum = self.config.training.gradient_accumulation_steps
         log_interval = self.config.training.log_every_n_steps
+        tf_ratio = self._get_teacher_forcing_ratio(epoch)
 
         running_loss = 0.0
         running_score_loss = 0.0
@@ -309,7 +323,7 @@ class GenerativeTrainer:
                 continue
 
             batch = self._to_device(batch)
-            losses = self._accumulate_step(batch, accum)
+            losses = self._accumulate_step(batch, accum, tf_ratio)
 
             running_loss += losses["total"]
             running_score_loss += losses["score_loss"]
@@ -357,11 +371,13 @@ class GenerativeTrainer:
             "pre_win_loss": running_pre_win_loss / n,
         }
 
-    def _accumulate_step(self, batch: dict, accum_steps: int) -> dict:
+    def _accumulate_step(
+        self, batch: dict, accum_steps: int, tf_ratio: float = 1.0
+    ) -> dict:
         """Forward + backward for one micro-batch.  Returns raw loss values."""
         if self.use_amp:
             with autocast("cuda", dtype=self.amp_dtype):
-                predictions = self.model(batch)
+                predictions = self.model(batch, teacher_forcing_ratio=tf_ratio)
                 targets = self._extract_targets(batch)
                 losses = self.criterion(predictions, targets)
                 scaled = losses["total"] / accum_steps
@@ -375,7 +391,7 @@ class GenerativeTrainer:
 
             self.scaler.scale(scaled).backward()
         else:
-            predictions = self.model(batch)
+            predictions = self.model(batch, teacher_forcing_ratio=tf_ratio)
             targets = self._extract_targets(batch)
             losses = self.criterion(predictions, targets)
             scaled = losses["total"] / accum_steps
@@ -635,12 +651,14 @@ class GenerativeTrainer:
             f"{SCORE_CLASS_NAMES[c]}={val_metrics.get(f'acc_{SCORE_CLASS_NAMES[c]}', 0):.3f}"
             for c in range(self.config.model.n_score_classes)
         )
+        tf_ratio = self._get_teacher_forcing_ratio(epoch)
+        tf_str = f", tf_ratio={tf_ratio:.2f}" if tf_ratio < 1.0 else ""
         logger.info(
             f"Epoch {epoch + 1}: "
             f"train_loss={train_metrics['loss']:.4f}, "
             f"val_loss={val_metrics['loss']:.4f}, "
             f"score_acc={val_metrics.get('score_accuracy', 0):.3f}, "
-            f"time={epoch_time:.0f}s"
+            f"time={epoch_time:.0f}s{tf_str}"
         )
         ctx_margin_mae = val_metrics.get("context_margin_mae", 0)
         logger.info(

@@ -149,6 +149,7 @@ class GenerativeCacheBuilder:
         self._fetch_eligible_games()
         self._build_game_state_cache()
         self._build_context_cache()
+        self._build_rolling_stats_cache()
         self._save_metadata()
 
     def _fetch_eligible_games(self):
@@ -578,6 +579,229 @@ class GenerativeCacheBuilder:
                 result[game_id][team] = result[game_id][team][:max_players]
 
         return result
+
+    def _build_rolling_stats_cache(self):
+        """Build pre-computed rolling aggregate stats per team per game.
+
+        Computes 24 features per team using a 20-game rolling window (shift-by-1
+        to prevent leakage). Features cover scoring, efficiency, pace, momentum,
+        and schedule context.
+
+        Saves to context/rolling_stats.pt as {game_id: {
+            home_stats: [24 floats], away_stats: [24 floats],
+            home_team_idx: int, away_team_idx: int
+        }}
+        """
+        import pandas as pd
+
+        logger.info("Building rolling stats cache...")
+
+        # Fetch TeamBox + Games data
+        season_placeholders = ",".join(["?"] * len(self.seasons))
+        query = f"""
+            SELECT g.game_id, g.date_time_utc, g.home_team, g.away_team, g.season,
+                   t.abbreviation as team_abbrev,
+                   tb.pts, tb.pts_allowed, tb.fga, tb.fgm, tb.fg3a, tb.fg3m,
+                   tb.fta, tb.ftm, tb.tov, tb.ast, tb.reb
+            FROM TeamBox tb
+            JOIN Games g ON tb.game_id = g.game_id
+            JOIN Teams t ON tb.team_id = t.team_id
+            WHERE g.season IN ({season_placeholders})
+              AND g.status = 3
+              AND g.game_id NOT LIKE '003%'
+            ORDER BY g.date_time_utc
+        """
+        with get_db(self.db_path) as conn:
+            rows = conn.execute(query, self.seasons).fetchall()
+
+        cols = [
+            "game_id",
+            "date",
+            "home_team",
+            "away_team",
+            "season",
+            "team_abbrev",
+            "pts",
+            "pts_allowed",
+            "fga",
+            "fgm",
+            "fg3a",
+            "fg3m",
+            "fta",
+            "ftm",
+            "tov",
+            "ast",
+            "reb",
+        ]
+        df = pd.DataFrame(rows, columns=cols)
+        df["team_abbrev"] = df["team_abbrev"].map(
+            lambda x: HISTORICAL_TO_CURRENT.get(x, x)
+        )
+        df["home_team"] = df["home_team"].map(lambda x: HISTORICAL_TO_CURRENT.get(x, x))
+        df["away_team"] = df["away_team"].map(lambda x: HISTORICAL_TO_CURRENT.get(x, x))
+        df["date"] = pd.to_datetime(df["date"])
+
+        # Determine if team was home in this game
+        df["is_home"] = (df["team_abbrev"] == df["home_team"]).astype(float)
+
+        # Derived stats
+        df["margin"] = df["pts"] - df["pts_allowed"]
+        df["total"] = df["pts"] + df["pts_allowed"]
+        df["win"] = (df["margin"] > 0).astype(float)
+        # Effective FG%
+        df["efg"] = (df["fgm"] + 0.5 * df["fg3m"]) / df["fga"].clip(lower=1)
+        # 3PT attempt rate
+        df["fg3a_rate"] = df["fg3a"] / df["fga"].clip(lower=1)
+        # FT rate
+        df["ft_rate"] = df["fta"] / df["fga"].clip(lower=1)
+        # True shooting %
+        df["ts_pct"] = df["pts"] / (2 * (df["fga"] + 0.44 * df["fta"]).clip(lower=1))
+        # Simplified pace: possessions ≈ fga - 0.44*fta + tov
+        df["pace"] = df["fga"] - 0.44 * df["fta"] + df["tov"]
+        # Assist ratio
+        df["ast_ratio"] = df["ast"] / df["fgm"].clip(lower=1)
+        # Turnover rate
+        df["tov_rate"] = df["tov"] / df["pace"].clip(lower=1)
+
+        # Sort and compute per-team rolling stats
+        df = df.sort_values(["team_abbrev", "season", "date"])
+        window = 20
+        min_p = 3
+
+        rolling_features = {}  # game_id -> {team_abbrev -> features_list}
+
+        for (team, season), group in df.groupby(["team_abbrev", "season"]):
+            g = group.reset_index(drop=True)
+            n = len(g)
+            if n < min_p:
+                continue
+
+            # Compute rolling stats (shifted by 1 to exclude current game)
+            for i in range(min_p, n):
+                window_df = g.iloc[max(0, i - window) : i]  # prior games only
+
+                game_id = g.iloc[i]["game_id"]
+                game_date = g.iloc[i]["date"]
+
+                # Rest days
+                prev_date = g.iloc[i - 1]["date"]
+                rest_days = (game_date - prev_date).days
+                rest_days = min(max(rest_days, 0), 7)
+
+                # Win streak
+                recent_wins = window_df["win"].values
+                streak = 0
+                for w in reversed(recent_wins):
+                    if w == 1.0:
+                        streak += 1
+                    else:
+                        streak = -(len(recent_wins) - sum(recent_wins))
+                        # Count consecutive losses from end
+                        streak = 0
+                        for w2 in reversed(recent_wins):
+                            if w2 == 0.0:
+                                streak -= 1
+                            else:
+                                break
+                        break
+
+                # Compute EWM stats
+                ewm10 = (
+                    window_df["margin"]
+                    .ewm(span=min(10, len(window_df)), min_periods=1)
+                    .mean()
+                    .iloc[-1]
+                )
+                ewm20 = (
+                    window_df["margin"]
+                    .ewm(span=min(20, len(window_df)), min_periods=1)
+                    .mean()
+                    .iloc[-1]
+                )
+                ewm_win10 = (
+                    window_df["win"]
+                    .ewm(span=min(10, len(window_df)), min_periods=1)
+                    .mean()
+                    .iloc[-1]
+                )
+                ewm_ortg = (
+                    window_df["pts"]
+                    .ewm(span=min(10, len(window_df)), min_periods=1)
+                    .mean()
+                    .iloc[-1]
+                )
+                ewm_drtg = (
+                    window_df["pts_allowed"]
+                    .ewm(span=min(10, len(window_df)), min_periods=1)
+                    .mean()
+                    .iloc[-1]
+                )
+
+                # 24 features (pre-normalized to ~[0, 1] or [-1, 1])
+                features = [
+                    window_df["pts"].mean() / 150.0,  # 0: avg pts scored
+                    window_df["pts_allowed"].mean() / 150.0,  # 1: avg pts allowed
+                    window_df["margin"].mean() / 50.0,  # 2: avg margin
+                    window_df["total"].mean() / 300.0,  # 3: avg total
+                    (
+                        window_df["pts"].std() / 30.0 if len(window_df) > 1 else 0.0
+                    ),  # 4: pts std
+                    (
+                        window_df["margin"].std() / 30.0 if len(window_df) > 1 else 0.0
+                    ),  # 5: margin std
+                    window_df["win"].mean(),  # 6: win pct
+                    max(-10, min(10, streak)) / 10.0,  # 7: streak
+                    window_df["efg"].mean(),  # 8: eFG%
+                    window_df["fg3a_rate"].mean(),  # 9: 3PT attempt rate
+                    window_df["ft_rate"].mean(),  # 10: FT rate
+                    window_df["ts_pct"].mean(),  # 11: TS%
+                    window_df["pace"].mean() / 100.0,  # 12: pace
+                    window_df["ast_ratio"].mean() / 3.0,  # 13: ast ratio
+                    window_df["pts_allowed"].mean()
+                    / 150.0,  # 14: defensive rating proxy
+                    window_df["tov_rate"].mean(),  # 15: TOV rate
+                    rest_days / 7.0,  # 16: rest days
+                    float(g.iloc[i]["is_home"]),  # 17: is home
+                    i / 82.0,  # 18: games played (season progress)
+                    ewm10 / 50.0,  # 19: EWM margin span 10
+                    ewm20 / 50.0,  # 20: EWM margin span 20
+                    ewm_win10,  # 21: EWM win% span 10
+                    ewm_ortg / 120.0,  # 22: EWM offensive rating
+                    ewm_drtg / 120.0,  # 23: EWM defensive rating
+                ]
+
+                if game_id not in rolling_features:
+                    rolling_features[game_id] = {}
+                rolling_features[game_id][team] = features
+
+        # Now build per-game dict keyed by game_id
+        rolling_stats = {}
+        for game_id, teams_data in rolling_features.items():
+            feat = self.game_features if hasattr(self, "game_features") else None
+            # Look up home/away teams from the game
+            # We need game metadata - check if we stored it
+            # Use the first row's data from the original df
+            game_rows = df[df["game_id"] == game_id]
+            if game_rows.empty:
+                continue
+
+            home_team = game_rows.iloc[0]["home_team"]
+            away_team = game_rows.iloc[0]["away_team"]
+
+            if home_team not in teams_data or away_team not in teams_data:
+                continue
+
+            rolling_stats[game_id] = {
+                "home_stats": teams_data[home_team],
+                "away_stats": teams_data[away_team],
+                "home_team_idx": TEAM_TO_IDX.get(home_team, 0),
+                "away_team_idx": TEAM_TO_IDX.get(away_team, 0),
+            }
+
+        torch.save(rolling_stats, self.context_dir / "rolling_stats.pt")
+        logger.info(
+            f"Saved rolling_stats: {len(rolling_stats)} games with 24 features per team"
+        )
 
     def _save_metadata(self):
         """Save dataset statistics and build metadata."""

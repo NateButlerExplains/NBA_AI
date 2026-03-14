@@ -25,7 +25,9 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train Phase 4 generative model")
     parser.add_argument("--config", required=True, help="Path to YAML config file")
-    parser.add_argument("--resume", default=None, help="Resume training from checkpoint path")
+    parser.add_argument(
+        "--resume", default=None, help="Resume training from checkpoint path"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -46,9 +48,17 @@ def main() -> None:
         torch.cuda.manual_seed_all(seed)
 
     # ---- Datasets ----------------------------------------------------------
-    train_ds = GenerativeDataset(config.data, split="train")
-    val_ds = GenerativeDataset(config.data, split="val")
-    test_ds = GenerativeDataset(config.data, split="test")
+    use_simple = config.model.use_simplified_context
+    use_compressed = config.model.use_scoring_events_only
+    max_se = config.model.max_scoring_events
+    ds_kwargs = dict(
+        use_simplified_context=use_simple,
+        use_scoring_events_only=use_compressed,
+        max_scoring_events=max_se,
+    )
+    train_ds = GenerativeDataset(config.data, split="train", **ds_kwargs)
+    val_ds = GenerativeDataset(config.data, split="val", **ds_kwargs)
+    test_ds = GenerativeDataset(config.data, split="test", **ds_kwargs)
 
     train_loader = DataLoader(
         train_ds,
@@ -76,7 +86,9 @@ def main() -> None:
         collate_fn=generative_collate,
     )
 
-    logger.info(f"Train: {len(train_ds)} games, Val: {len(val_ds)} games, Test: {len(test_ds)} games")
+    logger.info(
+        f"Train: {len(train_ds)} games, Val: {len(val_ds)} games, Test: {len(test_ds)} games"
+    )
 
     # ---- Model -------------------------------------------------------------
     model = GenerativeModel(config.model)

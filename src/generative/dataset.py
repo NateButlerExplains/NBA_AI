@@ -21,22 +21,22 @@ logger = logging.getLogger(__name__)
 # Normalization constants for the 16 PlayerBox stats
 # [min, pts, oreb, dreb, ast, stl, blk, tov, pf, fga, fgm, fg3a, fg3m, fta, ftm, plus_minus]
 STAT_NORMS = [
-    48.0,   # min (max ~48)
-    50.0,   # pts
-    10.0,   # oreb
-    15.0,   # dreb
-    15.0,   # ast
-    5.0,    # stl
-    5.0,    # blk
-    10.0,   # tov
-    6.0,    # pf
-    30.0,   # fga
-    20.0,   # fgm
-    15.0,   # fg3a
-    10.0,   # fg3m
-    15.0,   # fta
-    12.0,   # ftm
-    50.0,   # plus_minus
+    48.0,  # min (max ~48)
+    50.0,  # pts
+    10.0,  # oreb
+    15.0,  # dreb
+    15.0,  # ast
+    5.0,  # stl
+    5.0,  # blk
+    10.0,  # tov
+    6.0,  # pf
+    30.0,  # fga
+    20.0,  # fgm
+    15.0,  # fg3a
+    10.0,  # fg3m
+    15.0,  # fta
+    12.0,  # ftm
+    50.0,  # plus_minus
 ]
 
 
@@ -61,6 +61,9 @@ class GenerativeDataset(Dataset):
         data_config: GenerativeDataConfig,
         split: Optional[str] = None,
         seasons: Optional[list[str]] = None,
+        use_simplified_context: bool = False,
+        use_scoring_events_only: bool = False,
+        max_scoring_events: int = 200,
     ) -> None:
         self.config = data_config
         self.cache_dir = Path(data_config.cache_dir)
@@ -69,6 +72,9 @@ class GenerativeDataset(Dataset):
         self.min_history_games = data_config.min_history_games
         self.max_players = data_config.max_players_per_game
         self.max_seq_len = data_config.max_seq_len
+        self.use_simplified_context = use_simplified_context
+        self.use_scoring_events_only = use_scoring_events_only
+        self.max_scoring_events = max_scoring_events
 
         # Determine seasons for this split
         if seasons is not None:
@@ -89,12 +95,19 @@ class GenerativeDataset(Dataset):
         self.game_features = torch.load(
             self.cache_dir / "context" / "game_features.pt", weights_only=False
         )
-        self.player_id_map = torch.load(
-            self.cache_dir / "context" / "player_id_map.pt", weights_only=False
-        )
-        self.team_id_map = torch.load(
-            self.cache_dir / "context" / "team_id_map.pt", weights_only=False
-        )
+
+        if self.use_simplified_context:
+            # Load pre-computed rolling stats
+            self.rolling_stats = torch.load(
+                self.cache_dir / "context" / "rolling_stats.pt", weights_only=False
+            )
+        else:
+            self.player_id_map = torch.load(
+                self.cache_dir / "context" / "player_id_map.pt", weights_only=False
+            )
+            self.team_id_map = torch.load(
+                self.cache_dir / "context" / "team_id_map.pt", weights_only=False
+            )
 
         # Build list of eligible game_ids (those with state cache files + enough history)
         self.game_ids = self._build_game_list()
@@ -132,17 +145,22 @@ class GenerativeDataset(Dataset):
             if not state_path.exists():
                 continue
 
-            # Check enough history for both teams
-            home = features["home_team"]
-            away = features["away_team"]
+            if self.use_simplified_context:
+                # Just need rolling stats to exist for this game
+                if game_id not in self.rolling_stats:
+                    continue
+            else:
+                # Check enough history for both teams
+                home = features["home_team"]
+                away = features["away_team"]
 
-            home_prior = self._get_prior_games(home, season, game_id)
-            away_prior = self._get_prior_games(away, season, game_id)
+                home_prior = self._get_prior_games(home, season, game_id)
+                away_prior = self._get_prior_games(away, season, game_id)
 
-            if len(home_prior) < self.min_history_games:
-                continue
-            if len(away_prior) < self.min_history_games:
-                continue
+                if len(home_prior) < self.min_history_games:
+                    continue
+                if len(away_prior) < self.min_history_games:
+                    continue
 
             game_ids.append(game_id)
 
@@ -171,8 +189,11 @@ class GenerativeDataset(Dataset):
         # This is unreliable — try matching against known seasons
         for season in self.seasons:
             team_key = next(
-                ((t, season) for t in TEAM_TO_IDX
-                 if game_id in self.season_games.get((t, season), [])),
+                (
+                    (t, season)
+                    for t in TEAM_TO_IDX
+                    if game_id in self.season_games.get((t, season), [])
+                ),
                 None,
             )
             if team_key:
@@ -215,11 +236,23 @@ class GenerativeDataset(Dataset):
         clock_targets = state_cache["clock_targets"]  # (T-1,)
         final_margin = float(state_cache["final_margin"])
 
-        # Truncate to max_seq_len
-        if states.shape[0] > self.max_seq_len:
-            states = states[: self.max_seq_len]
-            score_events = score_events[: self.max_seq_len - 1]
-            clock_targets = clock_targets[: self.max_seq_len - 1]
+        if self.use_scoring_events_only:
+            sample_data = self._compress_to_scoring_events(
+                states, score_events, final_margin
+            )
+            if sample_data is None:
+                return None
+        else:
+            # Truncate to max_seq_len
+            if states.shape[0] > self.max_seq_len:
+                states = states[: self.max_seq_len]
+                score_events = score_events[: self.max_seq_len - 1]
+                clock_targets = clock_targets[: self.max_seq_len - 1]
+            sample_data = {
+                "states": states,
+                "score_events": score_events,
+                "clock_targets": clock_targets,
+            }
 
         # Build context for both teams
         features = self.game_features[game_id]
@@ -231,24 +264,142 @@ class GenerativeDataset(Dataset):
 
         sample = {
             "game_id": game_id,
-            "states": states,
-            "score_events": score_events,
-            "clock_targets": clock_targets,
             "final_margin": torch.tensor(final_margin, dtype=torch.float32),
+            **sample_data,
         }
 
-        # Build context for home and away
-        for side, team, is_home in [
-            ("home", home_team, True),
-            ("away", away_team, False),
-        ]:
-            ctx = self._build_team_context(team, season, game_id, target_date, is_home)
-            if ctx is None:
-                return None
-            for key, val in ctx.items():
-                sample[f"{side}_{key}"] = val
+        if self.use_simplified_context:
+            # Use pre-computed rolling stats
+            rs = self.rolling_stats[game_id]
+            sample["home_rolling_stats"] = torch.tensor(
+                rs["home_stats"], dtype=torch.float32
+            )
+            sample["away_rolling_stats"] = torch.tensor(
+                rs["away_stats"], dtype=torch.float32
+            )
+            sample["home_team_idx"] = torch.tensor(
+                rs["home_team_idx"], dtype=torch.long
+            )
+            sample["away_team_idx"] = torch.tensor(
+                rs["away_team_idx"], dtype=torch.long
+            )
+        else:
+            # Build full context for home and away
+            for side, team, is_home in [
+                ("home", home_team, True),
+                ("away", away_team, False),
+            ]:
+                ctx = self._build_team_context(
+                    team, season, game_id, target_date, is_home
+                )
+                if ctx is None:
+                    return None
+                for key, val in ctx.items():
+                    sample[f"{side}_{key}"] = val
 
         return sample
+
+    def _compress_to_scoring_events(
+        self,
+        states: torch.Tensor,
+        score_events: torch.Tensor,
+        final_margin: float,
+    ) -> Optional[dict]:
+        """Compress full state sequence to scoring events only.
+
+        Filters to positions where a score change occurs, adds inter-event
+        time as an 8th state feature, and remaps event classes:
+          Original: {0:none, 1:h+1, 2:h+2, 3:h+3, 4:a+1, 5:a+2, 6:a+3}
+          Compressed: {0:h+1, 1:h+2, 2:h+3, 3:a+1, 4:a+2, 5:a+3, 6:game_end}
+
+        Returns dict with:
+            states: (S+1, 8) — scoring event states + initial state, with inter-event time
+            score_events: (S,) — remapped targets (what event happens AFTER each state)
+            clock_targets: (S,) — clock of next scoring event
+        where S = number of scoring events (capped at max_scoring_events).
+        """
+        # Find positions where scoring occurs (in score_events, which is T-1 long)
+        scoring_mask = score_events > 0  # bool, (T-1,)
+        scoring_indices = scoring_mask.nonzero(as_tuple=True)[
+            0
+        ]  # indices into score_events
+
+        if len(scoring_indices) < 2:
+            return None
+
+        # Cap at max scoring events
+        if len(scoring_indices) > self.max_scoring_events:
+            scoring_indices = scoring_indices[: self.max_scoring_events]
+
+        S = len(scoring_indices)
+
+        # Build compressed state sequence:
+        # Position 0 = initial game state (0-0, P1, 720s)
+        # Positions 1..S = states at each scoring event
+        # The state at scoring_indices[i] in the original is the state BEFORE
+        # the score event. We want the state AFTER, which is states[scoring_indices[i]+1].
+
+        # Actually, let's think about this carefully:
+        # score_events[i] describes what happens between states[i] and states[i+1]
+        # So if score_events[k] > 0, the scoring event occurs at position k,
+        # and states[k+1] reflects the updated score.
+        #
+        # For the compressed sequence:
+        # - Input state at position j = the state AFTER the j-th scoring event
+        #   (i.e., states[scoring_indices[j] + 1])
+        # - Target at position j = the (j+1)-th scoring event class
+        # - The initial state (before any scoring) = states[0]
+
+        # Gather state vectors: initial + after each scoring event
+        state_indices = torch.zeros(S + 1, dtype=torch.long)
+        state_indices[0] = 0  # initial state
+        state_indices[1:] = scoring_indices + 1  # state after each scoring event
+
+        compressed_states_7d = states[state_indices]  # (S+1, 7)
+
+        # Compute inter-event time (seconds between consecutive scoring events)
+        # game_progress is at index 2, range [0, 1] over 2880 seconds
+        progress = compressed_states_7d[:, 2]  # (S+1,)
+        time_seconds = progress * 2880.0  # absolute elapsed seconds
+        inter_event_time = torch.zeros(S + 1, dtype=torch.float32)
+        inter_event_time[1:] = time_seconds[1:] - time_seconds[:-1]
+        # Normalize: typical inter-event time ~20-30s, max ~120s
+        inter_event_time = inter_event_time / 120.0
+
+        # Build 8-dim state: original 7 + inter-event time
+        compressed_states = torch.cat(
+            [compressed_states_7d, inter_event_time.unsqueeze(-1)], dim=-1
+        )  # (S+1, 8)
+
+        # Build targets: remap classes (remove no_score class)
+        # Original: 1→h+1, 2→h+2, 3→h+3, 4→a+1, 5→a+2, 6→a+3
+        # Remapped: 0→h+1, 1→h+2, 2→h+3, 3→a+1, 4→a+2, 5→a+3, 6→game_end
+        raw_events = score_events[scoring_indices]  # (S,) values 1-6
+        remapped_events = raw_events - 1  # shift to 0-5
+
+        # Targets for the compressed sequence:
+        # Position j predicts what the NEXT scoring event is.
+        # Positions 0..S-2 predict events at scoring_indices[1..S-1]
+        # Position S-1 predicts game_end (class 6)
+        targets = torch.zeros(S, dtype=torch.int64)
+        targets[:-1] = remapped_events[1:]  # next event's class
+        targets[-1] = 6  # game_end
+
+        # Clock targets: game_progress of the next scoring event
+        # Using game_progress (index 2, monotonic 0→1) instead of clock_norm
+        # (index 1, resets each period) for better rollout tracking
+        clock_targets = torch.zeros(S, dtype=torch.float32)
+        for j in range(S - 1):
+            next_state_idx = scoring_indices[j + 1] + 1
+            clock_targets[j] = states[next_state_idx, 2]  # game_progress
+        # Last position: game over = progress 1.0
+        clock_targets[-1] = 1.0
+
+        return {
+            "states": compressed_states,  # (S+1, 8)
+            "score_events": targets,  # (S,)
+            "clock_targets": clock_targets,  # (S,)
+        }
 
     def _build_team_context(
         self,
@@ -389,9 +540,10 @@ def generative_collate(batch: list[Optional[dict]]) -> Optional[dict]:
 
     # --- Game state padding ---
     max_T = max(b["states"].shape[0] for b in batch)
+    state_dim = batch[0]["states"].shape[-1]  # 7 (full) or 8 (compressed)
     max_events = max_T - 1  # score_events and clock_targets have T-1 entries
 
-    states = torch.zeros(B, max_T, 7, dtype=torch.float32)
+    states = torch.zeros(B, max_T, state_dim, dtype=torch.float32)
     score_events = torch.zeros(B, max_events, dtype=torch.int64)
     clock_targets = torch.zeros(B, max_events, dtype=torch.float32)
     state_mask = torch.zeros(B, max_events, dtype=torch.bool)
@@ -413,40 +565,56 @@ def generative_collate(batch: list[Optional[dict]]) -> Optional[dict]:
         "final_margin": final_margin,
     }
 
-    # --- Context padding (per side) ---
-    for side in ["home", "away"]:
-        max_G = max(b[f"{side}_scores"].shape[0] for b in batch)
-        P = batch[0][f"{side}_player_ids"].shape[1]  # already fixed at max_players
+    # --- Context: simplified (rolling stats) or full (player-level) ---
+    if "home_rolling_stats" in batch[0]:
+        # Simplified context: fixed-size tensors, just stack
+        result["home_rolling_stats"] = torch.stack(
+            [b["home_rolling_stats"] for b in batch]
+        )  # (B, 24)
+        result["away_rolling_stats"] = torch.stack(
+            [b["away_rolling_stats"] for b in batch]
+        )  # (B, 24)
+        result["home_team_idx"] = torch.stack(
+            [b["home_team_idx"] for b in batch]
+        )  # (B,)
+        result["away_team_idx"] = torch.stack(
+            [b["away_team_idx"] for b in batch]
+        )  # (B,)
+    else:
+        # Full context padding (per side)
+        for side in ["home", "away"]:
+            max_G = max(b[f"{side}_scores"].shape[0] for b in batch)
+            P = batch[0][f"{side}_player_ids"].shape[1]
 
-        side_scores = torch.zeros(B, max_G, 4, dtype=torch.float32)
-        side_opponents = torch.zeros(B, max_G, dtype=torch.long)
-        side_locations = torch.zeros(B, max_G, dtype=torch.long)
-        side_player_ids = torch.zeros(B, max_G, P, dtype=torch.long)
-        side_player_stats = torch.zeros(B, max_G, P, 16, dtype=torch.float32)
-        side_player_mask = torch.zeros(B, max_G, P, dtype=torch.bool)
-        side_days_before = torch.zeros(B, max_G, dtype=torch.float32)
-        side_game_mask = torch.zeros(B, max_G, dtype=torch.bool)
-        side_rest_days = torch.stack([b[f"{side}_rest_days"] for b in batch])
+            side_scores = torch.zeros(B, max_G, 4, dtype=torch.float32)
+            side_opponents = torch.zeros(B, max_G, dtype=torch.long)
+            side_locations = torch.zeros(B, max_G, dtype=torch.long)
+            side_player_ids = torch.zeros(B, max_G, P, dtype=torch.long)
+            side_player_stats = torch.zeros(B, max_G, P, 16, dtype=torch.float32)
+            side_player_mask = torch.zeros(B, max_G, P, dtype=torch.bool)
+            side_days_before = torch.zeros(B, max_G, dtype=torch.float32)
+            side_game_mask = torch.zeros(B, max_G, dtype=torch.bool)
+            side_rest_days = torch.stack([b[f"{side}_rest_days"] for b in batch])
 
-        for i, b in enumerate(batch):
-            G = b[f"{side}_scores"].shape[0]
-            side_scores[i, :G] = b[f"{side}_scores"]
-            side_opponents[i, :G] = b[f"{side}_opponents"]
-            side_locations[i, :G] = b[f"{side}_locations"]
-            side_player_ids[i, :G] = b[f"{side}_player_ids"]
-            side_player_stats[i, :G] = b[f"{side}_player_stats"]
-            side_player_mask[i, :G] = b[f"{side}_player_mask"]
-            side_days_before[i, :G] = b[f"{side}_days_before"]
-            side_game_mask[i, :G] = True
+            for i, b in enumerate(batch):
+                G = b[f"{side}_scores"].shape[0]
+                side_scores[i, :G] = b[f"{side}_scores"]
+                side_opponents[i, :G] = b[f"{side}_opponents"]
+                side_locations[i, :G] = b[f"{side}_locations"]
+                side_player_ids[i, :G] = b[f"{side}_player_ids"]
+                side_player_stats[i, :G] = b[f"{side}_player_stats"]
+                side_player_mask[i, :G] = b[f"{side}_player_mask"]
+                side_days_before[i, :G] = b[f"{side}_days_before"]
+                side_game_mask[i, :G] = True
 
-        result[f"{side}_scores"] = side_scores
-        result[f"{side}_opponents"] = side_opponents
-        result[f"{side}_locations"] = side_locations
-        result[f"{side}_player_ids"] = side_player_ids
-        result[f"{side}_player_stats"] = side_player_stats
-        result[f"{side}_player_mask"] = side_player_mask
-        result[f"{side}_days_before"] = side_days_before
-        result[f"{side}_game_mask"] = side_game_mask
-        result[f"{side}_rest_days"] = side_rest_days
+            result[f"{side}_scores"] = side_scores
+            result[f"{side}_opponents"] = side_opponents
+            result[f"{side}_locations"] = side_locations
+            result[f"{side}_player_ids"] = side_player_ids
+            result[f"{side}_player_stats"] = side_player_stats
+            result[f"{side}_player_mask"] = side_player_mask
+            result[f"{side}_days_before"] = side_days_before
+            result[f"{side}_game_mask"] = side_game_mask
+            result[f"{side}_rest_days"] = side_rest_days
 
     return result
