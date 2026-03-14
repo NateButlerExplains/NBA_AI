@@ -22,7 +22,9 @@ def sinusoidal_encoding(positions: torch.Tensor, dim: int) -> torch.Tensor:
     Returns:
         (..., dim) sinusoidal encoding.
     """
-    pe = torch.zeros(*positions.shape, dim, device=positions.device, dtype=positions.dtype)
+    pe = torch.zeros(
+        *positions.shape, dim, device=positions.device, dtype=positions.dtype
+    )
     div_term = torch.exp(
         torch.arange(0, dim, 2, device=positions.device, dtype=positions.dtype)
         * -(math.log(10000.0) / dim)
@@ -60,7 +62,10 @@ class TemporalEncoder(nn.Module):
 
         # Attention pooling: 4 queries → concat → project
         n_queries = config.temporal_n_pool_queries
-        self.pool_queries = nn.Parameter(torch.randn(1, n_queries, config.hidden_dim) * 0.02)
+        self.pool_queries = nn.Parameter(
+            torch.randn(1, n_queries, config.hidden_dim)
+            * (1.0 / config.hidden_dim**0.5)
+        )
         self.pool_attn = nn.MultiheadAttention(
             embed_dim=config.hidden_dim,
             num_heads=config.temporal_heads,
@@ -99,7 +104,9 @@ class TemporalEncoder(nn.Module):
         src_key_padding_mask = ~game_mask  # (B, G)
 
         # Transformer encoding
-        x = self.transformer(x, src_key_padding_mask=src_key_padding_mask)  # (B, G, 512)
+        x = self.transformer(
+            x, src_key_padding_mask=src_key_padding_mask
+        )  # (B, G, 512)
 
         # Attention pooling with 4 queries
         queries = self.pool_queries.expand(B, -1, -1)  # (B, 4, 512)

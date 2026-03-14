@@ -22,13 +22,18 @@ class PlayerEncoder(nn.Module):
     single 256-d vector.
     """
 
-    def __init__(self, config: GenerativeModelConfig, player_embed: nn.Embedding) -> None:
+    def __init__(
+        self, config: GenerativeModelConfig, player_embed: nn.Embedding
+    ) -> None:
         super().__init__()
         self.player_embed = player_embed  # shared, (n_players, player_embed_dim=128)
 
         # Project raw stats (16-d) → stat_dim (64-d)
         self.stat_proj = nn.Sequential(
-            nn.Linear(config.n_player_stats if hasattr(config, "n_player_stats") else 16, config.player_stat_dim),
+            nn.Linear(
+                config.n_player_stats if hasattr(config, "n_player_stats") else 16,
+                config.player_stat_dim,
+            ),
             nn.GELU(),
         )
 
@@ -40,7 +45,10 @@ class PlayerEncoder(nn.Module):
         )
 
         # Attention pooling: 1 learned query, 4 heads
-        self.pool_query = nn.Parameter(torch.randn(1, 1, config.player_hidden_dim) * 0.02)
+        self.pool_query = nn.Parameter(
+            torch.randn(1, 1, config.player_hidden_dim)
+            * (1.0 / config.player_hidden_dim**0.5)
+        )
         self.pool_attn = nn.MultiheadAttention(
             embed_dim=config.player_hidden_dim,
             num_heads=config.player_pool_heads,
@@ -79,6 +87,14 @@ class PlayerEncoder(nn.Module):
         # Build key_padding_mask for attention: True means IGNORE in PyTorch MHA
         key_padding_mask = ~player_mask  # (B, P) — True for invalid/padded players
 
+        # Handle edge case: if ALL players are masked for a sample, attention
+        # softmax over all -inf produces NaN. Temporarily unmask one position
+        # so softmax is well-defined, then zero out those rows afterward.
+        all_masked = key_padding_mask.all(dim=-1)  # (B,)
+        if all_masked.any():
+            key_padding_mask = key_padding_mask.clone()
+            key_padding_mask[all_masked, 0] = False  # unmask first position
+
         # Expand query for batch: (B, 1, 256)
         query = self.pool_query.expand(B, -1, -1)
 
@@ -91,4 +107,10 @@ class PlayerEncoder(nn.Module):
         )
 
         # (B, 1, 256) → (B, 256)
-        return pooled.squeeze(1)
+        result = pooled.squeeze(1)
+
+        # Zero out rows where all players were masked (no valid player data)
+        if all_masked.any():
+            result = result.masked_fill(all_masked.unsqueeze(-1), 0.0)
+
+        return result

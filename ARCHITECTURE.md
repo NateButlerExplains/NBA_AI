@@ -100,6 +100,132 @@ All data comes from existing database tables — no external APIs required.
 
 ---
 
+## Data Model
+
+### Database Strategy
+
+Three SQLite databases with proper subsetting (`current ⊂ dev ⊂ full`):
+
+| Database | Size | Games | Seasons | Purpose |
+|----------|------|-------|---------|--------|
+| `NBA_AI_current.sqlite` | 516 MB | 1,302 | 2025-2026 | Production (current season only) |
+| `NBA_AI_dev.sqlite` | 3.0 GB | 4,098 | 2023-2026 | Active development (3 seasons) |
+| `NBA_AI_full.sqlite` | 25 GB | 37,366 | 1999-2026 | Master archive (27 seasons) |
+
+- **Current**: Production web app, 1 season, lightweight for fast queries
+- **Dev**: Primary working database, set via `.env`: `DATABASE_PATH=data/NBA_AI_dev.sqlite`
+- **Full**: 27 seasons of historical data, used for GenAI training on full dataset
+
+### Data Availability by Season
+
+| Data Type | Available From | Notes |
+|-----------|---------------|-------|
+| PBP/GameStates | 2000-2001 | 1999-2000 predates NBA API |
+| Betting | 2007-2008 | Pre-2007 not on Covers.com |
+| InjuryReports | Dec 2018 | NBA Official PDFs started mid-2018-2019 |
+| PlayerBox/TeamBox | 2023-2024 | Historical backfill deferred |
+
+### Schema (16 Tables)
+
+| Table | Description |
+|-------|-------------|
+| Games | Master schedule and collection status |
+| PbP_Logs | Raw play-by-play JSON |
+| GameStates | Parsed game state snapshots |
+| Players | Player reference data |
+| Teams | Team reference data |
+| Features | Pre-game feature sets for ML (43 features) |
+| Predictions | Model predictions |
+| ScheduleCache | Season schedule cache |
+| PlayerBox | Player boxscore stats (16 stats per player) |
+| TeamBox | Team boxscore stats |
+| InjuryReports | NBA Official injury data |
+| ESPNGameMapping | NBA-to-ESPN game ID mapping |
+| Betting | Unified betting lines (single row per game) |
+| InjuryCache | Tracks fetched injury report dates |
+| PlayersCache | Tracks player data updates per season |
+| CoversAttempts | Tracks Covers.com scraping attempts |
+
+### Data Volumes
+
+**Dev Database** (as of Dec 2025):
+
+| Table | Rows | Notes |
+|-------|------|-------|
+| Games | 4,098 | 3 seasons (2023-2026) |
+| PbP_Logs | 1,693,116 | ~492 plays/game |
+| GameStates | 1,693,116 | 1:1 with PbP_Logs |
+| PlayerBox | 81,473 | ~26 players/game |
+| TeamBox | 6,162 | 2 per game |
+| Features | 3,100 | Games with prior data |
+| Predictions | 15,014 | Multiple predictors/game |
+| Players | 5,118 | All-time NBA players |
+| Teams | 30 | Current NBA teams |
+| InjuryReports | 26,235 | NBA Official injury data |
+| Betting | 3,080 | Single-row betting data (ESPN + Covers) |
+
+**Full Database** (as of Dec 2025):
+
+| Table | Rows | Notes |
+|-------|------|-------|
+| Games | 37,366 | 27 seasons (1999-2026) |
+| PbP_Logs | ~18M | Available 2000-2001 onwards |
+| GameStates | ~18M | 1:1 with PbP_Logs |
+| Betting | ~21,000 | 2007-2008 onwards (~93% coverage) |
+| PlayerBox | 81,473 | 2023-2026 only (backfill deferred) |
+| TeamBox | 6,162 | 2023-2026 only (backfill deferred) |
+| InjuryReports | 26,235 | Dec 2018 onwards |
+
+### External API Endpoints
+
+| # | Endpoint | URL / Source | Saved To |
+|---|----------|-------------|----------|
+| 1 | Schedule | `stats.nba.com/stats/scheduleleaguev2` | Games |
+| 2 | Play-by-Play (primary) | `cdn.nba.com/static/json/liveData/playbyplay/` | PbP_Logs |
+| 2b | Play-by-Play (fallback) | `stats.nba.com/stats/playbyplayv3` | PbP_Logs |
+| 3 | BoxScore | `BoxScoreTraditionalV3` via nba_api | PlayerBox, TeamBox |
+| 4 | Players | `stats.nba.com/stats/commonallplayers` | Players |
+| 5 | Injury Reports | `ak-static.cms.nba.com/.../Injury-Report_{date}_05PM.pdf` | InjuryReports |
+| 6 | ESPN Scoreboard | `site.api.espn.com/.../scoreboard` | ESPNGameMapping |
+| 7 | ESPN Summary | `site.api.espn.com/.../summary` (deprecated for injuries) | Betting |
+| 8 | Covers Matchups | `covers.com/sports/NBA/matchups` | Betting |
+| 9 | Covers Team Schedules | `covers.com/.../teams/main/{slug}/{season}` | Betting (backfill) |
+
+### Internal API Endpoints (Games API)
+
+**Module**: `src/games_api/api.py` (Flask, `http://127.0.0.1:5000`)
+
+| Method | Endpoint | Purpose | Key Params |
+|--------|----------|---------|------------|
+| GET | `/api/games` | Fetch games by date or IDs with predictions | `date`, `game_ids`, `predictor`, `update_predictions` |
+
+Returns game data with PBP, GameStates, and predictions (pre-game + live-blended current).
+
+### Data Flow Pipeline
+
+```
+Stage 1: Schedule Update
+├─ Fetch scheduleleaguev2 → Save to Games
+
+Stage 2: Players Update
+├─ Fetch commonallplayers → Save to Players
+
+Stage 3: Game Data Collection (game_data_finalized=0)
+├─ 3a: PbP (CDN or Stats API) → PbP_Logs
+├─ 3b: GameStates (parsed from PbP) → GameStates
+└─ 3c: Boxscores (BoxScoreTraditionalV3) → PlayerBox + TeamBox
+
+Stage 4: Pre-Game Data (pre_game_data_finalized=0)
+├─ Compute rolling averages, time-decay, schedule factors
+└─ Save 43 features per game → Features
+
+Stage 5: Predictions
+├─ Load models (Ridge, XGBoost, MLP)
+└─ Predict home_score, away_score, win_prob → Predictions
+```
+
+---
+
 ## Phase 1 Summary
 
 Phase 1 explored four data streams across 15 experiments using a two-stream PBP transformer (5.7-6.2M params). Each team's last 5 games of play-by-play data were encoded through a 4-layer transformer, processed by temporal attention, and fused for prediction. The architecture tested PBP-only, GameStates-only, roster, schedule, and combined configurations.

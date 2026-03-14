@@ -37,8 +37,13 @@ logger = logging.getLogger(__name__)
 
 # ---- Score-event class names (for logging) ---------------------------------
 SCORE_CLASS_NAMES = [
-    "no_score", "home+1", "home+2", "home+3",
-    "away+1", "away+2", "away+3",
+    "no_score",
+    "home+1",
+    "home+2",
+    "home+3",
+    "away+1",
+    "away+2",
+    "away+3",
 ]
 
 
@@ -94,6 +99,8 @@ class GenerativeTrainer:
             score_weight=config.training.score_loss_weight,
             clock_weight=config.training.clock_loss_weight,
             context_weight=config.training.context_loss_weight,
+            pre_margin_weight=config.training.pre_margin_weight,
+            pre_win_weight=config.training.pre_win_weight,
             class_weights=class_weights,
         )
 
@@ -185,7 +192,9 @@ class GenerativeTrainer:
         min_lr = opt.learning_rate * opt.min_lr_ratio
 
         main_scheduler = CosineAnnealingLR(
-            self.optimizer, T_max=main_steps, eta_min=min_lr,
+            self.optimizer,
+            T_max=main_steps,
+            eta_min=min_lr,
         )
 
         with warnings.catch_warnings():
@@ -208,7 +217,9 @@ class GenerativeTrainer:
         dict
             Final validation metrics from the best checkpoint.
         """
-        logger.info(f"Starting generative training: {self.config.training.experiment_name}")
+        logger.info(
+            f"Starting generative training: {self.config.training.experiment_name}"
+        )
         logger.info(f"Device: {self.device}")
         logger.info(f"Train batches: {len(self.train_loader)}")
         logger.info(f"Val batches: {len(self.val_loader)}")
@@ -286,6 +297,8 @@ class GenerativeTrainer:
         running_score_loss = 0.0
         running_clock_loss = 0.0
         running_context_loss = 0.0
+        running_pre_margin_loss = 0.0
+        running_pre_win_loss = 0.0
         n_batches = 0
 
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}", leave=False)
@@ -302,17 +315,24 @@ class GenerativeTrainer:
             running_score_loss += losses["score_loss"]
             running_clock_loss += losses["clock_loss"]
             running_context_loss += losses["context_loss"]
+            running_pre_margin_loss += losses.get("pre_margin_loss", 0.0)
+            running_pre_win_loss += losses.get("pre_win_loss", 0.0)
             n_batches += 1
 
             if (step + 1) % accum == 0:
                 self._optimizer_step()
 
-            pbar.set_postfix({
-                "loss": f"{losses['total']:.4f}",
-                "lr": f"{self.optimizer.param_groups[0]['lr']:.2e}",
-            })
+            pbar.set_postfix(
+                {
+                    "loss": f"{losses['total']:.4f}",
+                    "lr": f"{self.optimizer.param_groups[0]['lr']:.2e}",
+                }
+            )
 
-            if self.state.global_step > 0 and self.state.global_step % log_interval == 0:
+            if (
+                self.state.global_step > 0
+                and self.state.global_step % log_interval == 0
+            ):
                 logger.debug(
                     f"  step {self.state.global_step}: "
                     f"loss={losses['total']:.4f}, "
@@ -333,6 +353,8 @@ class GenerativeTrainer:
             "score_loss": running_score_loss / n,
             "clock_loss": running_clock_loss / n,
             "context_loss": running_context_loss / n,
+            "pre_margin_loss": running_pre_margin_loss / n,
+            "pre_win_loss": running_pre_win_loss / n,
         }
 
     def _accumulate_step(self, batch: dict, accum_steps: int) -> dict:
@@ -343,12 +365,27 @@ class GenerativeTrainer:
                 targets = self._extract_targets(batch)
                 losses = self.criterion(predictions, targets)
                 scaled = losses["total"] / accum_steps
+
+            # Skip NaN losses to prevent poisoning optimizer state
+            if torch.isnan(scaled) or torch.isinf(scaled):
+                logger.warning(
+                    f"NaN/Inf loss detected at step {self.state.global_step}, skipping batch"
+                )
+                return {k: 0.0 for k in losses}
+
             self.scaler.scale(scaled).backward()
         else:
             predictions = self.model(batch)
             targets = self._extract_targets(batch)
             losses = self.criterion(predictions, targets)
             scaled = losses["total"] / accum_steps
+
+            if torch.isnan(scaled) or torch.isinf(scaled):
+                logger.warning(
+                    f"NaN/Inf loss detected at step {self.state.global_step}, skipping batch"
+                )
+                return {k: 0.0 for k in losses}
+
             scaled.backward()
 
         return {k: v.item() for k, v in losses.items()}
@@ -396,12 +433,17 @@ class GenerativeTrainer:
         total_score = 0.0
         total_clock = 0.0
         total_context = 0.0
+        total_pre_margin = 0.0
+        total_pre_win = 0.0
         n_batches = 0
 
         # Per-class accuracy tracking
         n_classes = self.config.model.n_score_classes
         class_correct = torch.zeros(n_classes, device=self.device)
         class_total = torch.zeros(n_classes, device=self.device)
+
+        # Context margin tracking
+        margin_abs_errors: list[float] = []
 
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validation", leave=False):
@@ -424,14 +466,16 @@ class GenerativeTrainer:
                 total_score += losses["score_loss"].item()
                 total_clock += losses["clock_loss"].item()
                 total_context += losses["context_loss"].item()
+                total_pre_margin += losses["pre_margin_loss"].item()
+                total_pre_win += losses["pre_win_loss"].item()
                 n_batches += 1
 
                 # Per-class accuracy
-                score_logits = predictions["score_logits"]   # (B, T, 7)
-                score_targets = targets["score_events"]      # (B, T)
-                mask = targets["state_mask"]                 # (B, T)
+                score_logits = predictions["score_logits"]  # (B, T, 7)
+                score_targets = targets["score_events"]  # (B, T)
+                mask = targets["state_mask"]  # (B, T)
 
-                preds = score_logits.argmax(dim=-1)          # (B, T)
+                preds = score_logits.argmax(dim=-1)  # (B, T)
                 valid = mask.bool()
 
                 for c in range(n_classes):
@@ -439,13 +483,26 @@ class GenerativeTrainer:
                     class_total[c] += c_mask.sum()
                     class_correct[c] += ((preds == c) & c_mask).sum()
 
+                # Context margin MAE (in raw points: pred * 50 vs actual * 50)
+                ctx_pred = predictions["context_margin_pred"]  # (B,) normalized
+                ctx_true = targets["final_margin"]  # (B,) normalized
+                margin_abs_errors.extend((ctx_pred - ctx_true).abs().mul(50.0).tolist())
+
         n = max(n_batches, 1)
         metrics = {
             "loss": total_loss / n,
             "score_loss": total_score / n,
             "clock_loss": total_clock / n,
             "context_loss": total_context / n,
+            "pre_margin_loss": total_pre_margin / n,
+            "pre_win_loss": total_pre_win / n,
         }
+
+        # Context margin MAE (raw points)
+        if margin_abs_errors:
+            metrics["context_margin_mae"] = sum(margin_abs_errors) / len(
+                margin_abs_errors
+            )
 
         # Per-class accuracy
         for c in range(n_classes):
@@ -455,7 +512,9 @@ class GenerativeTrainer:
 
         overall_correct = class_correct.sum().item()
         overall_total = class_total.sum().item()
-        metrics["score_accuracy"] = overall_correct / overall_total if overall_total > 0 else 0.0
+        metrics["score_accuracy"] = (
+            overall_correct / overall_total if overall_total > 0 else 0.0
+        )
 
         return metrics
 
@@ -529,7 +588,9 @@ class GenerativeTrainer:
 
         overall_correct = class_correct.sum().item()
         overall_total = class_total.sum().item()
-        metrics["score_accuracy"] = overall_correct / overall_total if overall_total > 0 else 0.0
+        metrics["score_accuracy"] = (
+            overall_correct / overall_total if overall_total > 0 else 0.0
+        )
 
         return metrics
 
@@ -537,11 +598,13 @@ class GenerativeTrainer:
 
     def _extract_targets(self, batch: dict) -> dict:
         """Extract target tensors from a batch dict."""
+        final_margin = batch["final_margin"]
         return {
             "score_events": batch["score_events"],
             "clock_targets": batch["clock_targets"],
-            "final_margin": batch["final_margin"],
+            "final_margin": final_margin / 50.0,  # normalize to match margin_norm scale
             "state_mask": batch["state_mask"],
+            "home_win": (final_margin > 0).float(),  # derived for pre-decoder BCE
         }
 
     def _to_device(self, batch: dict) -> dict:
@@ -579,9 +642,19 @@ class GenerativeTrainer:
             f"score_acc={val_metrics.get('score_accuracy', 0):.3f}, "
             f"time={epoch_time:.0f}s"
         )
-        logger.info(f"  Score: {train_metrics['score_loss']:.4f} / {val_metrics['score_loss']:.4f}  "
-                     f"Clock: {train_metrics['clock_loss']:.4f} / {val_metrics['clock_loss']:.4f}  "
-                     f"Ctx: {train_metrics['context_loss']:.4f} / {val_metrics['context_loss']:.4f}")
+        ctx_margin_mae = val_metrics.get("context_margin_mae", 0)
+        logger.info(
+            f"  Score: {train_metrics['score_loss']:.4f} / {val_metrics['score_loss']:.4f}  "
+            f"Clock: {train_metrics['clock_loss']:.4f} / {val_metrics['clock_loss']:.4f}  "
+            f"Ctx: {train_metrics['context_loss']:.4f} / {val_metrics['context_loss']:.4f}  "
+            f"CtxMAE: {ctx_margin_mae:.1f}pts"
+        )
+        logger.info(
+            f"  PreMargin: {train_metrics.get('pre_margin_loss', 0):.4f} / "
+            f"{val_metrics.get('pre_margin_loss', 0):.4f}  "
+            f"PreWin: {train_metrics.get('pre_win_loss', 0):.4f} / "
+            f"{val_metrics.get('pre_win_loss', 0):.4f}"
+        )
         logger.info(f"  Per-class acc: {per_class}")
 
     # ---- Checkpointing -----------------------------------------------------
@@ -589,8 +662,16 @@ class GenerativeTrainer:
     def _save_checkpoint(self, filename: str) -> None:
         path = self.checkpoint_dir / filename
 
+        # For best checkpoint with EMA, save EMA weights as the primary model
+        # weights (since validation used EMA weights to select this checkpoint)
+        if filename == "best.pt" and self.ema is not None:
+            with self.ema.apply():
+                model_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+        else:
+            model_state = self.model.state_dict()
+
         checkpoint = {
-            "model_state_dict": self.model.state_dict(),
+            "model_state_dict": model_state,
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
             "state": {

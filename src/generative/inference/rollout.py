@@ -1,18 +1,19 @@
-"""Autoregressive rollout for pre-game spread / win-probability prediction.
+"""Autoregressive rollout with Classifier-Free Guidance (Exp 2).
 
 Given context tokens (from the context encoder), this module rolls out game
-states autoregressively:
-  1. Start from initial state (period=1, clock=720, scores=0-0).
-  2. At each step: predict score event + next clock.
-  3. Sample score event from the categorical distribution.
-  4. Apply deterministic period transitions.
-  5. Continue until game over (period >= 4, clock <= 0) or max steps reached.
+states autoregressively with adaLN-Zero conditioning:
+  1. Pool context → cond vector for adaLN-Zero.
+  2. Start from initial state (period=1, clock=720, scores=0-0).
+  3. At each step: predict score event + next clock via decode_step(embed, cond).
+  4. With CFG: run both conditional (cond) and unconditional (zeros) paths,
+     combine logits with guidance_scale.
+  5. Sample score event, apply deterministic period transitions.
+  6. Continue until game over or max steps reached.
 
 Multiple rollouts are aggregated to produce spread mean/std and win probability.
 """
 
 import logging
-from typing import Optional
 
 import numpy as np
 import torch
@@ -24,14 +25,14 @@ logger = logging.getLogger(__name__)
 
 
 class AutoregressiveRollout:
-    """KV-cached autoregressive rollout engine for pre-game prediction.
+    """KV-cached autoregressive rollout engine with CFG support.
 
     Parameters
     ----------
     model : nn.Module
         A ``GenerativeModel`` instance (already on device, in eval mode).
     config : GenerativeExperimentConfig
-        Experiment config (used for max_rollout_steps, etc.).
+        Experiment config (used for max_rollout_steps, guidance_scale, etc.).
     device : str or torch.device
         Device for inference tensors.
     """
@@ -46,6 +47,7 @@ class AutoregressiveRollout:
         self.config = config
         self.device = torch.device(device) if isinstance(device, str) else device
         self.max_steps = config.training.max_rollout_steps
+        self.guidance_scale = config.training.guidance_scale
 
     @torch.no_grad()
     def rollout(
@@ -59,26 +61,31 @@ class AutoregressiveRollout:
         Args:
             context_data: dict of tensors for the context encoder (batch size 1).
             n_rollouts: number of independent trajectories to sample.
-            temperature: softmax temperature for score-event sampling
-                (1.0 = calibrated, <1 = greedy-ish).
+            temperature: softmax temperature for score-event sampling.
 
         Returns:
-            dict with ``spread_mean``, ``spread_std``, ``win_prob``,
-            ``home_score_mean``, ``away_score_mean``, ``home_scores``,
-            ``away_scores``, ``n_ties``.
+            dict with spread_mean, spread_std, win_prob, home_score_mean,
+            away_score_mean, home_scores, away_scores, n_ties.
         """
         self.model.eval()
 
-        # Encode context once (B=1) -> (1, 2, 512)
+        # Encode context once (B=1) → (1, 2, 512)
         context_tokens = self.model.encode_context(context_data)
 
-        # Run batched rollouts in chunks to manage memory
-        trajectories = self._batched_rollout(context_tokens, n_rollouts, temperature)
+        # Pool into conditioning vector for adaLN-Zero
+        cond = self.model.pool_context(context_tokens)  # (1, 512)
+
+        # Compute score bias from context (direct shortcut)
+        score_bias = self.model.compute_score_bias(context_tokens)  # (1, 7)
+
+        # Run batched rollouts in chunks
+        trajectories = self._batched_rollout(cond, score_bias, n_rollouts, temperature)
         return self._aggregate(trajectories)
 
     def _batched_rollout(
         self,
-        context_tokens: torch.Tensor,
+        cond: torch.Tensor,
+        score_bias: torch.Tensor,
         n_rollouts: int,
         temperature: float,
     ) -> list[tuple[float, float]]:
@@ -89,44 +96,48 @@ class AutoregressiveRollout:
         for chunk_start in range(0, n_rollouts, chunk_size):
             chunk_n = min(chunk_size, n_rollouts - chunk_start)
 
-            # Expand context for this chunk: (1, 2, D) -> (chunk_n, 2, D)
-            ctx = context_tokens.expand(chunk_n, -1, -1)
+            # Expand cond and score bias for this chunk
+            c = cond.expand(chunk_n, -1)  # (chunk_n, D)
+            bias = score_bias.expand(chunk_n, -1)  # (chunk_n, 7)
 
-            # Run the chunk
-            chunk_results = self._rollout_chunk(ctx, chunk_n, temperature)
+            chunk_results = self._rollout_chunk(c, bias, chunk_n, temperature)
             all_trajectories.extend(chunk_results)
 
         return all_trajectories
 
     def _rollout_chunk(
         self,
-        ctx: torch.Tensor,
+        cond: torch.Tensor,
+        score_bias: torch.Tensor,
         chunk_n: int,
         temperature: float,
     ) -> list[tuple[float, float]]:
-        """Run a single chunk of parallel rollouts.
+        """Run a single chunk of parallel rollouts with optional CFG.
 
-        This uses step-by-step decoding. If the model's decoder supports
-        KV-caching (``init_kv_cache`` / ``decode_step``), those are used.
-        Otherwise, it falls back to re-encoding the full sequence at each step
-        (slower but always correct).
+        Uses KV-cached decode_step with adaLN-Zero conditioning.
+        When guidance_scale > 1.0, runs conditional + unconditional paths
+        batched together for efficiency.
         """
         decoder = self.model.decoder
-        use_kv_cache = hasattr(decoder, "init_kv_cache") and hasattr(decoder, "decode_step")
+        use_cfg = self.guidance_scale > 1.0
 
-        # --- Initialise game state ------------------------------------------
+        # --- Initialise game state ---
         home_scores = torch.zeros(chunk_n, device=self.device)
         away_scores = torch.zeros(chunk_n, device=self.device)
         periods = torch.ones(chunk_n, device=self.device)
         clocks = torch.full((chunk_n,), 720.0, device=self.device)
         active = torch.ones(chunk_n, dtype=torch.bool, device=self.device)
 
-        if use_kv_cache:
-            # Prefill KV cache with context tokens
-            ctx_output, kv_caches = decoder.init_kv_cache(ctx)
+        if use_cfg:
+            # Batch cond + uncond together: first chunk_n are conditional,
+            # second chunk_n are unconditional (zeros)
+            cond_batch = torch.cat(
+                [cond, torch.zeros_like(cond)], dim=0
+            )  # (2*chunk_n, D)
+            kv_caches = decoder.init_kv_cache(2 * chunk_n, self.device)
         else:
-            # We will accumulate the full embedding sequence
-            all_embeds = [ctx]  # start with context tokens (chunk_n, 2, D)
+            cond_batch = cond
+            kv_caches = decoder.init_kv_cache(chunk_n, self.device)
 
         for step in range(self.max_steps):
             if not active.any():
@@ -135,23 +146,38 @@ class AutoregressiveRollout:
             # Build current state vector
             state = self._build_state(periods, clocks, home_scores, away_scores)
 
-            # Embed current state: (chunk_n, 7) -> (chunk_n, 1, D)
+            # Embed current state: (chunk_n, 7) → (chunk_n, 1, D)
             state_embed = self.model.state_embedder(state.unsqueeze(1))
 
-            if use_kv_cache:
+            if use_cfg:
+                # Duplicate state embed for both paths
+                state_embed_batch = state_embed.repeat(2, 1, 1)  # (2*chunk_n, 1, D)
                 output, kv_caches = decoder.decode_step(
-                    state_embed, kv_caches, step=step + 2  # +2 for context prefix
+                    state_embed_batch, cond_batch, kv_caches, step
                 )
-            else:
-                all_embeds.append(state_embed)
-                full_seq = torch.cat(all_embeds, dim=1)  # (chunk_n, 2+step+1, D)
-                output = decoder(full_seq)               # (chunk_n, 2+step+1, D)
-                output = output[:, -1:, :]               # last position
 
-            # Prediction heads
-            h = output.squeeze(1)                        # (chunk_n, D)
-            score_logits = self.model.score_head(h)      # (chunk_n, 7)
-            clock_pred = self.model.clock_head(h).squeeze(-1)  # (chunk_n,)
+                # Split outputs
+                cond_out, uncond_out = output.chunk(2, dim=0)
+                h_cond = cond_out.squeeze(1)  # (chunk_n, D)
+                h_uncond = uncond_out.squeeze(1)  # (chunk_n, D)
+
+                # CFG on score logits
+                cond_logits = self.model.score_head(h_cond)
+                uncond_logits = self.model.score_head(h_uncond)
+                score_logits = uncond_logits + self.guidance_scale * (
+                    cond_logits - uncond_logits
+                )
+                score_logits = score_logits + score_bias
+
+                # Clock from conditional path only
+                clock_pred = self.model.clock_head(h_cond).squeeze(-1)
+            else:
+                output, kv_caches = decoder.decode_step(
+                    state_embed, cond_batch, kv_caches, step
+                )
+                h = output.squeeze(1)  # (chunk_n, D)
+                score_logits = self.model.score_head(h) + score_bias
+                clock_pred = self.model.clock_head(h).squeeze(-1)
 
             # Sample score event
             score_event = self._sample_score(score_logits, temperature, active)
@@ -178,7 +204,7 @@ class AutoregressiveRollout:
             results.append((home_scores[i].item(), away_scores[i].item()))
         return results
 
-    # ---- State helpers -----------------------------------------------------
+    # ---- State helpers ---------------------------------------------------------
 
     def _build_state(
         self,
@@ -187,11 +213,7 @@ class AutoregressiveRollout:
         home_scores: torch.Tensor,
         away_scores: torch.Tensor,
     ) -> torch.Tensor:
-        """Build normalised 7-dim state vector from raw game values.
-
-        Channels: [period_norm, clock_norm, game_progress,
-                    home_norm, away_norm, margin_norm, total_norm]
-        """
+        """Build normalised 7-dim state vector from raw game values."""
         B = periods.shape[0]
         state = torch.zeros(B, 7, device=self.device)
         state[:, 0] = periods / 4.0
@@ -247,7 +269,7 @@ class AutoregressiveRollout:
         home_scores += home_deltas * mask
         away_scores += away_deltas * mask
 
-    # ---- Aggregation -------------------------------------------------------
+    # ---- Aggregation -----------------------------------------------------------
 
     @staticmethod
     def _aggregate(trajectories: list[tuple[float, float]]) -> dict:

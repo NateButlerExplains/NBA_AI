@@ -26,28 +26,66 @@ logger = logging.getLogger(__name__)
 
 # 30 NBA team tricodes -> integer indices
 TEAM_TO_IDX = {
-    "ATL": 0, "BOS": 1, "BKN": 2, "CHA": 3, "CHI": 4,
-    "CLE": 5, "DAL": 6, "DEN": 7, "DET": 8, "GSW": 9,
-    "HOU": 10, "IND": 11, "LAC": 12, "LAL": 13, "MEM": 14,
-    "MIA": 15, "MIL": 16, "MIN": 17, "NOP": 18, "NYK": 19,
-    "OKC": 20, "ORL": 21, "PHI": 22, "PHX": 23, "POR": 24,
-    "SAC": 25, "SAS": 26, "TOR": 27, "UTA": 28, "WAS": 29,
+    "ATL": 0,
+    "BOS": 1,
+    "BKN": 2,
+    "CHA": 3,
+    "CHI": 4,
+    "CLE": 5,
+    "DAL": 6,
+    "DEN": 7,
+    "DET": 8,
+    "GSW": 9,
+    "HOU": 10,
+    "IND": 11,
+    "LAC": 12,
+    "LAL": 13,
+    "MEM": 14,
+    "MIA": 15,
+    "MIL": 16,
+    "MIN": 17,
+    "NOP": 18,
+    "NYK": 19,
+    "OKC": 20,
+    "ORL": 21,
+    "PHI": 22,
+    "PHX": 23,
+    "POR": 24,
+    "SAC": 25,
+    "SAS": 26,
+    "TOR": 27,
+    "UTA": 28,
+    "WAS": 29,
 }
 
 # Historical team codes -> current franchise codes
 HISTORICAL_TO_CURRENT = {
-    "NJN": "BKN",   # New Jersey Nets -> Brooklyn Nets
-    "SEA": "OKC",   # Seattle SuperSonics -> Oklahoma City Thunder
-    "NOH": "NOP",   # New Orleans Hornets -> New Orleans Pelicans
-    "NOK": "NOP",   # New Orleans/OKC Hornets -> New Orleans Pelicans
-    "VAN": "MEM",   # Vancouver Grizzlies -> Memphis Grizzlies
-    "CHH": "CHA",   # Charlotte Hornets (old) -> Charlotte Hornets (current)
+    "NJN": "BKN",  # New Jersey Nets -> Brooklyn Nets
+    "SEA": "OKC",  # Seattle SuperSonics -> Oklahoma City Thunder
+    "NOH": "NOP",  # New Orleans Hornets -> New Orleans Pelicans
+    "NOK": "NOP",  # New Orleans/OKC Hornets -> New Orleans Pelicans
+    "VAN": "MEM",  # Vancouver Grizzlies -> Memphis Grizzlies
+    "CHH": "CHA",  # Charlotte Hornets (old) -> Charlotte Hornets (current)
 }
 
 # 16 PlayerBox stats in order
 STAT_COLUMNS = [
-    "min", "pts", "oreb", "dreb", "ast", "stl", "blk", "tov",
-    "pf", "fga", "fgm", "fg3a", "fg3m", "fta", "ftm", "plus_minus",
+    "min",
+    "pts",
+    "oreb",
+    "dreb",
+    "ast",
+    "stl",
+    "blk",
+    "tov",
+    "pf",
+    "fga",
+    "fgm",
+    "fg3a",
+    "fg3m",
+    "fta",
+    "ftm",
+    "plus_minus",
 ]
 
 
@@ -129,7 +167,9 @@ class GenerativeCacheBuilder:
 
         self.eligible_game_ids = [row[0] for row in rows]
         self.stats["total_games"] = len(self.eligible_game_ids)
-        logger.info(f"Found {len(self.eligible_game_ids)} eligible games across {len(self.seasons)} seasons")
+        logger.info(
+            f"Found {len(self.eligible_game_ids)} eligible games across {len(self.seasons)} seasons"
+        )
 
     def _build_game_state_cache(self):
         """Parse GameStates -> state tensors + score events + clock targets.
@@ -145,9 +185,10 @@ class GenerativeCacheBuilder:
         processed = 0
         skipped = 0
 
-        for chunk_start in tqdm(range(0, len(game_ids), chunk_size),
-                                desc="Game states", unit="chunk"):
-            chunk = game_ids[chunk_start:chunk_start + chunk_size]
+        for chunk_start in tqdm(
+            range(0, len(game_ids), chunk_size), desc="Game states", unit="chunk"
+        ):
+            chunk = game_ids[chunk_start : chunk_start + chunk_size]
             placeholders = ",".join(["?"] * len(chunk))
 
             with get_db(self.db_path) as conn:
@@ -165,7 +206,9 @@ class GenerativeCacheBuilder:
             # Group rows by game_id
             game_rows = defaultdict(list)
             for row in rows:
-                game_rows[row[0]].append(row[1:])  # (play_id, period, clock, home_score, away_score)
+                game_rows[row[0]].append(
+                    row[1:]
+                )  # (play_id, period, clock, home_score, away_score)
 
             for game_id in chunk:
                 if game_id not in game_rows:
@@ -198,8 +241,15 @@ class GenerativeCacheBuilder:
             avg_states = self.stats["total_states"] / processed
             logger.info(f"Average states per game: {avg_states:.1f}")
             logger.info(f"Score event class distribution:")
-            class_names = ["no_score", "home+1", "home+2", "home+3",
-                           "away+1", "away+2", "away+3"]
+            class_names = [
+                "no_score",
+                "home+1",
+                "home+2",
+                "home+3",
+                "away+1",
+                "away+2",
+                "away+3",
+            ]
             total_events = self.stats["class_counts"].sum()
             for i, name in enumerate(class_names):
                 count = self.stats["class_counts"][i]
@@ -220,9 +270,11 @@ class GenerativeCacheBuilder:
             None if game has insufficient data.
         """
         # Truncate at regulation end (period <= 4)
-        reg_rows = [(play_id, period, clock, h_score, a_score)
-                     for play_id, period, clock, h_score, a_score in rows
-                     if period is not None and period <= 4]
+        reg_rows = [
+            (play_id, period, clock, h_score, a_score)
+            for play_id, period, clock, h_score, a_score in rows
+            if period is not None and period <= 4
+        ]
 
         if len(reg_rows) < 2:
             return None
@@ -243,10 +295,17 @@ class GenerativeCacheBuilder:
             margin_norm = (h_score - a_score) / 50.0
             total_norm = (h_score + a_score) / 300.0
 
-            state_list.append([
-                period_norm, clock_norm, game_progress,
-                home_score_norm, away_score_norm, margin_norm, total_norm,
-            ])
+            state_list.append(
+                [
+                    period_norm,
+                    clock_norm,
+                    game_progress,
+                    home_score_norm,
+                    away_score_norm,
+                    margin_norm,
+                    total_norm,
+                ]
+            )
 
         states = torch.tensor(state_list, dtype=torch.float32)
         n_states = states.shape[0]
@@ -309,11 +368,10 @@ class GenerativeCacheBuilder:
         """
         logger.info("Building context cache...")
 
-        # Fetch game metadata
+        # Fetch game metadata (scores come from TeamBox, not Games table)
         season_placeholders = ",".join(["?"] * len(self.seasons))
         query = f"""
             SELECT g.game_id, g.home_team, g.away_team,
-                   g.home_team_score, g.away_team_score,
                    g.date_time_utc, g.season
             FROM Games g
             WHERE g.status = 3
@@ -326,20 +384,33 @@ class GenerativeCacheBuilder:
 
         logger.info(f"Fetched {len(game_rows)} games for context cache")
 
+        # Batch-fetch scores from TeamBox
+        game_scores = self._batch_query_scores([r[0] for r in game_rows])
+        n_missing_scores = len(game_rows) - len(game_scores)
+        logger.info(f"Fetched scores for {len(game_scores)} games from TeamBox")
+        if n_missing_scores > 0:
+            logger.warning(
+                f"Missing TeamBox scores for {n_missing_scores} games — will default to 0"
+            )
+
         # Build season_games index and collect game metadata
         season_games = defaultdict(list)
-        game_meta = {}  # game_id -> (home, away, h_score, a_score, date, season)
+        game_meta = {}
 
-        for game_id, home, away, h_score, a_score, date_utc, season in game_rows:
+        for game_id, home, away, date_utc, season in game_rows:
             home = normalize_team(home)
             away = normalize_team(away)
             game_date = str(date_utc)[:10] if date_utc else ""
 
+            scores = game_scores.get(game_id, {})
+            h_score = scores.get(home, 0)
+            a_score = scores.get(away, 0)
+
             game_meta[game_id] = {
                 "home_team": home,
                 "away_team": away,
-                "home_score": h_score or 0,
-                "away_score": a_score or 0,
+                "home_score": h_score,
+                "away_score": a_score,
                 "date": game_date,
                 "season": season,
             }
@@ -356,7 +427,9 @@ class GenerativeCacheBuilder:
 
         # Build game_features with player stats
         game_features = {}
-        for game_id, meta in tqdm(game_meta.items(), desc="Context features", unit="game"):
+        for game_id, meta in tqdm(
+            game_meta.items(), desc="Context features", unit="game"
+        ):
             home = meta["home_team"]
             away = meta["away_team"]
 
@@ -396,7 +469,9 @@ class GenerativeCacheBuilder:
         logger.info(f"Saved game_features: {len(game_features)} games")
 
         torch.save(player_id_map, self.context_dir / "player_id_map.pt")
-        logger.info(f"Saved player_id_map: {len(player_id_map)} players (indices 0-{len(player_id_map) - 1})")
+        logger.info(
+            f"Saved player_id_map: {len(player_id_map)} players (indices 0-{len(player_id_map) - 1})"
+        )
 
         torch.save(team_id_map, self.context_dir / "team_id_map.pt")
         logger.info(f"Saved team_id_map: {len(team_id_map)} teams")
@@ -407,6 +482,40 @@ class GenerativeCacheBuilder:
             season_counts[meta["season"]] += 1
         for s, c in sorted(season_counts.items()):
             logger.info(f"  {s}: {c} games")
+
+    def _batch_query_scores(self, game_ids: list[str]) -> dict:
+        """Batch query TeamBox for game scores.
+
+        Returns {game_id: {team_abbrev: pts}}.
+        """
+        if not game_ids:
+            return {}
+
+        result: dict[str, dict[str, int]] = {}
+        chunk_size = 500
+
+        with get_db(self.db_path) as conn:
+            for i in range(0, len(game_ids), chunk_size):
+                chunk = game_ids[i : i + chunk_size]
+                placeholders = ",".join(["?"] * len(chunk))
+
+                rows = conn.execute(
+                    f"""
+                    SELECT tb.game_id, t.abbreviation, tb.pts
+                    FROM TeamBox tb
+                    JOIN Teams t ON tb.team_id = t.team_id
+                    WHERE tb.game_id IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+
+                for game_id, abbrev, pts in rows:
+                    abbrev = normalize_team(abbrev)
+                    if game_id not in result:
+                        result[game_id] = {}
+                    result[game_id][abbrev] = pts or 0
+
+        return result
 
     def _batch_query_playerbox(self, game_ids: list[str]) -> dict:
         """Batch query PlayerBox for multiple games.
@@ -422,9 +531,12 @@ class GenerativeCacheBuilder:
         max_players = 13
 
         with get_db(self.db_path) as conn:
-            for i in tqdm(range(0, len(game_ids), chunk_size),
-                          desc="PlayerBox queries", unit="chunk"):
-                chunk = game_ids[i:i + chunk_size]
+            for i in tqdm(
+                range(0, len(game_ids), chunk_size),
+                desc="PlayerBox queries",
+                unit="chunk",
+            ):
+                chunk = game_ids[i : i + chunk_size]
                 placeholders = ",".join(["?"] * len(chunk))
 
                 rows = conn.execute(
@@ -448,8 +560,10 @@ class GenerativeCacheBuilder:
                     team_abbrev = normalize_team(row[2])
 
                     # Extract 16 stats, coalesce NULL to 0.0
-                    stats = [float(row[3 + j]) if row[3 + j] is not None else 0.0
-                             for j in range(16)]
+                    stats = [
+                        float(row[3 + j]) if row[3 + j] is not None else 0.0
+                        for j in range(16)
+                    ]
 
                     if game_id not in result:
                         result[game_id] = {}
@@ -475,7 +589,8 @@ class GenerativeCacheBuilder:
             "total_states": int(self.stats["total_states"]),
             "avg_states_per_game": (
                 self.stats["total_states"] / self.stats["games_with_states"]
-                if self.stats["games_with_states"] > 0 else 0.0
+                if self.stats["games_with_states"] > 0
+                else 0.0
             ),
             "n_players": len(self.all_player_ids),
             "class_distribution": {
@@ -505,12 +620,18 @@ def build_cache_cli():
     )
 
     parser = argparse.ArgumentParser(description="Build generative model cache")
-    parser.add_argument("--db-path", default="data/NBA_AI_full.sqlite",
-                        help="Path to SQLite database")
-    parser.add_argument("--cache-dir", default="data/generative_cache",
-                        help="Output cache directory")
-    parser.add_argument("--seasons", nargs="+", default=None,
-                        help="Seasons to cache (default: 2008-2009 through 2025-2026)")
+    parser.add_argument(
+        "--db-path", default="data/NBA_AI_full.sqlite", help="Path to SQLite database"
+    )
+    parser.add_argument(
+        "--cache-dir", default="data/generative_cache", help="Output cache directory"
+    )
+    parser.add_argument(
+        "--seasons",
+        nargs="+",
+        default=None,
+        help="Seasons to cache (default: 2008-2009 through 2025-2026)",
+    )
     args = parser.parse_args()
 
     seasons = args.seasons or [f"{y}-{y + 1}" for y in range(2008, 2026)]

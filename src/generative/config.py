@@ -19,12 +19,25 @@ logger = logging.getLogger(__name__)
 class GenerativeDataConfig:
     """Data loading and preprocessing configuration."""
 
-    train_seasons: list[str] = field(default_factory=lambda: [
-        "2008-2009", "2009-2010", "2010-2011", "2011-2012",
-        "2012-2013", "2013-2014", "2014-2015", "2015-2016",
-        "2016-2017", "2017-2018", "2018-2019", "2019-2020",
-        "2020-2021", "2021-2022", "2022-2023",
-    ])
+    train_seasons: list[str] = field(
+        default_factory=lambda: [
+            "2008-2009",
+            "2009-2010",
+            "2010-2011",
+            "2011-2012",
+            "2012-2013",
+            "2013-2014",
+            "2014-2015",
+            "2015-2016",
+            "2016-2017",
+            "2017-2018",
+            "2018-2019",
+            "2019-2020",
+            "2020-2021",
+            "2021-2022",
+            "2022-2023",
+        ]
+    )
     val_seasons: list[str] = field(default_factory=lambda: ["2023-2024"])
     test_seasons: list[str] = field(default_factory=lambda: ["2024-2025", "2025-2026"])
 
@@ -61,7 +74,7 @@ class GenerativeModelConfig:
     player_pool_heads: int = 4
 
     # Per-game encoder
-    score_input_dim: int = 4    # [team_score, opp_score, margin, total]
+    score_input_dim: int = 4  # [team_score, opp_score, margin, total]
     score_dim: int = 128
     opponent_dim: int = 64
     location_dim: int = 32
@@ -88,7 +101,7 @@ class GenerativeModelConfig:
     decoder_heads: int = 8
     decoder_ff_dim: int = 2048
     decoder_dropout: float = 0.1
-    decoder_max_seq_len: int = 800   # 2 context + up to 700 states + margin
+    decoder_max_seq_len: int = 800  # 2 context + up to 700 states + margin
 
     # Prediction heads
     n_score_classes: int = 7
@@ -139,6 +152,8 @@ class GenerativeTrainingConfig:
     score_loss_weight: float = 1.0
     clock_loss_weight: float = 0.3
     context_loss_weight: float = 1.0
+    pre_margin_weight: float = 1.0
+    pre_win_weight: float = 0.5
 
     # Gradient accumulation
     gradient_accumulation_steps: int = 8
@@ -166,6 +181,7 @@ class GenerativeTrainingConfig:
     n_rollouts: int = 100
     rollout_temperature: float = 1.0
     max_rollout_steps: int = 700
+    guidance_scale: float = 1.5
 
 
 @dataclass
@@ -174,7 +190,9 @@ class GenerativeExperimentConfig:
 
     data: GenerativeDataConfig = field(default_factory=GenerativeDataConfig)
     model: GenerativeModelConfig = field(default_factory=GenerativeModelConfig)
-    optimizer: GenerativeOptimizerConfig = field(default_factory=GenerativeOptimizerConfig)
+    optimizer: GenerativeOptimizerConfig = field(
+        default_factory=GenerativeOptimizerConfig
+    )
     training: GenerativeTrainingConfig = field(default_factory=GenerativeTrainingConfig)
 
     @classmethod

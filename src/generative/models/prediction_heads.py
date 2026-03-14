@@ -81,3 +81,69 @@ class ContextMarginHead(nn.Module):
             (..., 1) margin prediction.
         """
         return self.net(x)
+
+
+class PreDecoderHead(nn.Module):
+    """Pre-decoder prediction from matchup features.
+
+    Takes matchup = cat(home_ctx, away_ctx, home_ctx - away_ctx) and produces
+    a scalar prediction. Used for both margin (MSE) and win (BCE) targets —
+    the loss function handles the difference.
+
+    Provides direct gradient to context encoder without going through decoder.
+    """
+
+    def __init__(self, hidden_dim: int, head_hidden_dim: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim * 3, head_hidden_dim),  # 1536 → 128
+            nn.GELU(),
+            nn.Linear(head_hidden_dim, 1),
+        )
+
+    def forward(self, matchup: torch.Tensor) -> torch.Tensor:
+        """Predict scalar from matchup features.
+
+        Args:
+            matchup: (B, hidden_dim * 3) = cat(home, away, home - away).
+
+        Returns:
+            (B, 1) scalar prediction.
+        """
+        return self.net(matchup)
+
+
+# Aliases for clarity in model wiring
+PreDecoderMarginHead = PreDecoderHead
+PreDecoderWinHead = PreDecoderHead
+
+
+class ContextScoreBias(nn.Module):
+    """Compute score event bias from context tokens.
+
+    Creates a direct gradient path from context encoder to score predictions,
+    bypassing the decoder's self-attention. Takes concatenated home+away context
+    and produces a 7-dim bias added to score logits at every state position.
+    """
+
+    def __init__(
+        self, hidden_dim: int, head_hidden_dim: int, n_classes: int = 7
+    ) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim * 2, head_hidden_dim),  # concat home+away
+            nn.GELU(),
+            nn.Linear(head_hidden_dim, n_classes),
+        )
+
+    def forward(self, context_tokens: torch.Tensor) -> torch.Tensor:
+        """Compute score bias from context.
+
+        Args:
+            context_tokens: (B, 2, hidden_dim) [home, away] context.
+
+        Returns:
+            (B, n_classes) score logit bias.
+        """
+        ctx_flat = context_tokens.reshape(context_tokens.shape[0], -1)
+        return self.net(ctx_flat)
