@@ -1,36 +1,98 @@
 # NBA AI TODO
 
-> **Last Updated**: March 5, 2026
-> **Current Sprint**: Sprint 28 — Phase 3 Exp 5 (Heterogeneous Graph)
+> **Last Updated**: March 15, 2026
+> **Current Phase**: Phase 4 Complete — Generative Autoregressive
 
 ---
 
-## Backlog
+## Results Summary
 
-### Phase 3: Alternative Architectures & Data (6/10 experiments complete)
+| Phase | Best Model | Spread MAE | Win AUC | Win Acc |
+|-------|-----------|-----------|---------|---------|
+| Phase 1 | Exp 13 (combined) | 12.20 | 0.592 | 57.6% |
+| Phase 2 | Exp 5a (fusion residual) | 11.61 | 0.687 | — |
+| Phase 3 | **Exp 9 (deep ensemble)** | **10.66** | **0.718** | **66.5%** |
+| Phase 4 | Exp 4 (compressed events) | 11.76 | 0.662 | 61.4% |
+
+**Overall best**: Phase 3 Exp 9 ensemble (MAE 10.66, AUC 0.718). Phase 4 generative approach is ~1.1 MAE behind — autoregressive rollout drift is a fundamental constraint vs direct prediction.
+
+---
+
+## Phase 3: Alternative Architectures & Data (Complete — 10/10 experiments)
 
 - [x] Exp 1: Time-aware bidirectional GRU — no improvement (MAE 11.72)
 - [x] Exp 2: Self-supervised pre-training — no improvement (MAE 11.84)
 - [x] Exp 3a: Full PlayerBox (16 stats + position) — MAE 11.48, AUC 0.707
-- [x] Exp 3b: + Extended data (15 seasons) — MAE 11.03, AUC 0.685 (spread improved, win regressed)
+- [x] Exp 3b: + Extended data (15 seasons) — MAE 11.03, AUC 0.685 (spread ↓, win ↓)
 - [x] ~~Exp 3c: + Wider model~~ — skipped (overfitting risk)
-- [x] Exp 4: Player interaction self-attention — **CURRENT BEST** (MAE 10.83, AUC 0.705, ECE 0.0142)
+- [x] Exp 4: Player interaction self-attention — MAE 10.83, AUC 0.705, ECE 0.0142
 - [x] Exp 4b: Multi-query player pooling — no improvement (MAE 10.92)
-- [ ] Exp 5: Heterogeneous player-game graph (two-pass message passing) — IN PROGRESS
-- [ ] Exp 6: HIGFormer-inspired (per-match pre-training + team interaction graph)
-- [ ] Exp 7: Kitchen sink features (TeamBox efficiency + GS summaries + Tier 1 flags)
-- [ ] Exp 8: Hybrid transformer + XGBoost (transformer embeddings → GBM)
-- [ ] Exp 9: Deep ensemble (3 seeds, averaged predictions)
+- [x] Exp 5: Heterogeneous player-game graph — best spread (MAE 10.61), win ↓
+- [x] Exp 6: HIGFormer-inspired (pre-training + team GAT) — regressed (MAE 11.52)
+- [x] Exp 7: Kitchen sink features (efficiency + GS summaries + flags) — marginal (MAE 10.77), win ↓
+- [x] Exp 8: Hybrid transformer + XGBoost — no improvement (MAE 10.85, AUC 0.706)
+- [x] Exp 9: Deep ensemble (3 seeds) — **OVERALL BEST** (MAE 10.66, AUC 0.718, Acc 66.5%)
 
-### Future Avenues (Phase 4+)
+**Key insight**: Variance reduction via ensembling broke the 0.706 AUC ceiling. Five single-model experiments (Exp 1 GRU, Exp 2 pretrain, Exp 6 pretrain+GAT, Exp 7 features, Exp 8 hybrid) all failed to improve both MAE and AUC simultaneously.
 
+## Phase 4: Generative Autoregressive Game State Prediction (Complete — 4 experiments + 1 ablation)
+
+- [x] Exp 1: Baseline in-context conditioning (32.3M params) — MAE ~12.5, AUC 0.558 (posterior collapse)
+- [x] Exp 1b: Bug fixes + FP32 + ContextScoreBias — AUC 0.565 (context encoder overfit)
+- [x] Exp 2: adaLN-Zero + CFG + pre-decoder heads (43.3M params) — MAE 12.62, AUC 0.582
+- [x] Exp 3: Simplified context (rolling stats, 157K encoder) + scheduled sampling — MAE 12.28, AUC 0.583
+- [x] Exp 4: Scoring-event compression (~110 vs ~487 states) — **BEST** (MAE 11.76, AUC 0.662)
+- [x] Exp 4b: Uniform class weights ablation — MAE 11.87, AUC 0.667
+
+**Progression**: In-context conditioning → adaLN-Zero (fixed decoder ignoring context) → simplified encoder (fixed overfitting) → event compression (eliminated 77% no-score waste). Each experiment diagnosed and fixed the previous bottleneck.
+
+**Key findings**:
+- Teacher-forced autoregressive models suffer posterior collapse with prepended context tokens
+- adaLN-Zero (DiT-style) forces context usage by modulating every LayerNorm
+- 13.1M complex context encoder overfits badly; 157K rolling-stats MLP generalizes
+- Scoring-event compression (487→110 steps) gave largest single improvement (+0.079 AUC)
+- Autoregressive generation is fundamentally harder than direct prediction (~1.1 MAE gap)
+
+## Future Avenues
+
+- **Generative ensemble** — 3-seed ensemble of Phase 4 Exp 4 (untested, may close gap)
+- **Hybrid generative + direct** — use generative rollouts as features for direct predictor
 - **Player props** — predict individual player statistics
 - **Live prediction** — in-game win probability using real-time play-by-play
-- **Generative next-state prediction** — predict next game state rather than final scores
 
 ---
 
 ## Completed Sprints
+
+### Sprint 32: Phase 4 Exps 3-4 — Simplified Context + Compression (Mar 14, 2026)
+
+**Summary**: Two experiments targeting identified bottlenecks. Exp 3 replaced the 13.1M complex context encoder with 157K-param rolling-stats MLP (24 features per team), solving context overfitting (train/val gap: 11x → 1.03x). Exp 4 eliminated 77% no-score states by training only on ~110 scoring events per game, with 8-dim state vectors including inter-event time.
+
+**Result**: Exp 4 is best generative model — MAE 11.76, AUC 0.662, Win Acc 61.4%. Exp 4b ablation (uniform weights) showed model learns well-calibrated class distributions regardless of weights. Still ~1.1 MAE gap to Phase 3 ensemble.
+
+### Sprint 31: Phase 4 Exp 1b + Exp 2 — Fixes + adaLN-Zero (Mar 13-14, 2026)
+
+**Summary**: Exp 1b fixed AMP NaN instability (→FP32), added ContextScoreBias shortcut, reduced context dropout. Exp 2 redesigned conditioning: replaced in-context token prepending with adaLN-Zero (DiT-style adaptive LayerNorm), added Classifier-Free Guidance (1.5x), and pre-decoder auxiliary heads for direct gradient to context encoder. 43.3M params.
+
+**Result**: Exp 1b marginal (AUC 0.565); context encoder memorized training set. Exp 2 confirmed adaLN-Zero fixes structural weakness (AUC 0.582), but exposed context encoder overfitting as the new bottleneck (train/val gaps: 3-11x).
+
+### Sprint 30: Phase 4 Exp 1 — Autoregressive Baseline (Mar 12, 2026)
+
+**Summary**: Built complete generative framework (`src/generative/`) — context encoder (13.1M params reusing Phase 2/3 player+temporal encoding), causal decoder (18.9M params, 6 layers), state embedder, and prediction heads for 7-class score events + clock regression. In-context conditioning via prepended context tokens. 32.3M total params.
+
+**Result**: MAE ~12.5, AUC 0.558 (near random). Teacher forcing caused posterior collapse — decoder learned to predict from state history alone, ignoring context tokens. NaN instability at epoch 16 (AMP on RTX 2070 SUPER).
+
+### Sprint 29: Phase 3 Exps 5-9 (Mar 5-10, 2026)
+
+**Summary**: Completed remaining Phase 3 experiments. Exp 5 (heterogeneous graph) achieved best single-model spread (MAE 10.61) but win metrics regressed. Exp 6 (HIGFormer with pre-training + team GAT) regressed. Exp 7 (kitchen sink features) marginal. Exp 8 (hybrid transformer+XGBoost) no improvement. Exp 9 (deep ensemble of 3 Exp 4 seeds) broke the AUC ceiling.
+
+**Result**: Exp 9 is overall best — MAE 10.66, AUC 0.718, Win Acc 66.5%. Only approach to improve both MAE and AUC simultaneously. ECE regressed (0.0378) — fixable with temperature scaling.
+
+### Sprint 28: Phase 3 Exp 5 — Heterogeneous Graph (Mar 5, 2026)
+
+**Summary**: Two-pass message passing (Game→Player + Player→Game) with roster context, trajectory attention, and reinjection cross-attention.
+
+**Result**: Best single-model spread MAE 10.61, but win classification regressed.
 
 ### Sprint 27: Phase 3 Exp 4b — Multi-Query Player Pooling (Mar 4, 2026)
 
