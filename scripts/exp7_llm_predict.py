@@ -57,8 +57,10 @@ import logging
 import os
 import sqlite3
 import sys
+import threading
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -150,12 +152,12 @@ Provide your prediction as a JSON object with these exact fields:
   "home_win_probability": <float between 0 and 1>
 }"""
 
-# Approximate token-based pricing per million tokens (as of 2026-03, USD)
-# These are estimates; update if pricing changes.
+# Token pricing per million tokens (as of 2026-03, USD, standard API)
+# Source: https://developers.openai.com/api/docs/pricing
 PRICING = {
-    "gpt-5.4-nano": {"input": 0.10, "output": 0.40},
-    "gpt-5.4-mini": {"input": 0.40, "output": 1.60},
-    "gpt-5.4": {"input": 2.00, "output": 8.00},
+    "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
+    "gpt-5.4-mini": {"input": 0.75, "output": 4.50},
+    "gpt-5.4": {"input": 2.50, "output": 15.00},
 }
 
 
@@ -1348,7 +1350,7 @@ def _download_batch_results(
 
 
 def cmd_run_standard(args: argparse.Namespace) -> None:
-    """Run predictions via standard (non-batch) API with rate limiting."""
+    """Run predictions via standard API with concurrency and live cost tracking."""
     client = get_openai_client()
     EXP7_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1367,51 +1369,55 @@ def cmd_run_standard(args: argparse.Namespace) -> None:
     if args.limit:
         prompts = prompts[: args.limit]
 
-    logger.info(
-        f"Running {len(prompts)} predictions via standard API "
-        f"with model={args.model}"
-    )
-
-    output_path = EXP7_DIR / f"{args.split}_{args.model}_results.jsonl"
-    total_input_tokens = 0
-    total_output_tokens = 0
-    parsed_count = 0
-    error_count = 0
-
     # Load existing results for resume support
+    output_path = EXP7_DIR / f"{args.split}_{args.model}_results.jsonl"
     existing_ids = set()
-    existing_results = []
     if output_path.exists() and args.resume:
         with open(output_path) as f:
             for line in f:
                 r = json.loads(line)
                 existing_ids.add(r["game_id"])
-                existing_results.append(line)
         logger.info(f"Resuming: found {len(existing_ids)} existing results")
 
-    # Filter out already-completed games
     remaining = [p for p in prompts if p["game_id"] not in existing_ids]
     if not remaining:
         logger.info("All games already completed. Nothing to do.")
         return
 
-    logger.info(f"Processing {len(remaining)} remaining games...")
+    concurrency = args.concurrency
+    logger.info(
+        f"Running {len(remaining)} predictions via standard API "
+        f"with model={args.model}, concurrency={concurrency}"
+    )
 
-    with open(output_path, "a" if args.resume else "w") as f:
-        for p in tqdm(remaining, desc=f"Predicting ({args.model})"):
-            game_id = p["game_id"]
+    # Thread-safe counters and file writer
+    lock = threading.Lock()
+    stats = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "parsed": 0,
+        "errors": 0,
+        "cost": 0.0,
+        "start_time": time.time(),
+    }
+    pricing = PRICING.get(args.model, PRICING["gpt-5.4-nano"])
 
-            result = {
-                "game_id": game_id,
-                "model": args.model,
-                "date": p["date"],
-                "season": p["season"],
-                "home_team": p["home_team"],
-                "away_team": p["away_team"],
-                "actual_home_score": p["home_score"],
-                "actual_away_score": p["away_score"],
-            }
+    def _predict_one(p: dict) -> dict:
+        """Make a single API call. Thread-safe."""
+        game_id = p["game_id"]
+        result = {
+            "game_id": game_id,
+            "model": args.model,
+            "date": p["date"],
+            "season": p["season"],
+            "home_team": p["home_team"],
+            "away_team": p["away_team"],
+            "actual_home_score": p["home_score"],
+            "actual_away_score": p["away_score"],
+        }
 
+        max_retries = 3
+        for attempt in range(max_retries):
             try:
                 response = client.chat.completions.create(
                     model=args.model,
@@ -1423,53 +1429,119 @@ def cmd_run_standard(args: argparse.Namespace) -> None:
                     temperature=0.3,
                 )
 
-                usage = response.usage
-                if usage:
-                    total_input_tokens += usage.prompt_tokens
-                    total_output_tokens += usage.completion_tokens
+                in_tok = response.usage.prompt_tokens if response.usage else 0
+                out_tok = response.usage.completion_tokens if response.usage else 0
+                call_cost = (
+                    in_tok / 1_000_000 * pricing["input"]
+                    + out_tok / 1_000_000 * pricing["output"]
+                )
 
                 content = response.choices[0].message.content
                 prediction = json.loads(content)
                 result["prediction"] = prediction
                 result["success"] = True
-                parsed_count += 1
+                result["input_tokens"] = in_tok
+                result["output_tokens"] = out_tok
+                result["cost"] = call_cost
+
+                with lock:
+                    stats["input_tokens"] += in_tok
+                    stats["output_tokens"] += out_tok
+                    stats["cost"] += call_cost
+                    stats["parsed"] += 1
+
+                return result
 
             except json.JSONDecodeError as e:
                 result["prediction"] = None
                 result["success"] = False
                 result["error"] = f"JSON parse error: {e}"
-                error_count += 1
+                with lock:
+                    stats["errors"] += 1
+                return result
 
             except Exception as e:
                 error_str = str(e)
-                result["prediction"] = None
-                result["success"] = False
-                result["error"] = error_str
-                error_count += 1
-
-                # Handle rate limiting
-                if "rate_limit" in error_str.lower() or "429" in error_str:
-                    logger.warning("Rate limited. Sleeping 30s...")
-                    time.sleep(30)
-                elif "timeout" in error_str.lower():
-                    logger.warning("Timeout. Sleeping 10s and retrying...")
-                    time.sleep(10)
+                if (
+                    "rate_limit" in error_str.lower() or "429" in error_str
+                ) and attempt < max_retries - 1:
+                    wait = 10 * (attempt + 1)
+                    logger.warning(
+                        f"Rate limited on {game_id}. Retry {attempt+1}/{max_retries} in {wait}s..."
+                    )
+                    time.sleep(wait)
+                    continue
+                elif "timeout" in error_str.lower() and attempt < max_retries - 1:
+                    logger.warning(
+                        f"Timeout on {game_id}. Retry {attempt+1}/{max_retries}..."
+                    )
+                    time.sleep(5)
+                    continue
                 else:
-                    logger.error(f"Error for {game_id}: {error_str}")
+                    result["prediction"] = None
+                    result["success"] = False
+                    result["error"] = error_str
+                    with lock:
+                        stats["errors"] += 1
+                    if attempt == max_retries - 1:
+                        logger.error(
+                            f"Failed after {max_retries} attempts for {game_id}: {error_str}"
+                        )
+                    return result
 
+        return result  # shouldn't reach here
+
+    # Run with thread pool
+    results_buffer = []
+    pbar = tqdm(total=len(remaining), desc=f"Predicting ({args.model})")
+
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {executor.submit(_predict_one, p): p for p in remaining}
+
+        for future in as_completed(futures):
+            result = future.result()
+            results_buffer.append(result)
+            pbar.update(1)
+
+            # Live cost update in progress bar
+            with lock:
+                elapsed = time.time() - stats["start_time"]
+                rate = stats["parsed"] / elapsed if elapsed > 0 else 0
+                pbar.set_postfix(
+                    {
+                        "cost": f"${stats['cost']:.3f}",
+                        "ok": stats["parsed"],
+                        "err": stats["errors"],
+                        "tok": f"{(stats['input_tokens'] + stats['output_tokens']):,}",
+                        "game/s": f"{rate:.1f}",
+                    }
+                )
+
+    pbar.close()
+
+    # Sort by game_id for deterministic output, then write
+    results_buffer.sort(key=lambda r: r["game_id"])
+
+    with open(output_path, "a" if args.resume else "w") as f:
+        for result in results_buffer:
             f.write(json.dumps(result) + "\n")
-            f.flush()
 
-            # Small delay to avoid rate limits
-            time.sleep(args.delay)
+    elapsed = time.time() - stats["start_time"]
 
-    cost = estimate_cost(total_input_tokens, total_output_tokens, args.model)
-
-    logger.info(f"\nResults saved to {output_path}")
-    logger.info(f"Parsed: {parsed_count}, Errors: {error_count}")
-    logger.info(f"Total input tokens: {total_input_tokens:,}")
-    logger.info(f"Total output tokens: {total_output_tokens:,}")
-    logger.info(f"Estimated cost: ${cost:.2f}")
+    print(f"\n{'=' * 60}")
+    print(f"  Experiment 7 — Standard API Run Complete")
+    print(f"  Model: {args.model}")
+    print(f"  Games: {stats['parsed']} succeeded, {stats['errors']} failed")
+    print(f"  Time: {elapsed:.0f}s ({elapsed/60:.1f}m)")
+    print(f"  Throughput: {stats['parsed']/elapsed:.1f} games/sec")
+    print(f"{'=' * 60}")
+    print(f"  Input tokens:  {stats['input_tokens']:>12,}")
+    print(f"  Output tokens: {stats['output_tokens']:>12,}")
+    print(f"  Total tokens:  {stats['input_tokens'] + stats['output_tokens']:>12,}")
+    print(f"  ACTUAL COST:   ${stats['cost']:>11.4f}")
+    print(f"{'=' * 60}")
+    print(f"  Results: {output_path}")
+    print()
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
@@ -1923,10 +1995,10 @@ Examples:
         help="Limit number of games (for debugging)",
     )
     sp.add_argument(
-        "--delay",
-        type=float,
-        default=0.5,
-        help="Delay between API calls in seconds (default: 0.5)",
+        "--concurrency",
+        type=int,
+        default=10,
+        help="Number of concurrent API calls (default: 10)",
     )
     sp.add_argument(
         "--resume",
