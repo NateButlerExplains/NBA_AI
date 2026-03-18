@@ -1,7 +1,7 @@
 # NBA Prediction Architecture
 
-> **Status**: Phase 1 Complete (15 experiments) | Phase 2 Complete (7 experiments) | Phase 3 Complete (10/10 experiments)
-> **Last Updated**: March 10, 2026
+> **Status**: Phase 1 Complete (15 experiments) | Phase 2 Complete (7 experiments) | Phase 3 Complete (10/10 experiments) | Phase 4 In Progress (Exps 1-5b + Exp 7 complete, Exp 6 planned)
+> **Last Updated**: March 18, 2026
 
 ---
 
@@ -67,7 +67,25 @@ Phase 3: Alternative Architectures & Data (Complete — 10/10 experiments)
 ├─ Exp 6: HIGFormer-inspired (pre-training + team GAT) — regressed (MAE 11.52)
 ├─ Exp 7: Kitchen sink features (TeamBox efficiency + GS summaries + flags) — marginal (MAE 10.77), win ↓
 ├─ Exp 8: Hybrid transformer + XGBoost — no improvement (MAE 10.85, AUC 0.706)
-└─ Exp 9: Deep ensemble (3 seeds) — NEW BEST (MAE 10.66, AUC 0.718, Acc 66.5%)
+└─ Exp 9: Deep ensemble (3 seeds) — BEST SPREAD (MAE 10.66, AUC 0.718, Acc 66.5%)
+
+Phase 4 Exps 6-7: Pre-trained & LLM Models (Exp 7 Complete)
+├─ Exp 6a: TabPFN 2.5 (tabular foundation model) — planned
+├─ Exp 6b: Chronos-2 (time-series foundation model) — planned
+├─ Exp 7: LLM API prediction (OpenAI GPT-5.4 family, structured prompts)
+│         gpt-5.4-nano:  MAE 11.80, AUC 0.693, Acc 65.2% ($1.92)
+│         gpt-5.4-mini:  MAE 11.28, AUC 0.718, Acc 65.9% ($6.65) — best calibration
+│         gpt-5.4:       MAE 11.16, AUC 0.726, Acc 66.6% ($7.64) — BEST WIN PREDICTION
+└─ Finding: LLM matches/beats custom models on win classification but
+           compresses spread variance (pred std ~8 vs actual ~16)
+
+Phase 5: Hierarchical Player-to-Game Prediction (Planned)
+├─ Goal: bottom-up prediction — player → synergy → team → game
+├─ Level 1: Player ability vectors (team-agnostic, hierarchical pre-training)
+├─ Level 2: Player synergy graph network (pairwise interactions)
+├─ Level 3: Team residuals (coaching, org effects — location-agnostic)
+├─ Level 4: Game context (home/away, rest, travel → spread prediction)
+└─ Completely separate architecture from Phases 1-4
 ```
 
 ---
@@ -817,11 +835,101 @@ Two HIGFormer-inspired components on Exp 4 base: (1) per-match outcome pre-train
 
 **Conclusion**: The ensemble is the first approach to break the 0.706 AUC ceiling and achieve both better spread AND win predictions simultaneously. Individual seeds vary considerably (AUC 0.684-0.706), confirming that different local minima capture different signal. Averaging cancels noise while preserving shared signal. ECE regressed (0.0378 vs best single 0.0153) — the logit averaging makes the ensemble slightly overconfident, but this is a known trade-off that could be addressed with temperature scaling. Coverage improved to 0.836 (from 0.821) thanks to mixture-of-Gaussians sigma capturing inter-model disagreement.
 
-### Future Avenues (Phase 4+)
+### Future Avenues
 
 1. **Player Props**: Predict individual player stats (pts/reb/ast/blk/stl) alongside game scores.
 2. **Live Prediction**: Game states as additional input for in-progress games.
-3. **Generative / Next-State Prediction**: Predict next game state if direct prediction approaches plateau.
+
+---
+
+## Phase 5: Hierarchical Player-to-Game Prediction (Planned)
+
+A ground-up rebuild that predicts game outcomes bottom-up through four hierarchical levels, each independently meaningful and feeding into the level above. Completely separate from Phases 1-4.
+
+### Philosophy
+
+Phases 1-4 predicted games top-down from team-level features. Phase 5 inverts this: understand individual players first, then model how they interact, then capture team-level residuals, then add game context. Each level is agnostic to the context introduced by the level above.
+
+### Architecture
+
+```text
+Level 4: Game Context          (home/away, rest, travel, Vegas lines → spread prediction)
+  ↑
+Level 3: Team                  (coaching, org effects — location-agnostic)
+  ↑
+Level 2: Player Synergy        (graph network over player combinations — game-agnostic)
+  ↑
+Level 1: Player                (individual ability vectors — team-agnostic, game-agnostic)
+```
+
+### Level 1 — Player Models
+
+Per-player model producing an ability vector — a data-driven player profile akin to NBA 2K ratings. Hierarchical pre-training: generic NBA player → position-specialized → individual. Learns aging curves from full historical data. Updates after every game. Cold-start for rookies via draft position, measurables, and position priors. Team-agnostic: captures intrinsic ability, not team-contextual stats (e.g., Draymond's true 3PT ability, not his inflated wide-open percentage).
+
+### Level 2 — Player Synergy
+
+Graph network modeling player interactions. Players as nodes (Level 1 vectors as features), edges capturing pairwise chemistry. Primarily teammate synergy (Steph + Draymond), secondarily opponent matchups. Edge confidence grows with co-occurrence data. Higher-order interactions (3-man, 5-man) composed from pairwise signals — explicit 5-man unit modeling is too sparse (~550 possessions needed to stabilize). Accumulates across career, handles trades/roster changes as dynamic graph updates.
+
+### Level 3 — Team
+
+Residual team-level effects beyond player talent and synergy: coaching systems, organizational culture, rotation philosophy. Location-agnostic (home court belongs to Level 4). Data-rich: TeamBox efficiency metrics (ORtg, DRtg, pace, eFG%, TOV%), team ratings, and 63 engineered features already available.
+
+### Level 4 — Game Context
+
+Final prediction layer adding game-specific context: home/away, rest days, back-to-backs, travel distance, schedule density, Vegas lines, referee assignments, and all other externalities. This is where external predictions (Vegas spreads, other models) enter the system.
+
+### New Data Requirements
+
+| Data | Status | Source | Priority |
+|------|--------|--------|----------|
+| Player height/weight/birth date | Need | NBA API | High |
+| Draft round/number/year | Need | NBA API | High |
+| Lineup/stint data | Need | Parse PBP_Logs JSON (~16M rows) | High |
+| Coaching assignments | Need | NBA API / external | Medium |
+| Pre-draft scouting/combine | Need | NBA API draftcombine | Medium |
+| Referee assignments | Need | NBA API / external | Low |
+| Travel distances | Need | Compute from city coords | Low |
+
+---
+
+## Phase 6: Final Integration — Betting & ATS (Planned)
+
+Phase 6 shifts the objective from predicting the spread accurately (MAE) to predicting the spread **relative to Vegas** (ATS win rate). This is the capstone phase that leverages everything built in Phases 1-5.
+
+### Motivation
+
+| Model | Spread MAE | Win AUC | Win Acc | Note |
+|-------|-----------|---------|---------|------|
+| Vegas closing line | ~9.45 | ~0.75 | — | Near-optimal unbiased estimator |
+| XGBoost baseline | ~10.1 | — | — | 34 engineered features |
+| Phase 3 Exp 9 (ensemble) | **10.66** | 0.718 | 66.5% | Best spread, no Vegas data |
+| Phase 4 Exp 7 GPT-5.4 | 11.16 | **0.726** | **66.6%** | Best win prediction (707 games) |
+| Phase 4 Exp 7 GPT-5.4-mini | 11.28 | 0.718 | 65.9% | Best calibration (ECE 0.0195) |
+| Phase 4 Exp 5b (generative) | 11.74 | 0.662 | 61.7% | Outcome head, full context |
+
+The ~1.2 MAE gap between our best model and Vegas may be closable by (a) incorporating Vegas data, (b) adding engineered features the transformer hasn't learned, and/or (c) optimizing XGBoost with richer inputs. But MAE improvement alone is insufficient — what matters is whether we land on the correct **side** of the Vegas line more than 52.4% of the time (breakeven at -110 juice).
+
+### Core Experiments
+
+1. **Include betting data as features** — Add Vegas closing spread, total, moneyline as transformer input features. Risk: model parrots the spread instead of learning corrections.
+
+2. **Engineered features in transformer** — Inject 43 Features-table features or 63 rolling-efficiency features into the Phase 3 architecture. Tests whether the transformer already learns equivalent representations from raw data.
+
+3. **Maximize XGBoost** — Optuna-tuned XGBoost with full feature stack: 63 engineered features + betting features + 1536-d transformer embeddings. Determines whether the original MAE ~10.1 was an architecture ceiling or undertrained.
+
+4. **ATS as core metric** — Replace Spread MAE as primary metric with ATS win rate (% of games on correct side of Vegas). Also track: ATS profit/loss at -110, ROI%, confidence-tiered ATS.
+
+### Vegas Spread Data
+
+Historic spread data verified and available (no backfill needed):
+
+- **ESPN `espn_current_spread`**: 2007-2021, 16,688 games, 100% coverage, MAE 9.45
+- **Covers `covers_closing_spread`**: 2021-2026, 3,799 games
+- **ESPN `espn_closing_spread`**: 2024-2026, 1,595 games
+- **Unified access**: `COALESCE(espn_closing_spread, covers_closing_spread, espn_current_spread)`
+- Sign convention: negative = home favored. Predicted margin = -spread.
+
+Full design: `memory/project_phase6_design.md`
 
 ---
 

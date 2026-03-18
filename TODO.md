@@ -1,6 +1,6 @@
 # NBA AI TODO
 
-> **Last Updated**: March 15, 2026
+> **Last Updated**: March 18, 2026
 > **Current Phase**: Phase 4 Complete — Generative Autoregressive
 
 ---
@@ -12,9 +12,11 @@
 | Phase 1 | Exp 13 (combined) | 12.20 | 0.592 | 57.6% |
 | Phase 2 | Exp 5a (fusion residual) | 11.61 | 0.687 | — |
 | Phase 3 | **Exp 9 (deep ensemble)** | **10.66** | **0.718** | **66.5%** |
-| Phase 4 | Exp 4 (compressed events) | 11.76 | 0.662 | 61.4% |
+| Phase 4 | Exp 5b (full context + outcome head) | 11.74 | 0.662 | 61.7% |
+| Phase 4 | Exp 7 (GPT-5.4-mini LLM) | 11.28 | **0.718** | 65.9% |
+| Phase 4 | Exp 7 (GPT-5.4 LLM, 1/3 sample) | 11.16 | **0.726** | **66.6%** |
 
-**Overall best**: Phase 3 Exp 9 ensemble (MAE 10.66, AUC 0.718). Phase 4 generative approach is ~1.1 MAE behind — autoregressive rollout drift is a fundamental constraint vs direct prediction.
+**Overall best spread**: Phase 3 Exp 9 ensemble (MAE 10.66). **Overall best win prediction**: Phase 4 Exp 7 GPT-5.4 (AUC 0.726, Acc 66.6%). LLM matches/beats our best custom models on win classification but lags ~0.5-1.1 on spread MAE due to variance compression.
 
 ---
 
@@ -35,34 +37,103 @@
 
 **Key insight**: Variance reduction via ensembling broke the 0.706 AUC ceiling. Five single-model experiments (Exp 1 GRU, Exp 2 pretrain, Exp 6 pretrain+GAT, Exp 7 features, Exp 8 hybrid) all failed to improve both MAE and AUC simultaneously.
 
-## Phase 4: Generative Autoregressive Game State Prediction (Complete — 4 experiments + 1 ablation)
+## Phase 4: Generative Autoregressive Game State Prediction (Complete — 7 experiments)
 
 - [x] Exp 1: Baseline in-context conditioning (32.3M params) — MAE ~12.5, AUC 0.558 (posterior collapse)
 - [x] Exp 1b: Bug fixes + FP32 + ContextScoreBias — AUC 0.565 (context encoder overfit)
 - [x] Exp 2: adaLN-Zero + CFG + pre-decoder heads (43.3M params) — MAE 12.62, AUC 0.582
 - [x] Exp 3: Simplified context (rolling stats, 157K encoder) + scheduled sampling — MAE 12.28, AUC 0.583
-- [x] Exp 4: Scoring-event compression (~110 vs ~487 states) — **BEST** (MAE 11.76, AUC 0.662)
+- [x] Exp 4: Scoring-event compression (~110 vs ~487 states) — MAE 11.76, AUC 0.662
 - [x] Exp 4b: Uniform class weights ablation — MAE 11.87, AUC 0.667
+- [x] Exp 5: Full-context encoder (Phase 3 player-aware, 38.5M params) + outcome head + rules engine — MAE 11.74, AUC 0.662
+- [x] Exp 5b: Clock-delta formulation (softplus positive increments) — **BEST** (MAE 11.74, AUC 0.662, fixed rollout drift)
 
-**Progression**: In-context conditioning → adaLN-Zero (fixed decoder ignoring context) → simplified encoder (fixed overfitting) → event compression (eliminated 77% no-score waste). Each experiment diagnosed and fixed the previous bottleneck.
+**Progression**: In-context conditioning → adaLN-Zero (fixed decoder ignoring context) → simplified encoder (fixed overfitting) → event compression (eliminated 77% no-score waste) → full context + outcome head (restored Phase 3 data) → clock-delta (fixed rollout monotonicity).
 
 **Key findings**:
 - Teacher-forced autoregressive models suffer posterior collapse with prepended context tokens
 - adaLN-Zero (DiT-style) forces context usage by modulating every LayerNorm
 - 13.1M complex context encoder overfits badly; 157K rolling-stats MLP generalizes
 - Scoring-event compression (487→110 steps) gave largest single improvement (+0.079 AUC)
+- Outcome head (direct Gaussian spread prediction) outperforms autoregressive rollout for spread MAE
+- Clock-delta formulation (softplus positive increments) solves rollout clock stalling; absolute clock predictions oscillate under autoregressive drift
+- In-game prefix predictions improve strongly: halftime MAE 10.53 (beats Phase 3 ensemble), end-Q3 MAE 8.93
+- Mask convention bug: PyTorch `key_padding_mask` uses True=ignore; collate used True=valid → all context was masked. Fixed by negating masks in FullContextEncoder
 - Autoregressive generation is fundamentally harder than direct prediction (~1.1 MAE gap)
+
+### Exp 6: Pre-trained Foundation Models (Planned)
+
+- [ ] Exp 6a: TabPFN 2.5 — tabular foundation model, 62 features/game, zero-shot + fine-tuned (`scripts/exp6a_tabpfn.py`)
+- [ ] Exp 6b: Chronos-2 — time-series foundation model with group attention for cross-team matchup dynamics (`scripts/exp6b_chronos2.py`)
+
+### Exp 7: LLM API Prediction (Complete — 3 model tiers)
+
+- [x] gpt-5.4-nano (2120 games, $1.92) — MAE 11.80, AUC 0.693, Acc 65.2%
+- [x] gpt-5.4-mini (2120 games, $6.65) — MAE 11.28, AUC 0.718, Acc 65.9%, **ECE 0.0195**
+- [x] gpt-5.4 (707 games, $7.64) — MAE 11.16, **AUC 0.726**, **Acc 66.6%**
+
+**Key findings**:
+- GPT-5.4-mini matches Phase 3 Exp 9 ensemble on win AUC (0.718) for $6.65
+- GPT-5.4 premium beats it (AUC 0.726, Acc 66.6%) — new best win prediction
+- Best calibration ever: mini ECE 0.0195 (all bins within 0.04 gap)
+- Spread MAE lags by 0.5-1.1 — LLM compresses spread variance (predicted std ~8-10 vs actual ~16)
+- Leakage signal: 2024-25 MAE ~0.5-0.9 better than 2025-26 across all tiers (could be partial-season effect)
+- LLM has unique advantage: player name recognition + target game roster knowledge
+- Total cost for all 3 tiers: $16.21
+
+## Phase 5: Hierarchical Player-to-Game Prediction (Planned)
+
+Goal: bottom-up prediction through 4 hierarchical levels — player → synergy → team → game. Completely separate architecture from Phases 1-4.
+
+### Research
+- [ ] Level 1: Player rating systems (EPM/RAPM/DARKO), aging curves, cold-start/rookie projection
+- [ ] Level 2: Graph network design, lineup data parsing feasibility, synergy modeling
+- [ ] Level 3: Coaching effects, team residual quantification
+- [ ] Level 4: Game context features, home court advantage trends
+- [ ] Data pipeline: PBP lineup parsing, NBA API player attributes, external sources
+- [ ] Architecture: model design per level, inter-level interfaces, training strategy
+
+### Implementation
+- [ ] Data: Parse PBP_Logs for lineup/stint data
+- [ ] Data: Fetch player attributes (height, weight, age, draft) from NBA API
+- [ ] Level 1: Player ability model (hierarchical pre-training)
+- [ ] Level 2: Player synergy graph network
+- [ ] Level 3: Team residual model
+- [ ] Level 4: Game context integration → spread prediction
+- [ ] Evaluation: Compare vs Phase 3 Exp 9 ensemble (MAE 10.66, AUC 0.718)
+
+## Phase 6: Final Integration — Betting & ATS (Planned)
+
+Goal: shift from Spread MAE to ATS win rate (beating the Vegas spread). The capstone phase.
+
+- [ ] Exp 1: Include betting data (Vegas spread/total/ML) as transformer features
+- [ ] Exp 2: Inject engineered features (43 or 63) into transformer architecture
+- [ ] Exp 3: Maximize XGBoost — Optuna-tuned with full feature stack (engineered + betting + transformer embeddings)
+- [ ] Exp 4: ATS metric integration — evaluate all models on ATS%, profit/loss at -110, ROI%
+
+**Key data**: Vegas closing spreads available 2007-2026 via `espn_current_spread` (historic) + `covers_closing_spread` (recent). No backfill needed. Vegas MAE ~9.45, our best ~10.66.
+
+**Success criteria**: ATS > 52.4% (breakeven at -110 juice) on test set.
 
 ## Future Avenues
 
-- **Generative ensemble** — 3-seed ensemble of Phase 4 Exp 4 (untested, may close gap)
-- **Hybrid generative + direct** — use generative rollouts as features for direct predictor
 - **Player props** — predict individual player statistics
 - **Live prediction** — in-game win probability using real-time play-by-play
 
 ---
 
 ## Completed Sprints
+
+### Sprint 33: Phase 4 Exp 5 — Full Context + Outcome Head + Clock-Delta (Mar 15-18, 2026)
+
+**Summary**: Restored Phase 3 player-aware context encoder (FullContextEncoder, 8.2M params), added Gaussian outcome head for per-position spread prediction, rules engine for deterministic game termination, 6-class events (no game_end), 18-dim enriched state vectors, and overtime handling. Fixed critical mask inversion bug (True=valid vs PyTorch True=ignore) and NaN from empty attention pooling. Implemented clock-delta formulation (softplus positive increments) to fix rollout clock stalling.
+
+**Bugs fixed**:
+- `game_mask` / `player_mask` convention: collate used True=valid, but PyTorch `key_padding_mask` expects True=ignore. FullContextEncoder was ignoring all valid games and attending to padding. Fixed by negating masks.
+- NaN propagation: games with all-padded players → NaN from empty attention pooling → `0*NaN=NaN` contaminated temporal encoder. Fixed with `torch.nan_to_num`.
+- Clock drift: absolute clock predictions oscillated during rollout (training was teacher-forced). Fixed with clock-delta formulation (predict positive increment via softplus instead of absolute progress).
+
+**Result**: Exp 5b is best generative model — MAE 11.74, AUC 0.662, Win Acc 61.7%. Outcome head pre-game prediction outperforms autoregressive rollout. In-game prefix predictions strong: halftime MAE 10.53, end-Q3 MAE 8.93. Rollout score distribution still collapsed (home+2 dominance) — class imbalance remains for future work.
 
 ### Sprint 32: Phase 4 Exps 3-4 — Simplified Context + Compression (Mar 14, 2026)
 
