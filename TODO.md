@@ -1,7 +1,7 @@
 # NBA AI TODO
 
 > **Last Updated**: March 18, 2026
-> **Current Phase**: Phase 4 Complete — Generative Autoregressive
+> **Current Phase**: Phase 4 Complete — Generative, Pre-trained Models & LLM
 
 ---
 
