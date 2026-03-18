@@ -91,19 +91,20 @@ This means we'd be breaking new ground, which is both interesting and risky.
 - All active models supported
 - Prompt caching stacks with batch discount (cache hit = 0.1x base, further halved in batch)
 
-### 2.2 OpenAI Pricing (approximate, from known 2025 rates)
+### 2.2 OpenAI GPT-5.4 Family Pricing
 
 | Model | Standard Input | Standard Output | Batch Input (50% off) | Batch Output (50% off) |
 |-------|---------------|-----------------|----------------------|----------------------|
-| GPT-4o | ~$2.50/MTok | ~$10/MTok | ~$1.25/MTok | ~$5/MTok |
-| GPT-4o-mini | ~$0.15/MTok | ~$0.60/MTok | ~$0.075/MTok | ~$0.30/MTok |
+| gpt-5.4-nano | $0.20/MTok | $1.25/MTok | $0.10/MTok | $0.625/MTok |
+| gpt-5.4-mini | $0.75/MTok | $4.50/MTok | $0.375/MTok | $2.25/MTok |
+| gpt-5.4 | $2.50/MTok | $15.00/MTok | $1.25/MTok | $7.50/MTok |
 
 **OpenAI Batch API:**
 - 50% discount on all tokens
 - JSONL file input format
 - Completes within 24 hours (often faster)
 - Supports structured outputs (`response_format: { type: "json_schema" }`)
-- Supports GPT-4o, GPT-4o-mini, GPT-4-turbo, GPT-3.5-turbo
+- Supports GPT-5.4 family (nano, mini, 5.4)
 
 ### 2.3 Cost Estimates for 2,400 Test Games
 
@@ -118,21 +119,23 @@ Using **~5,000 input + ~500 output tokens per game** as baseline estimate:
 
 | Model | Mode | Input Cost | Output Cost | Total (2,400 games) |
 |-------|------|-----------|-------------|---------------------|
-| GPT-4o-mini | Batch | $0.90 | $0.36 | **$1.26** |
-| GPT-4o-mini | Standard | $1.80 | $0.72 | **$2.52** |
+| gpt-5.4-nano | Batch | $1.20 | $0.75 | **$1.95** |
+| gpt-5.4-nano | Standard | $2.40 | $1.50 | **$3.90** |
+| gpt-5.4-mini | Batch | $4.50 | $2.70 | **$7.20** |
 | Claude Haiku 4.5 | Batch | $6.00 | $3.00 | **$9.00** |
-| GPT-4o | Batch | $15.00 | $6.00 | **$21.00** |
+| gpt-5.4 | Batch | $15.00 | $9.00 | **$24.00** |
 | Claude Sonnet 4.6 | Batch | $18.00 | $9.00 | **$27.00** |
 | Claude Opus 4.6 | Batch | $30.00 | $15.00 | **$45.00** |
-| GPT-4o | Standard | $30.00 | $12.00 | **$42.00** |
+| gpt-5.4 | Standard | $30.00 | $18.00 | **$48.00** |
 | Claude Sonnet 4.6 | Standard | $36.00 | $18.00 | **$54.00** |
 
 **With chain-of-thought (3x output tokens):**
 | Model | Mode | Total (2,400 games) |
 |-------|------|---------------------|
-| GPT-4o-mini | Batch | **$1.98** |
+| gpt-5.4-nano | Batch | **$2.70** |
+| gpt-5.4-mini | Batch | **$12.60** |
 | Claude Haiku 4.5 | Batch | **$15.00** |
-| GPT-4o | Batch | **$27.00** |
+| gpt-5.4 | Batch | **$42.00** |
 | Claude Sonnet 4.6 | Batch | **$45.00** |
 
 **With prompt caching (Anthropic, shared system prompt):**
@@ -142,10 +145,11 @@ Using **~5,000 input + ~500 output tokens per game** as baseline estimate:
 
 **Multi-prompt ensemble (3 prompts per game):**
 - Multiply above costs by 3
-- GPT-4o-mini batch: $3.78-$5.94 for full test set
+- gpt-5.4-nano batch: $5.85-$8.10 for full test set
+- gpt-5.4-mini batch: $21.60-$37.80 for full test set
 - Claude Sonnet batch: $81-$135 for full test set
 
-**Recommendation**: Start with GPT-4o-mini batch ($1-2 per full evaluation) for rapid iteration, then validate best prompts on GPT-4o or Claude Sonnet.
+**Recommendation**: Start with gpt-5.4-nano batch (~$2-3 per full evaluation) for rapid iteration, then validate best prompts on gpt-5.4-mini or Claude Sonnet.
 
 ---
 
@@ -554,10 +558,35 @@ Our test set spans 2024-2026 seasons. Games from 2024-2025 are almost certainly 
 | Our best MAE | 10.66 (Phase 3 Exp 9 ensemble) |
 | Our best AUC | 0.718 |
 | Vegas MAE | ~9.45 |
-| Cheapest full evaluation | ~$1.26 (GPT-4o-mini batch) |
+| Cheapest full evaluation | ~$1.95 (gpt-5.4-nano batch) |
 | Most expensive approach | ~$135 (Claude Sonnet 3-prompt ensemble, standard API) |
 | Expected LLM standalone MAE | 12.5-14.0 (without Vegas anchor) |
 | Expected LLM+Transformer MAE | 10.3-10.6 (optimistic) |
 | Tokens per game (input) | ~4,000-7,500 |
 | Tokens per game (output) | ~200-800 |
 | Batch processing time | 1-24 hours |
+
+---
+
+## 11. Final Design Decisions (March 18, 2026)
+
+1. **Models**: GPT-5.4 family only (nano/mini/5.4). Not GPT-4 series. The GPT-5.4 family offers better performance at competitive pricing and is the current recommended model line from OpenAI.
+
+2. **No Vegas lines**: Predictions use only the same statistical data our Phase 3/4 models use. This ensures a fair apples-to-apples comparison of predictive ability without anchoring to market consensus.
+
+3. **Target game roster included**: Players who actually played in the target game are provided to the LLM. This is consistent with Phase 3 models which also use target game roster (confirmed in `sequence_builder.py` `_extract_roster()`). Notable absences (players averaging >15 MPG but who did not play) are flagged explicitly so the LLM can reason about their impact.
+
+4. **Pre-computed derived stats**: The prompt provides FG%, 3P%, FT%, and total REB instead of raw makes/attempts. This is cleaner for LLM reasoning -- the model does not need to compute ratios from raw counting stats, reducing arithmetic errors and letting it focus on analysis.
+
+5. **Data leakage mitigation**: We accept that some game results may exist in the LLM's training data. Mitigation strategy: (a) instruct the model explicitly not to use outcome knowledge, (b) compute per-season MAE to detect leakage signal (suspiciously better accuracy on older seasons would indicate memorization), (c) no web search tools provided to the model.
+
+6. **No ensemble with transformer**: This experiment evaluates LLM standalone prediction ability. Combining LLM predictions with our Phase 3 transformer ensemble is deferred to a later phase. This keeps the evaluation clean and the results interpretable.
+
+7. **Prompt structure**: System prompt with calibration context (league averages, home advantage base rates, score distribution guidance) + per-game user prompt containing:
+   - Team rolling stats across 3 windows (last 5, 10, 20 games)
+   - Recent game log (last 10 games with scores and opponents)
+   - Player averages for top 10 players per team (using derived stats: PTS, REB, AST, FG%, 3P%, FT%, MIN)
+   - Target game roster with flagged absences
+   - Head-to-head record for the season
+
+8. **Output format**: JSON with `analysis` (free-text reasoning), `home_score`, `away_score`, and `home_win_probability`. Spread is derived from the score difference (`home_score - away_score`) rather than predicted independently, ensuring internal consistency.
