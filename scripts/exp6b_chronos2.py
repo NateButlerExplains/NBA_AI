@@ -9,7 +9,7 @@ histories so the model can learn cross-team matchup dynamics.
 Experiment variants:
     6b-zero:  Zero-shot Chronos-2 (no fine-tuning)
     6b-lora:  LoRA fine-tuned on NBA training data
-    6b-base:  amazon/chronos-2-base  (120M params)
+    6b-base:  amazon/chronos-2  (120M params)
     6b-large: amazon/chronos-2-large (300M params) — may OOM on 8GB VRAM
 
 Data split (chronological, same as all Phase 4):
@@ -559,7 +559,7 @@ def build_autogluon_data(
 def run_autogluon_experiment(
     train_records: list[dict],
     eval_records: list[dict],
-    model_path: str = "amazon/chronos-2-base",
+    model_path: str = "amazon/chronos-2",
     finetune: bool = False,
     finetune_steps: int = 1000,
     finetune_lr: float = 1e-4,
@@ -661,10 +661,10 @@ def run_autogluon_experiment(
     is_last = (idx["timestamp"] == last_ts_per_item).values
 
     # History: everything except the last row per item
-    history_df = eval_tsdf[~is_last.values]
+    history_df = eval_tsdf[~is_last]
 
     # Future covariates: just the last row per item, only the known covariate columns
-    future_rows = eval_tsdf[is_last.values][known_covariates].copy()
+    future_rows = eval_tsdf[is_last][known_covariates].copy()
 
     try:
         predictions = predictor.predict(history_df, known_covariates=future_rows)
@@ -709,7 +709,7 @@ def run_autogluon_experiment(
 def run_direct_chronos(
     eval_records: list[dict],
     train_records: list[dict] = None,
-    model_path: str = "amazon/chronos-2-base",
+    model_path: str = "amazon/chronos-2",
     finetune: bool = False,
     finetune_steps: int = 1000,
     finetune_lr: float = 1e-4,
@@ -934,7 +934,7 @@ def run_direct_chronos(
 # ---------------------------------------------------------------------------
 def run_direct_chronos_multivariate(
     eval_records: list[dict],
-    model_path: str = "amazon/chronos-2-base",
+    model_path: str = "amazon/chronos-2",
     device: str = "cuda",
     batch_size: int = 32,
 ) -> list[dict]:
