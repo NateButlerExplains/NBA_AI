@@ -464,17 +464,19 @@ def extract_generative(
 
     # Get game metadata from the generative dataset's game_features
     gen_game_features = ds.game_features
+    # game_id is dropped by generative_collate, so we track by dataset index
+    all_game_ids = ds.game_ids
 
     records = []
+    game_idx = 0  # Tracks which game_id we're on (batch_size=1, no shuffle)
     with torch.no_grad():
         for i, batch in enumerate(loader):
             if batch is None:
+                game_idx += 1
                 continue
 
-            game_id = batch.pop("game_id") if "game_id" in batch else None
-            # game_id might be a list from collate
-            if isinstance(game_id, (list, tuple)):
-                game_id = game_id[0]
+            game_id = all_game_ids[game_idx] if game_idx < len(all_game_ids) else None
+            game_idx += 1
 
             batch_dev = {
                 k: v.to(torch_device) if isinstance(v, torch.Tensor) else v
