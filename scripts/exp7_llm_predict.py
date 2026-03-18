@@ -69,6 +69,13 @@ from typing import Any
 import numpy as np
 from tqdm import tqdm
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass  # dotenv not required if env vars are set directly
+
 logger = logging.getLogger(__name__)
 
 # =============================================================================
@@ -1366,6 +1373,8 @@ def cmd_run_standard(args: argparse.Namespace) -> None:
         for line in f:
             prompts.append(json.loads(line))
 
+    if args.every_nth:
+        prompts = prompts[:: args.every_nth]
     if args.limit:
         prompts = prompts[: args.limit]
 
@@ -1993,6 +2002,13 @@ Examples:
         type=int,
         default=None,
         help="Limit number of games (for debugging)",
+    )
+    sp.add_argument(
+        "--every-nth",
+        type=int,
+        default=None,
+        dest="every_nth",
+        help="Take every Nth game for even sampling (e.g., --every-nth 3)",
     )
     sp.add_argument(
         "--concurrency",
