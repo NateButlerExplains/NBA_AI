@@ -65,6 +65,13 @@ from pathlib import Path
 
 import numpy as np
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -640,23 +647,50 @@ def run_autogluon_experiment(
     fit_time = time.time() - t0
     logger.info(f"Fit completed in {fit_time:.1f}s")
 
-    # Predict
+    # Predict — must split data into history (input) and future covariates
     logger.info("Running predictions...")
     t0 = time.time()
 
-    # For known covariates at prediction time, we need to provide future values
-    known_future = eval_tsdf[
-        eval_tsdf.index.get_level_values("timestamp")
-        == eval_tsdf.index.get_level_values("timestamp").max()
-    ]
-    known_future = known_future[known_covariates]
+    # Split: for each item, the last row is the target. Remove it for prediction input,
+    # and extract its covariates as the known_future.
+    import pandas as pd
+
+    # Get the last timestamp for each item_id (the prediction target row)
+    idx = eval_tsdf.reset_index()
+    last_ts_per_item = idx.groupby("item_id")["timestamp"].transform("max")
+    is_last = (idx["timestamp"] == last_ts_per_item).values
+
+    # History: everything except the last row per item
+    history_df = eval_tsdf[~is_last.values]
+
+    # Future covariates: just the last row per item, only the known covariate columns
+    future_rows = eval_tsdf[is_last.values][known_covariates].copy()
 
     try:
-        predictions = predictor.predict(eval_tsdf, known_covariates=known_future)
+        predictions = predictor.predict(history_df, known_covariates=future_rows)
     except Exception as e:
         logger.warning(f"Prediction with known_covariates failed: {e}")
         logger.info("Retrying without known_covariates...")
-        predictions = predictor.predict(eval_tsdf)
+        try:
+            # Try without covariates — create a fresh predictor without them
+            predictor_nocov = TimeSeriesPredictor(
+                prediction_length=1,
+                target="margin",
+                eval_metric="MAE",
+                path=output_dir + "_nocov",
+                verbosity=2,
+            )
+            hp_nocov = dict(hyperparams)
+            predictor_nocov.fit(
+                train_data=eval_tsdf if not finetune else train_tsdf,
+                hyperparameters=hp_nocov,
+                skip_model_selection=True,
+                enable_ensemble=False,
+            )
+            predictions = predictor_nocov.predict(history_df)
+        except Exception as e2:
+            logger.error(f"Prediction without covariates also failed: {e2}")
+            raise
 
     pred_time = time.time() - t0
     logger.info(f"Prediction completed in {pred_time:.1f}s")
