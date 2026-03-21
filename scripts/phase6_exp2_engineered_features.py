@@ -176,6 +176,10 @@ def load_betting_data(db_path: str) -> pd.DataFrame:
     # Convert moneyline to implied probability
     def ml_to_prob(ml):
         """Convert American moneyline to implied probability."""
+        try:
+            ml = float(ml)
+        except (ValueError, TypeError):
+            return np.nan
         if pd.isna(ml) or ml == 0:
             return np.nan
         if ml > 0:

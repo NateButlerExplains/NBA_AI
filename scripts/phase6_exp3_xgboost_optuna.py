@@ -600,12 +600,16 @@ def build_all_features(
 
             ml_h = b["ml_home"]
             ml_a = b["ml_away"]
-            row["vegas_ml_home_prob"] = ml_to_implied_prob(
-                float(ml_h) if pd.notna(ml_h) else np.nan
-            )
-            row["vegas_ml_away_prob"] = ml_to_implied_prob(
-                float(ml_a) if pd.notna(ml_a) else np.nan
-            )
+            try:
+                ml_h_f = float(ml_h) if pd.notna(ml_h) else np.nan
+            except (ValueError, TypeError):
+                ml_h_f = np.nan
+            try:
+                ml_a_f = float(ml_a) if pd.notna(ml_a) else np.nan
+            except (ValueError, TypeError):
+                ml_a_f = np.nan
+            row["vegas_ml_home_prob"] = ml_to_implied_prob(ml_h_f)
+            row["vegas_ml_away_prob"] = ml_to_implied_prob(ml_a_f)
             # Normalize ML implied probs to sum to 1 (remove vig)
             total_prob = row["vegas_ml_home_prob"] + row["vegas_ml_away_prob"]
             if total_prob > 0:
