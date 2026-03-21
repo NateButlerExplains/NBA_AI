@@ -773,6 +773,27 @@ def evaluate_all(vegas_data: dict) -> list[ATSResults]:
             except Exception as e:
                 logger.error(f"Failed to evaluate {name}: {e}")
 
+    # --- Phase 3/4 model predictions from data/phase6/ ---
+    phase6_dir = PROJECT_ROOT / "data" / "phase6"
+    if phase6_dir.exists():
+        for pred_file in sorted(phase6_dir.glob("test_*_predictions.jsonl")):
+            # Extract model name from filename: test_{model_name}_predictions.jsonl
+            stem = pred_file.stem  # e.g. test_phase3_exp4_interaction_predictions
+            model_name = stem.replace("test_", "").replace("_predictions", "")
+            display_name = (
+                model_name.replace("_", " ")
+                .replace("phase3 ", "P3 ")
+                .replace("gen ", "P4 ")
+            )
+            try:
+                results = evaluate_single_results(
+                    pred_file, vegas_data, model_name=display_name
+                )
+                if results.n_games > 0:
+                    all_results.append(results)
+            except Exception as e:
+                logger.error(f"Failed to evaluate {display_name}: {e}")
+
     # --- Naive baselines ---
     # Predict spread=0 (every game is a toss-up)
     naive_preds = make_naive_predictions(vegas_data, home_advantage=0.0)
