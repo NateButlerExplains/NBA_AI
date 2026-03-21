@@ -38,6 +38,7 @@ import argparse
 import json
 import logging
 import math
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -467,6 +468,31 @@ def extract_generative(
     # game_id is dropped by generative_collate, so we track by dataset index
     all_game_ids = ds.game_ids
 
+    # Build actual scores cache from database for these game_ids
+    _actual_scores_cache = {}
+    try:
+        conn = sqlite3.connect(str(PROJECT_ROOT / "data" / "NBA_AI_full.sqlite"))
+        conn.execute("PRAGMA journal_mode=WAL")
+        for gid in all_game_ids:
+            cursor = conn.execute(
+                """SELECT tb.pts, t.abbreviation
+                   FROM TeamBox tb
+                   JOIN Teams t ON tb.team_id = t.team_id
+                   JOIN Games g ON tb.game_id = g.game_id
+                   WHERE tb.game_id = ?""",
+                (gid,),
+            )
+            gf = gen_game_features.get(gid, {})
+            home = gf.get("home_team", "")
+            scores = {row[1]: row[0] for row in cursor}
+            if home in scores:
+                away = gf.get("away_team", "")
+                _actual_scores_cache[gid] = (scores.get(home), scores.get(away))
+        conn.close()
+        logger.info(f"Loaded actual scores for {len(_actual_scores_cache)} games")
+    except Exception as e:
+        logger.warning(f"Could not load actual scores from DB: {e}")
+
     records = []
     game_idx = 0  # Tracks which game_id we're on (batch_size=1, no shuffle)
     with torch.no_grad():
@@ -525,10 +551,11 @@ def extract_generative(
             away_team = gf.get("away_team", "UNK")
             season = ds._get_season(game_id) if game_id else ""
 
-            # Derive actual scores from margin if possible
-            # (generative cache only stores final_margin, not individual scores)
+            # Look up actual scores from database
             actual_home = None
             actual_away = None
+            if game_id and game_id in _actual_scores_cache:
+                actual_home, actual_away = _actual_scores_cache[game_id]
 
             record = {
                 "game_id": game_id or f"unknown_{i}",
