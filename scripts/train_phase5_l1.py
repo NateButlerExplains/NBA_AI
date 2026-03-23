@@ -32,6 +32,7 @@ from src.phase5.model import NKEH, count_parameters
 from src.phase5.dataset import (
     SingleGameDataset,
     CareerSequenceDataset,
+    load_archetypes,
     load_metadata,
     load_profiles,
 )
@@ -99,8 +100,22 @@ def train_phase1(
         metadata["profile_columns"]
     ), f"Config n_profile={cfg.n_profile} != cache {len(metadata['profile_columns'])}"
 
-    # Model
-    model = NKEH(cfg).to(device)
+    # Model — initialize archetypes before moving to device
+    model = NKEH(cfg)
+
+    # Initialize archetype prototypes from pre-computed k-means centroids
+    try:
+        centroids = load_archetypes()
+        model.archetype_network.initialize_from_centroids(centroids)
+        logging.info(
+            f"Initialized archetype prototypes from centroids "
+            f"({centroids.shape[0]}x{centroids.shape[1]} -> {cfg.n_archetypes}x{cfg.d_ability})"
+        )
+    except FileNotFoundError:
+        logging.warning("Archetype centroids not found, using random initialization")
+
+    model = model.to(device)
+
     logging.info(f"Model parameters: {count_parameters(model):,}")
 
     optimizer = torch.optim.AdamW(
@@ -177,10 +192,14 @@ def train_phase1(
 
         # --- Logging ---
         lr = optimizer.param_groups[0]["lr"]
+        arch_ent_str = ""
+        if "archetype_entropy" in train_losses:
+            arch_ent_str = f" arch_ent={train_losses['archetype_entropy']:.4f}"
         logging.info(
             f"Epoch {epoch:3d}/{epochs} | LR {lr:.2e} | "
             f"Train: total={train_losses['total']:.4f} recon={train_losses['recon']:.4f} "
-            f"next={train_losses['next_game']:.4f} dpm={train_losses['dpm']:.4f} | "
+            f"next={train_losses['next_game']:.4f} dpm={train_losses['dpm']:.4f}"
+            f"{arch_ent_str} | "
             f"Val: total={val_losses['total']:.4f} recon={val_losses['recon']:.4f}"
         )
 

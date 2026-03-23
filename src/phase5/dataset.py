@@ -357,6 +357,7 @@ class CareerSequenceDataset(Dataset):
 
             # Store filtered data
             has_pbp_arr = data.get("has_pbp", np.ones(len(game_ids), dtype=bool))
+            team_ids_arr = data.get("team_ids")
             self.player_cache[pid] = {
                 "box_stats": data["box_stats"][valid_mask],
                 "pbp_stats": data["pbp_stats"][valid_mask],
@@ -364,6 +365,11 @@ class CareerSequenceDataset(Dataset):
                 "dpm_targets": data["dpm_targets"][valid_mask],
                 "has_dpm": data["has_dpm"][valid_mask],
                 "has_pbp": has_pbp_arr[valid_mask],
+                "team_ids": (
+                    team_ids_arr[valid_mask]
+                    if team_ids_arr is not None
+                    else np.zeros(n_valid, dtype=np.int64)
+                ),
             }
             self.players.append(pid)
 
@@ -387,6 +393,7 @@ class CareerSequenceDataset(Dataset):
         T_full = len(data["box_stats"])
 
         # Truncate to max_len (take most recent games)
+        team_ids_arr = data.get("team_ids")
         if T_full > self.max_len:
             start = T_full - self.max_len
             box = data["box_stats"][start:]
@@ -394,6 +401,8 @@ class CareerSequenceDataset(Dataset):
             ctx = data["context"][start:]
             dpm = data["dpm_targets"][start:]
             has_dpm = data["has_dpm"][start:]
+            if team_ids_arr is not None:
+                team_ids_arr = team_ids_arr[start:]
             T = self.max_len
         else:
             box = data["box_stats"]
@@ -426,8 +435,9 @@ class CareerSequenceDataset(Dataset):
         profile = self._get_profile(pid)
 
         # Age sequence for Kalman prediction step
-        # Context index 0 = age_at_game
-        age_t = ctx_t[:, 0:1]  # (max_len, 1)
+        # Context column 0 is career tenure (years), not biological age
+        # Normalize to roughly [-1, 1.5]: (tenure - 8) / 8
+        age_t = (ctx_t[:, 0:1] - 8.0) / 8.0  # (max_len, 1)
 
         # Stat targets: current game (reconstruction) and next game (prediction)
         stat_target = box_t.clone()
@@ -449,6 +459,14 @@ class CareerSequenceDataset(Dataset):
             pbp_norm[no_pbp_mask] = 0.0
         ctx_norm = self.normalizer.normalize_context(ctx_t)
 
+        # Compute trade mask (True = first game on new team)
+        trade_mask = np.zeros(self.max_len, dtype=bool)
+        if team_ids_arr is not None and len(team_ids_arr) > 1:
+            for t in range(1, T):
+                if team_ids_arr[t] != team_ids_arr[t - 1] and team_ids_arr[t] != 0:
+                    trade_mask[t] = True
+        trade_mask_t = torch.tensor(trade_mask, dtype=torch.bool)
+
         return {
             "box_stats": box_norm,  # (max_len, n_box)
             "pbp_stats": pbp_norm,  # (max_len, n_pbp)
@@ -461,5 +479,6 @@ class CareerSequenceDataset(Dataset):
             "dpm_target": dpm_t,  # (max_len, 3)
             "has_dpm": has_dpm_t,  # (max_len,)
             "has_next": has_next,  # (max_len,)
+            "trade_mask": trade_mask_t,  # (max_len,)
             "seq_len": torch.tensor(T, dtype=torch.long),
         }

@@ -89,6 +89,63 @@ class ArchetypeNetwork(nn.Module):
         self.prototype_mu = nn.Parameter(torch.randn(K, d) * 0.1)
         self.prototype_log_sigma = nn.Parameter(torch.zeros(K, d))
 
+        # Learnable temperature for softmax (prevents premature sharpening)
+        self.use_learnable_temp = cfg.archetype_temperature_learnable
+        self.min_temperature = cfg.archetype_min_temperature
+        if self.use_learnable_temp:
+            # Initialize at log(1.0) so initial temperature = softplus(0) + min ≈ 0.79
+            self.log_temperature = nn.Parameter(torch.tensor(0.0))
+
+    def initialize_from_centroids(self, centroids):
+        """
+        Initialize prototype_mu from pre-computed k-means centroids.
+        Projects from centroid_dim to d_ability via a learned-style projection.
+
+        If centroid_dim > d_ability, uses PCA (top-d components).
+        If centroid_dim < d_ability, pads with small random noise.
+        The SVD rank is min(K, C), so if K < d_ability we must pad.
+
+        Args:
+            centroids: (K, C) numpy array of centroid vectors
+        """
+        import numpy as np
+
+        if isinstance(centroids, np.ndarray):
+            centroids_t = torch.tensor(centroids, dtype=torch.float32)
+        else:
+            centroids_t = centroids.float()
+
+        K, C = centroids_t.shape
+        d = self.prototype_mu.shape[1]
+
+        if C == d:
+            self.prototype_mu.data = centroids_t
+        else:
+            # Project via SVD of the centroid matrix
+            U, S, Vt = torch.linalg.svd(centroids_t, full_matrices=False)
+            # Effective rank is min(K, C); project centroids into this space
+            rank = min(K, C)
+            projected = U[:, :rank] * S[:rank].unsqueeze(0)  # (K, rank)
+
+            if rank >= d:
+                # More components than needed: take first d (PCA)
+                projected = projected[:, :d]
+            else:
+                # Fewer components than d: pad remaining dims with small noise
+                pad = torch.randn(K, d - rank) * 0.05
+                projected = torch.cat([projected, pad], dim=-1)
+
+            # Scale to reasonable range
+            projected = projected / (projected.std() + 1e-8) * 0.3
+            self.prototype_mu.data = projected
+
+    @property
+    def temperature(self) -> torch.Tensor:
+        """Current softmax temperature."""
+        if self.use_learnable_temp:
+            return F.softplus(self.log_temperature) + self.min_temperature
+        return torch.tensor(1.0, device=self.prototype_mu.device)
+
     def forward(
         self,
         mu_pop: torch.Tensor,
@@ -106,9 +163,9 @@ class ArchetypeNetwork(nn.Module):
         x = torch.cat([mu_pop, profile], dim=-1)
         h = self.net(x)
 
-        # Soft assignment
+        # Soft assignment with temperature scaling
         logits = self.assignment_head(h)
-        weights = F.softmax(logits, dim=-1)  # (B, K)
+        weights = F.softmax(logits / self.temperature, dim=-1)  # (B, K)
 
         # Weighted combination of prototypes
         # mu_arch = sum_k weights_k * prototype_mu_k
@@ -208,8 +265,9 @@ class Decoder(nn.Module):
     Heads:
     1. Stat reconstruction: predict current game's box stats
     2. Next-game prediction: predict next game's box stats
-    3. DPM prediction: predict o_dpm, d_dpm, dpm
-    4. Archetype classification: predict archetype weights
+    3. DPM prediction: predict o_dpm, d_dpm, dpm (shared trunk)
+    4. D-DPM auxiliary head: separate deeper pathway for defensive impact
+    5. Archetype classification: predict archetype weights
     """
 
     def __init__(self, cfg: NKEHConfig):
@@ -237,6 +295,19 @@ class Decoder(nn.Module):
         )
         self.archetype_head = nn.Linear(h, cfg.n_archetypes)
 
+        # Separate defensive impact head: dedicated deeper network for D-DPM.
+        # Gets its own trunk from ability+context so it can learn a different
+        # representation than the shared trunk (which is dominated by offensive signal).
+        self.defense_trunk = nn.Sequential(
+            nn.Linear(d + cfg.n_context, h),
+            nn.LayerNorm(h),
+            nn.GELU(),
+            nn.Linear(h, h // 2),
+            nn.LayerNorm(h // 2),
+            nn.GELU(),
+        )
+        self.d_dpm_head = nn.Linear(h // 2, 1)  # predicts D-DPM only
+
     def forward(
         self,
         ability: torch.Tensor,
@@ -247,15 +318,19 @@ class Decoder(nn.Module):
             ability: (B, d_ability)
             context: (B, n_context)
         Returns:
-            dict with keys: stat_recon, next_game, dpm, archetype_logits
+            dict with keys: stat_recon, next_game, dpm, d_dpm_aux, archetype_logits
         """
         x = torch.cat([ability, context], dim=-1)
         h = self.trunk(x)
+
+        # Separate defense pathway
+        h_def = self.defense_trunk(x)
 
         return {
             "stat_recon": self.stat_recon_head(h),
             "next_game": self.next_game_head(h),
             "dpm": self.dpm_head(h),
+            "d_dpm_aux": self.d_dpm_head(h_def),  # (B, 1)
             "archetype_logits": self.archetype_head(h),
         }
 
@@ -288,6 +363,9 @@ class NKEH(nn.Module):
             torch.full((d,), cfg.initial_log_process_noise)
         )
         self.log_obs_noise = nn.Parameter(torch.full((d,), cfg.initial_log_obs_noise))
+
+        # Learned initial covariance (softplus(0) ≈ 0.69)
+        self.log_P_0 = nn.Parameter(torch.full((d,), 0.0))
 
     @property
     def process_noise(self) -> torch.Tensor:
@@ -326,7 +404,8 @@ class NKEH(nn.Module):
 
         # Combine via residual addition (simpler than precision-weighted merge)
         mu_0 = mu_pop + mu_arch
-        P_0 = sigma_pop.pow(2) + sigma_arch.pow(2)
+        # P_0 is a learned constant, not derived from prior spread
+        P_0 = F.softplus(self.log_P_0).unsqueeze(0).expand(mu_0.shape[0], -1)
 
         return mu_0, P_0, arch_weights
 
@@ -459,6 +538,7 @@ class NKEH(nn.Module):
             "stat_recon": [],
             "next_game": [],
             "dpm": [],
+            "d_dpm_aux": [],
             "archetype_logits": [],
         }
 
@@ -500,6 +580,7 @@ class NKEH(nn.Module):
             "stat_recon": torch.stack(decoder_outputs["stat_recon"], dim=1),
             "next_game": torch.stack(decoder_outputs["next_game"], dim=1),
             "dpm": torch.stack(decoder_outputs["dpm"], dim=1),
+            "d_dpm_aux": torch.stack(decoder_outputs["d_dpm_aux"], dim=1),
             "archetype_logits": torch.stack(decoder_outputs["archetype_logits"], dim=1),
         }
 
@@ -534,9 +615,46 @@ class NKEH(nn.Module):
         return out["ability"][:, -1], out["P"][:, -1]
 
 
+def vicreg_loss(
+    ability: torch.Tensor, gamma: float = 1.0
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    VICReg-style regularization: covariance + variance terms.
+
+    Args:
+        ability: (B, d) ability vectors for a batch
+        gamma: target std per dimension (variance hinge threshold)
+
+    Returns:
+        cov_loss: scalar penalizing off-diagonal correlations
+        var_loss: scalar penalizing dimensional collapse (std < gamma)
+    """
+    B, d = ability.shape
+    if B < 2:
+        zero = torch.tensor(0.0, device=ability.device)
+        return zero, zero
+
+    # Per-dimension std (before standardization)
+    std = ability.std(dim=0)  # (d,)
+
+    # Covariance loss (off-diagonal correlations)
+    z = ability - ability.mean(dim=0, keepdim=True)
+    z_normed = z / (std.unsqueeze(0) + 1e-4)
+    corr = (z_normed.T @ z_normed) / (B - 1)
+    off_diag = corr.pow(2)
+    off_diag.fill_diagonal_(0.0)
+    cov_loss = off_diag.sum() / d
+
+    # Variance loss (hinge: penalize dimensions with std < gamma)
+    var_loss = F.relu(gamma - std).mean()
+
+    return cov_loss, var_loss
+
+
 def decorrelation_loss(ability: torch.Tensor) -> torch.Tensor:
     """
-    VICReg-style decorrelation: penalize off-diagonal correlations.
+    Legacy VICReg-style decorrelation: penalize off-diagonal correlations.
+    Kept for backward compatibility. Prefer vicreg_loss() for new code.
 
     Args:
         ability: (B, d) ability vectors for a batch

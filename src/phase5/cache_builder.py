@@ -57,7 +57,7 @@ BOX_STAT_COLUMNS = [
     "plus_minus",
 ]
 
-# Selected PBP stats (~40 most informative for player ability modeling)
+# Selected PBP stats (56 features for player ability modeling, incl. expanded defense)
 PBP_STAT_COLUMNS = [
     # Seconds and possessions (4)
     "seconds_played_off",
@@ -104,9 +104,28 @@ PBP_STAT_COLUMNS = [
     "lost_ball_turnovers",
     "fts_made",
     "fts_missed",
-    # Fouls (4)
+    # Steals by type (2 — steals forced by the player)
+    "bad_pass_steals",
+    "lost_ball_steals",
+    # Shots blocked (5 — player's shots that were blocked by defender)
+    "blocked_at_rim",
+    "blocked_short_mid",
+    "blocked_long_mid",
+    "blocked_corner3",
+    "blocked_arc3",
+    # Additional blocks made by zone (3 — complements block_at_rim/short_mid)
+    "block_long_mid",
+    "block_corner3",
+    "block_arc3",
+    # Additional defensive rebounds (1 — corner3 zone)
+    "dreb_corner3",
+    # Defensive rebound opportunities (1 — context for rebound rate)
+    "dreb_opportunities",
+    # Fouls (6 — expanded from 4, adding loose_ball and offensive fouls)
     "personal_fouls",
     "shooting_fouls",
+    "loose_ball_fouls",
+    "offensive_fouls",
     "shooting_fouls_drawn",
     "charge_fouls_drawn",
 ]
@@ -442,6 +461,7 @@ def build_player_cache(
     has_dpm = np.zeros(n_games, dtype=bool)
     has_pbp = np.zeros(n_games, dtype=bool)
     game_ids = []
+    team_ids = []
 
     birth_year = profile.get("birth_year", 1990)
     prev_date = None
@@ -451,6 +471,7 @@ def build_player_cache(
     for i, game in enumerate(games):
         game_id = game["game_id"]
         game_ids.append(game_id)
+        team_ids.append(int(game.get("team_id", 0)))
         date_str = _extract_game_date(game.get("date_time_utc", ""))
 
         # --- Box stats ---
@@ -567,6 +588,7 @@ def build_player_cache(
         "rapm_targets": rapm_targets,
         "has_dpm": has_dpm,
         "has_pbp": has_pbp,
+        "team_ids": np.array(team_ids, dtype=np.int64),
     }
 
 
@@ -694,6 +716,7 @@ def build_cache(min_games: int = 5):
                     rapm_targets=cache["rapm_targets"],
                     has_dpm=cache["has_dpm"],
                     has_pbp=cache["has_pbp"],
+                    team_ids=cache["team_ids"],
                 )
 
                 # Load profile

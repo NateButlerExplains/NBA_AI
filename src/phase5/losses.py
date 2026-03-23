@@ -1,7 +1,7 @@
 """
 Loss functions for NKE-H training.
 
-Phase 1: Multi-task single-game losses (stat recon, next-game, DPM, archetype, decorrelation)
+Phase 1: Multi-task single-game losses (stat recon, next-game, DPM, archetype, VICReg)
 Phase 2: Sequential Kalman losses (same heads but applied per-timestep with masking)
 """
 
@@ -11,7 +11,30 @@ import torch
 import torch.nn.functional as F
 
 from .config import NKEHConfig
-from .model import decorrelation_loss
+from .model import vicreg_loss
+
+
+def archetype_entropy_loss(archetype_weights: torch.Tensor) -> torch.Tensor:
+    """
+    Penalize archetype collapse by maximizing entropy of the marginal
+    (batch-averaged) assignment distribution.
+
+    This encourages all K archetypes to be used roughly equally across the
+    batch, while still allowing individual players to have peaked assignments.
+
+    Args:
+        archetype_weights: (B, K) soft assignment probabilities
+    Returns:
+        Scalar loss. Minimizing this maximizes marginal entropy (uniform usage).
+        Range: [-log(K), 0] where -log(K) is perfect uniformity.
+    """
+    # Marginal distribution: average assignment across batch
+    marginal = archetype_weights.mean(dim=0)  # (K,)
+    # Negative entropy (minimize to maximize entropy)
+    log_marginal = torch.log(marginal + 1e-8)
+    neg_entropy = (marginal * log_marginal).sum()
+    return neg_entropy
+
 
 # Stat weights: inversely proportional to stabilization rate
 # High weight = fast stabilizing (minutes, usage), low weight = slow (3PM, plus_minus)
@@ -77,8 +100,18 @@ def phase1_loss(
         L_dpm = (dpm_diff * has_dpm.unsqueeze(-1).float()).sum() / (
             has_dpm.sum() * dpm_pred.shape[-1] + 1e-8
         )
+        # Auxiliary D-DPM head loss (dedicated defense pathway)
+        d_dpm_target = dpm_target[:, 1:2]  # (B, 1) — D-DPM only
+        d_dpm_aux_pred = outputs["d_dpm_aux"]  # (B, 1) from defense_trunk
+        d_dpm_aux_diff = F.huber_loss(
+            d_dpm_aux_pred, d_dpm_target, reduction="none", delta=2.0
+        )
+        L_dpm_def = (d_dpm_aux_diff.squeeze(-1) * has_dpm.float()).sum() / (
+            has_dpm.sum() + 1e-8
+        )
     else:
         L_dpm = torch.tensor(0.0, device=device)
+        L_dpm_def = torch.tensor(0.0, device=device)
 
     # --- Archetype consistency loss ---
     # Decoder archetype logits should agree with prior archetype weights (soft targets)
@@ -88,16 +121,23 @@ def phase1_loss(
     log_probs = F.log_softmax(arch_logits, dim=-1)
     L_arch = F.kl_div(log_probs, arch_weights, reduction="batchmean")
 
-    # --- Decorrelation loss ---
-    L_decorr = decorrelation_loss(outputs["ability"])
+    # --- Archetype entropy regularization ---
+    # Maximize entropy of marginal assignment → encourage all archetypes to be used
+    L_arch_entropy = archetype_entropy_loss(outputs["archetype_weights"])
+
+    # --- VICReg covariance + variance loss ---
+    L_cov, L_var = vicreg_loss(outputs["ability"], gamma=cfg.vicreg_gamma)
 
     # --- Total ---
     L_total = (
         cfg.w_reconstruction * L_recon
         + cfg.w_next_game * L_next
         + cfg.w_dpm * L_dpm
+        + cfg.w_dpm_defense * L_dpm_def
         + cfg.w_archetype * L_arch
-        + cfg.w_decorrelation * L_decorr
+        + cfg.w_archetype_entropy * L_arch_entropy
+        + cfg.w_covariance * L_cov
+        + cfg.w_variance * L_var
     )
 
     return {
@@ -105,8 +145,11 @@ def phase1_loss(
         "recon": L_recon,
         "next_game": L_next,
         "dpm": L_dpm,
+        "dpm_defense": L_dpm_def,
         "archetype": L_arch,
-        "decorrelation": L_decorr,
+        "archetype_entropy": L_arch_entropy,
+        "covariance": L_cov,
+        "variance": L_var,
     }
 
 
@@ -152,7 +195,20 @@ def phase2_loss(
     )  # (B, T)
     L_dpm = (dpm_diff * dpm_mask.float()).sum() / n_dpm
 
-    # --- Decorrelation on final timestep ability vectors ---
+    # Auxiliary D-DPM head loss (dedicated defense pathway)
+    d_dpm_target = dpm_target[:, :, 1:2]  # (B, T, 1) — D-DPM only
+    d_dpm_aux_pred = outputs["d_dpm_aux"]  # (B, T, 1) from defense_trunk
+    d_dpm_aux_diff = F.huber_loss(
+        d_dpm_aux_pred, d_dpm_target, reduction="none", delta=2.0
+    ).squeeze(
+        -1
+    )  # (B, T)
+    L_dpm_def = (d_dpm_aux_diff * dpm_mask.float()).sum() / n_dpm
+
+    # --- Archetype entropy regularization ---
+    L_arch_entropy = archetype_entropy_loss(outputs["archetype_weights"])
+
+    # --- VICReg covariance + variance on final timestep ability vectors ---
     # Use the ability at each player's last valid timestep
     seq_len = batch["seq_len"].to(device)  # (B,)
     last_idx = (seq_len - 1).clamp(min=0)  # (B,)
@@ -160,14 +216,17 @@ def phase2_loss(
     final_ability = outputs["ability"][
         torch.arange(B, device=device), last_idx
     ]  # (B, d)
-    L_decorr = decorrelation_loss(final_ability)
+    L_cov, L_var = vicreg_loss(final_ability, gamma=cfg.vicreg_gamma)
 
     # --- Total ---
     L_total = (
         cfg.w_reconstruction_seq * L_recon
         + cfg.w_next_game_seq * L_next
         + cfg.w_dpm_seq * L_dpm
-        + cfg.w_decorrelation * L_decorr
+        + cfg.w_dpm_defense_seq * L_dpm_def
+        + cfg.w_archetype_entropy_seq * L_arch_entropy
+        + cfg.w_covariance_seq * L_cov
+        + cfg.w_variance_seq * L_var
     )
 
     return {
@@ -175,5 +234,8 @@ def phase2_loss(
         "recon": L_recon,
         "next_game": L_next,
         "dpm": L_dpm,
-        "decorrelation": L_decorr,
+        "dpm_defense": L_dpm_def,
+        "archetype_entropy": L_arch_entropy,
+        "covariance": L_cov,
+        "variance": L_var,
     }
