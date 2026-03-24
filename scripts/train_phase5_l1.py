@@ -315,6 +315,10 @@ def train_phase2(
                 profile=batch["profile"].to(device),
                 age_seq=batch["age"].to(device),
                 seq_mask=batch["mask"].to(device),
+                days_gap_seq=batch["days_gap"].to(device),
+                init_context=batch.get("init_context", batch["context"][:, 0]).to(
+                    device
+                ),
             )
 
             losses = phase2_loss(outputs, batch, cfg)
@@ -351,6 +355,10 @@ def train_phase2(
                     profile=batch["profile"].to(device),
                     age_seq=batch["age"].to(device),
                     seq_mask=batch["mask"].to(device),
+                    days_gap_seq=batch["days_gap"].to(device),
+                    init_context=batch.get("init_context", batch["context"][:, 0]).to(
+                        device
+                    ),
                 )
                 losses = phase2_loss(outputs, batch, cfg)
                 for k, v in losses.items():

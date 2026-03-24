@@ -85,7 +85,7 @@ class Normalizer:
         # Profile normalization: centering + scaling so all features are roughly in [-1, 1]
         # Format: (value - offset) / scale
         self.profile_offsets = torch.tensor(
-            [78.0, 215.0, 30.0, 0.0, 1990.0, 80.0, 0.0, 0.0, 0.0],
+            [78.0, 215.0, 30.0, 0.0, 2010.0, 80.0, 0.0, 0.0, 0.0],
             dtype=torch.float32,
         )
         self.profile_scales = torch.tensor(
@@ -94,7 +94,7 @@ class Normalizer:
                 40.0,  # weight: ~175-300, centered at 215, range ±40
                 30.0,  # draft_pick: 1-60, centered at 30, range ±30
                 1.0,  # undrafted: already 0/1
-                15.0,  # birth_year: ~1975-2005, centered at 1990, range ±15
+                12.0,  # birth_year: actually rookie year ~1998-2025, centered at 2010
                 6.0,  # wingspan_inches: ~74-90, centered at 80, range ±6
                 1.0,  # pos_g: already 0/1
                 1.0,  # pos_f: already 0/1
@@ -212,6 +212,7 @@ class SingleGameDataset(Dataset):
                 "pbp_stats": data["pbp_stats"],
                 "context": data["context"],
                 "dpm_targets": data["dpm_targets"],
+                "rapm_targets": data["rapm_targets"],
                 "has_dpm": data["has_dpm"],
                 "has_pbp": data.get("has_pbp", np.ones(len(game_ids), dtype=bool)),
             }
@@ -246,16 +247,23 @@ class SingleGameDataset(Dataset):
         ctx = torch.tensor(data["context"][game_idx], dtype=torch.float32)
         dpm = torch.tensor(data["dpm_targets"][game_idx], dtype=torch.float32)
         has_dpm = torch.tensor(data["has_dpm"][game_idx], dtype=torch.bool)
+        rapm = torch.tensor(data["rapm_targets"][game_idx], dtype=torch.float32)
+        has_rapm = torch.tensor(bool(rapm.any()), dtype=torch.bool)
         profile = self._get_profile(pid)
 
-        # Stat target = current game box stats (for reconstruction)
-        stat_target = box.clone()
+        # Normalize inputs
+        box_norm = self.normalizer.normalize_box(box)
 
-        # Next-game target
+        # Stat targets: normalized (same z-score scale as inputs — prevents
+        # high-variance stats like points/minutes from dominating the loss)
+        stat_target = box_norm.clone()
+
+        # Next-game target (also normalized)
         if has_next:
-            next_target = torch.tensor(
+            next_raw = torch.tensor(
                 data["box_stats"][game_idx + 1], dtype=torch.float32
             )
+            next_target = self.normalizer.normalize_box(next_raw)
             has_next_t = torch.tensor(True)
         else:
             next_target = torch.zeros_like(box)
@@ -264,8 +272,6 @@ class SingleGameDataset(Dataset):
         # PBP availability
         has_pbp = bool(data["has_pbp"][game_idx])
 
-        # Normalize inputs
-        box_norm = self.normalizer.normalize_box(box)
         pbp_norm = (
             self.normalizer.normalize_pbp(pbp) if has_pbp else torch.zeros_like(pbp)
         )
@@ -280,6 +286,8 @@ class SingleGameDataset(Dataset):
             "next_game_target": next_target,
             "dpm_target": dpm,
             "has_dpm": has_dpm,
+            "rapm_target": rapm,
+            "has_rapm": has_rapm,
             "has_next": has_next_t,
         }
 
@@ -358,11 +366,15 @@ class CareerSequenceDataset(Dataset):
             # Store filtered data
             has_pbp_arr = data.get("has_pbp", np.ones(len(game_ids), dtype=bool))
             team_ids_arr = data.get("team_ids")
+            filtered_ctx = data["context"][valid_mask]
             self.player_cache[pid] = {
                 "box_stats": data["box_stats"][valid_mask],
                 "pbp_stats": data["pbp_stats"][valid_mask],
-                "context": data["context"][valid_mask],
+                "context": filtered_ctx,
+                # Career-start context for initialization (game 0, not truncation start)
+                "init_context": filtered_ctx[0].copy(),
                 "dpm_targets": data["dpm_targets"][valid_mask],
+                "rapm_targets": data["rapm_targets"][valid_mask],
                 "has_dpm": data["has_dpm"][valid_mask],
                 "has_pbp": has_pbp_arr[valid_mask],
                 "team_ids": (
@@ -400,6 +412,7 @@ class CareerSequenceDataset(Dataset):
             pbp = data["pbp_stats"][start:]
             ctx = data["context"][start:]
             dpm = data["dpm_targets"][start:]
+            rapm = data["rapm_targets"][start:]
             has_dpm = data["has_dpm"][start:]
             if team_ids_arr is not None:
                 team_ids_arr = team_ids_arr[start:]
@@ -409,6 +422,7 @@ class CareerSequenceDataset(Dataset):
             pbp = data["pbp_stats"]
             ctx = data["context"]
             dpm = data["dpm_targets"]
+            rapm = data["rapm_targets"]
             has_dpm = data["has_dpm"]
             T = T_full
 
@@ -419,6 +433,7 @@ class CareerSequenceDataset(Dataset):
             pbp = np.pad(pbp, ((0, pad_len), (0, 0)), mode="constant")
             ctx = np.pad(ctx, ((0, pad_len), (0, 0)), mode="constant")
             dpm = np.pad(dpm, ((0, pad_len), (0, 0)), mode="constant")
+            rapm = np.pad(rapm, ((0, pad_len), (0, 0)), mode="constant")
             has_dpm = np.pad(has_dpm, (0, pad_len), mode="constant")
 
         # Mask: True for valid timesteps
@@ -430,7 +445,10 @@ class CareerSequenceDataset(Dataset):
         pbp_t = torch.tensor(pbp, dtype=torch.float32)
         ctx_t = torch.tensor(ctx, dtype=torch.float32)
         dpm_t = torch.tensor(dpm, dtype=torch.float32)
+        rapm_t = torch.tensor(rapm, dtype=torch.float32)
         has_dpm_t = torch.tensor(has_dpm, dtype=torch.bool)
+        # has_rapm: True when either off_rapm or def_rapm is non-zero
+        has_rapm_t = rapm_t.any(dim=-1).bool()  # (max_len,)
         mask_t = torch.tensor(mask, dtype=torch.bool)
         profile = self._get_profile(pid)
 
@@ -439,16 +457,22 @@ class CareerSequenceDataset(Dataset):
         # Normalize to roughly [-1, 1.5]: (tenure - 8) / 8
         age_t = (ctx_t[:, 0:1] - 8.0) / 8.0  # (max_len, 1)
 
-        # Stat targets: current game (reconstruction) and next game (prediction)
-        stat_target = box_t.clone()
+        # Days-since-last-game for time-scaled Kalman drift + process noise
+        # Context column 8 is raw days_since_last_game (extract BEFORE normalization)
+        days_gap_t = ctx_t[:, 8:9].clone()  # (max_len, 1) — raw calendar days
+
+        # Normalize box stats first (targets use same normalization)
+        box_norm = self.normalizer.normalize_box(box_t)
+
+        # Stat targets: normalized (same z-score scale as inputs)
+        stat_target = box_norm.clone()
         next_target = torch.zeros_like(box_t)
         has_next = torch.zeros(self.max_len, dtype=torch.bool)
         if T > 1:
-            next_target[: T - 1] = box_t[1:T]
+            next_target[: T - 1] = box_norm[1:T]
             has_next[: T - 1] = True
 
-        # Normalize inputs, zeroing PBP for games without PBP data
-        box_norm = self.normalizer.normalize_box(box_t)
+        # Zero PBP for games without PBP data
         pbp_norm = self.normalizer.normalize_pbp(pbp_t)
         # Zero out PBP for games without PBP data (has_pbp=False)
         has_pbp_data = data.get("has_pbp")
@@ -467,17 +491,26 @@ class CareerSequenceDataset(Dataset):
                     trade_mask[t] = True
         trade_mask_t = torch.tensor(trade_mask, dtype=torch.bool)
 
+        # Career-start context for PopulationPrior initialization
+        # (avoids using truncation-start context which has wrong career_games_played)
+        init_ctx = torch.tensor(data["init_context"], dtype=torch.float32)
+        init_ctx_norm = self.normalizer.normalize_context(init_ctx)
+
         return {
             "box_stats": box_norm,  # (max_len, n_box)
             "pbp_stats": pbp_norm,  # (max_len, n_pbp)
             "context": ctx_norm,  # (max_len, n_ctx)
+            "init_context": init_ctx_norm,  # (n_ctx,) — career start context
             "profile": self.normalizer.normalize_profile(profile),  # (n_profile,)
             "age": age_t,  # (max_len, 1)
+            "days_gap": days_gap_t,  # (max_len, 1) — raw days since last game
             "mask": mask_t,  # (max_len,)
             "stat_target": stat_target,  # (max_len, n_box)
             "next_game_target": next_target,  # (max_len, n_box)
             "dpm_target": dpm_t,  # (max_len, 3)
             "has_dpm": has_dpm_t,  # (max_len,)
+            "rapm_target": rapm_t,  # (max_len, 2)
+            "has_rapm": has_rapm_t,  # (max_len,)
             "has_next": has_next,  # (max_len,)
             "trade_mask": trade_mask_t,  # (max_len,)
             "seq_len": torch.tensor(T, dtype=torch.long),

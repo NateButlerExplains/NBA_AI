@@ -20,8 +20,13 @@ from .config import NKEHConfig
 
 class PopulationPrior(nn.Module):
     """
-    Learns the distribution of a 'generic NBA player' conditioned on context.
-    Produces mu_pop and log_sigma_pop for the population-level prior.
+    Learns the population-level prior mean for a 'generic NBA player'
+    conditioned on game context. Produces mu_pop only.
+
+    Note: log_sigma_head was removed (2026-03-24) because sigma_pop became
+    dead code when P_0 was changed to a learned parameter. Old checkpoints
+    that contain population_prior.log_sigma_head.{weight,bias} will need
+    strict=False when loading.
     """
 
     def __init__(self, cfg: NKEHConfig):
@@ -38,30 +43,30 @@ class PopulationPrior(nn.Module):
             nn.GELU(),
         )
         self.mu_head = nn.Linear(h, d)
-        self.log_sigma_head = nn.Linear(h, d)
 
-        # Initialize log_sigma to produce moderate uncertainty
-        nn.init.constant_(self.log_sigma_head.bias, 0.5)
-
-    def forward(self, context: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, context: torch.Tensor) -> torch.Tensor:
         """
         Args:
             context: (B, n_context) game context features
         Returns:
             mu_pop: (B, d_ability)
-            log_sigma_pop: (B, d_ability)
         """
         h = self.net(context)
-        return self.mu_head(h), self.log_sigma_head(h)
+        return self.mu_head(h)
 
 
 class ArchetypeNetwork(nn.Module):
     """
-    Learns K archetype prototypes and produces soft assignment + archetype prior.
+    Learns K archetype prototypes and produces soft assignment + archetype mean.
 
     Takes player physical profile and produces:
     - Soft archetype weights (K probabilities)
-    - Archetype-weighted mu and sigma
+    - Archetype-weighted mu
+
+    Note: prototype_log_sigma was removed (2026-03-24) because sigma_arch
+    became dead code when P_0 was changed to a learned parameter. Old
+    checkpoints that contain archetype_network.prototype_log_sigma will need
+    strict=False when loading.
     """
 
     def __init__(self, cfg: NKEHConfig):
@@ -87,7 +92,6 @@ class ArchetypeNetwork(nn.Module):
 
         # Per-archetype parameters: K prototypes of dimension d
         self.prototype_mu = nn.Parameter(torch.randn(K, d) * 0.1)
-        self.prototype_log_sigma = nn.Parameter(torch.zeros(K, d))
 
         # Learnable temperature for softmax (prevents premature sharpening)
         self.use_learnable_temp = cfg.archetype_temperature_learnable
@@ -150,14 +154,13 @@ class ArchetypeNetwork(nn.Module):
         self,
         mu_pop: torch.Tensor,
         profile: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             mu_pop: (B, d_ability) population prior mean
             profile: (B, n_profile) static player features
         Returns:
             mu_arch: (B, d_ability) archetype-weighted mean
-            log_sigma_arch: (B, d_ability) archetype-weighted log sigma
             archetype_weights: (B, K) soft assignment probabilities
         """
         x = torch.cat([mu_pop, profile], dim=-1)
@@ -170,9 +173,8 @@ class ArchetypeNetwork(nn.Module):
         # Weighted combination of prototypes
         # mu_arch = sum_k weights_k * prototype_mu_k
         mu_arch = torch.einsum("bk,kd->bd", weights, self.prototype_mu)
-        log_sigma_arch = torch.einsum("bk,kd->bd", weights, self.prototype_log_sigma)
 
-        return mu_arch, log_sigma_arch, weights
+        return mu_arch, weights
 
 
 class GameEncoder(nn.Module):
@@ -266,18 +268,21 @@ class Decoder(nn.Module):
     1. Stat reconstruction: predict current game's box stats
     2. Next-game prediction: predict next game's box stats
     3. DPM prediction: predict o_dpm, d_dpm, dpm (shared trunk)
-    4. D-DPM auxiliary head: separate deeper pathway for defensive impact
-    5. Archetype classification: predict archetype weights
+    4. RAPM prediction: predict off_rapm, def_rapm (season-level impact)
+    5. D-DPM auxiliary head: separate deeper pathway for defensive impact
+    6. Archetype classification: predict archetype weights
     """
 
     def __init__(self, cfg: NKEHConfig):
         super().__init__()
         d = cfg.d_ability
         h = cfg.decoder_hidden
+        # Stat heads get profile (height/weight/position) to differentiate player types
+        trunk_in = d + cfg.n_context + cfg.n_profile
 
-        # Shared trunk
+        # Shared trunk: ability + context + profile
         self.trunk = nn.Sequential(
-            nn.Linear(d + cfg.n_context, h),
+            nn.Linear(trunk_in, h),
             nn.LayerNorm(h),
             nn.GELU(),
             nn.Linear(h, h),
@@ -285,7 +290,7 @@ class Decoder(nn.Module):
             nn.GELU(),
         )
 
-        # Grouped decoder heads (per plan: scoring, playmaking, rebounding, defense, activity)
+        # Grouped decoder heads
         self.stat_recon_head = nn.Linear(h, cfg.n_stat_targets)
         self.next_game_head = nn.Linear(h, cfg.n_stat_targets)
         self.dpm_head = nn.Sequential(
@@ -293,44 +298,49 @@ class Decoder(nn.Module):
             nn.GELU(),
             nn.Linear(64, cfg.n_dpm_targets),
         )
+        self.rapm_head = nn.Sequential(
+            nn.Linear(h, 32),
+            nn.GELU(),
+            nn.Linear(32, cfg.n_rapm_targets),
+        )
         self.archetype_head = nn.Linear(h, cfg.n_archetypes)
 
-        # Separate defensive impact head: dedicated deeper network for D-DPM.
-        # Gets its own trunk from ability+context so it can learn a different
-        # representation than the shared trunk (which is dominated by offensive signal).
+        # Separate defensive impact head
         self.defense_trunk = nn.Sequential(
-            nn.Linear(d + cfg.n_context, h),
+            nn.Linear(trunk_in, h),
             nn.LayerNorm(h),
             nn.GELU(),
             nn.Linear(h, h // 2),
             nn.LayerNorm(h // 2),
             nn.GELU(),
         )
-        self.d_dpm_head = nn.Linear(h // 2, 1)  # predicts D-DPM only
+        self.d_dpm_head = nn.Linear(h // 2, 1)
 
     def forward(
         self,
         ability: torch.Tensor,
         context: torch.Tensor,
+        profile: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """
         Args:
             ability: (B, d_ability)
             context: (B, n_context)
+            profile: (B, n_profile) static player features (height, weight, position, etc.)
         Returns:
-            dict with keys: stat_recon, next_game, dpm, d_dpm_aux, archetype_logits
+            dict with keys: stat_recon, next_game, dpm, rapm, d_dpm_aux, archetype_logits
         """
-        x = torch.cat([ability, context], dim=-1)
+        x = torch.cat([ability, context, profile], dim=-1)
         h = self.trunk(x)
 
-        # Separate defense pathway
         h_def = self.defense_trunk(x)
 
         return {
             "stat_recon": self.stat_recon_head(h),
             "next_game": self.next_game_head(h),
             "dpm": self.dpm_head(h),
-            "d_dpm_aux": self.d_dpm_head(h_def),  # (B, 1)
+            "rapm": self.rapm_head(h),
+            "d_dpm_aux": self.d_dpm_head(h_def),
             "archetype_logits": self.archetype_head(h),
         }
 
@@ -395,14 +405,12 @@ class NKEH(nn.Module):
             archetype_weights: (B, K) soft archetype assignment
         """
         # Population prior
-        mu_pop, log_sigma_pop = self.population_prior(context)
-        sigma_pop = F.softplus(log_sigma_pop)
+        mu_pop = self.population_prior(context)
 
         # Archetype prior
-        mu_arch, log_sigma_arch, arch_weights = self.archetype_network(mu_pop, profile)
-        sigma_arch = F.softplus(log_sigma_arch)
+        mu_arch, arch_weights = self.archetype_network(mu_pop, profile)
 
-        # Combine via residual addition (simpler than precision-weighted merge)
+        # Combine via residual addition
         mu_0 = mu_pop + mu_arch
         # P_0 is a learned constant, not derived from prior spread
         P_0 = F.softplus(self.log_P_0).unsqueeze(0).expand(mu_0.shape[0], -1)
@@ -414,24 +422,42 @@ class NKEH(nn.Module):
         mu: torch.Tensor,
         P: torch.Tensor,
         age: torch.Tensor,
+        days_gap: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Kalman prediction step: apply aging drift and add process noise.
+
+        Both drift and process noise are scaled by the time gap between games.
+        A typical inter-game gap is ~2 days (scale=1.0). Offseason gaps (~150
+        days) produce larger drift and more uncertainty, clamped at 20x.
 
         Args:
             mu: (B, d) current state mean
             P: (B, d) current state variance
             age: (B, 1) player age
+            days_gap: (B, 1) calendar days since previous game (raw, unnormalized).
+                      If None, defaults to scale 1.0 for backward compat.
 
         Returns:
             mu_pred: (B, d) predicted state mean
             P_pred: (B, d) predicted state variance
         """
         drift = self.aging_model(age)  # (B, d)
-        F_diag = 1.0 + drift  # F = I + drift
+
+        # Scale drift and process noise by normalized time gap
+        # 2 days = typical inter-game spacing -> scale 1.0
+        if days_gap is not None:
+            gap_scale = (days_gap / 2.0).clamp(min=0.5, max=20.0)  # (B, 1)
+        else:
+            gap_scale = 1.0
+
+        drift_scaled = drift * gap_scale
+        F_diag = 1.0 + drift_scaled  # F = I + drift_scaled
+
+        Q_scaled = self.process_noise.unsqueeze(0) * gap_scale  # (B, d) or (1, d)
 
         mu_pred = F_diag * mu
-        P_pred = F_diag.pow(2) * P + self.process_noise.unsqueeze(0)
+        P_pred = F_diag.pow(2) * P + Q_scaled
 
         return mu_pred, P_pred
 
@@ -494,7 +520,7 @@ class NKEH(nn.Module):
         mu_updated, P_updated = self.kalman_update(mu, P, mu_obs, sigma_obs)
 
         # Decode
-        decoder_out = self.decoder(mu_updated, context)
+        decoder_out = self.decoder(mu_updated, context, profile)
 
         return {
             "ability": mu_updated,
@@ -511,6 +537,8 @@ class NKEH(nn.Module):
         profile: torch.Tensor,
         age_seq: torch.Tensor,
         seq_mask: torch.Tensor | None = None,
+        days_gap_seq: torch.Tensor | None = None,
+        init_context: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Phase 2 forward pass: sequential Kalman updates over a career.
@@ -522,14 +550,20 @@ class NKEH(nn.Module):
             profile: (B, n_profile)
             age_seq: (B, T, 1)
             seq_mask: (B, T) boolean, True = valid game
+            days_gap_seq: (B, T, 1) raw days since last game (unnormalized).
+                          If None, kalman_predict uses default scale 1.0.
+            init_context: (B, n_context) career-start context for prior init.
+                          If None, falls back to context_seq[:, 0].
 
         Returns:
             dict with per-timestep outputs stacked along dim 1
         """
         B, T, _ = box_stats_seq.shape
 
-        # Initialize state from prior (using first game's context)
-        mu, P, arch_weights = self.initialize_state(profile, context_seq[:, 0])
+        # Initialize state from prior using career-start context
+        # (not truncation-start, which has wrong career_games_played for long careers)
+        ctx_for_init = init_context if init_context is not None else context_seq[:, 0]
+        mu, P, arch_weights = self.initialize_state(profile, ctx_for_init)
 
         # Accumulate per-timestep outputs
         abilities = []
@@ -538,14 +572,16 @@ class NKEH(nn.Module):
             "stat_recon": [],
             "next_game": [],
             "dpm": [],
+            "rapm": [],
             "d_dpm_aux": [],
             "archetype_logits": [],
         }
 
         for t in range(T):
-            # Prediction step (aging drift)
+            # Prediction step (aging drift, scaled by time gap)
             age_t = age_seq[:, t]  # (B, 1)
-            mu_pred, P_pred = self.kalman_predict(mu, P, age_t)
+            days_gap_t = days_gap_seq[:, t] if days_gap_seq is not None else None
+            mu_pred, P_pred = self.kalman_predict(mu, P, age_t, days_gap_t)
 
             # Observation from game encoder
             mu_obs, log_sigma_obs = self.game_encoder(
@@ -568,8 +604,8 @@ class NKEH(nn.Module):
             abilities.append(mu)
             Ps.append(P)
 
-            # Decode at this timestep
-            dec = self.decoder(mu, context_seq[:, t])
+            # Decode at this timestep (profile is static across time)
+            dec = self.decoder(mu, context_seq[:, t], profile)
             for key in decoder_outputs:
                 decoder_outputs[key].append(dec[key])
 
@@ -580,6 +616,7 @@ class NKEH(nn.Module):
             "stat_recon": torch.stack(decoder_outputs["stat_recon"], dim=1),
             "next_game": torch.stack(decoder_outputs["next_game"], dim=1),
             "dpm": torch.stack(decoder_outputs["dpm"], dim=1),
+            "rapm": torch.stack(decoder_outputs["rapm"], dim=1),
             "d_dpm_aux": torch.stack(decoder_outputs["d_dpm_aux"], dim=1),
             "archetype_logits": torch.stack(decoder_outputs["archetype_logits"], dim=1),
         }
@@ -592,6 +629,7 @@ class NKEH(nn.Module):
         profile: torch.Tensor,
         age_seq: torch.Tensor,
         seq_mask: torch.Tensor | None = None,
+        days_gap_seq: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Inference: run Kalman filter over game sequence, return final state.
@@ -611,6 +649,7 @@ class NKEH(nn.Module):
                 profile,
                 age_seq,
                 seq_mask,
+                days_gap_seq,
             )
         return out["ability"][:, -1], out["P"][:, -1]
 

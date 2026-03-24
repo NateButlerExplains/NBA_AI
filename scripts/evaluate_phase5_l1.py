@@ -169,9 +169,13 @@ def extract_all_ability_vectors(
             profile = batch["profile"].to(DEVICE)
             age = batch["age"].to(DEVICE)
             mask = batch["mask"].to(DEVICE)
+            days_gap = batch["days_gap"].to(DEVICE)
             seq_lens = batch["seq_len"].cpu().numpy()
 
-            out = model.forward_sequence(box, pbp, ctx, profile, age, mask)
+            init_ctx = batch.get("init_context", ctx[:, 0]).to(DEVICE)
+            out = model.forward_sequence(
+                box, pbp, ctx, profile, age, mask, days_gap, init_context=init_ctx
+            )
 
             ability_seq = out["ability"].cpu().numpy()  # (B, T, 32)
             P_seq = out["P"].cpu().numpy()  # (B, T, 32)
@@ -421,6 +425,8 @@ def eval_trade_stability(
         age_t = ctx[:, 0:1]  # (T, 1) unnormalized age for Kalman predict
         # Use normalized context for the model
         age_input = ctx_norm[:, 0:1]  # normalized age
+        # Raw days_since_last_game for time-scaled Kalman predict (col 8)
+        days_gap_raw = ctx[:, 8:9]  # (T, 1) — raw calendar days
 
         # Truncate if too long
         max_len = min(n_total, 600)
@@ -433,13 +439,16 @@ def eval_trade_stability(
 
         # Run forward pass
         with torch.no_grad():
+            ctx_slice = ctx_norm[offset : offset + T].unsqueeze(0).to(DEVICE)
             out = model.forward_sequence(
                 box_norm[offset : offset + T].unsqueeze(0).to(DEVICE),
                 pbp_norm[offset : offset + T].unsqueeze(0).to(DEVICE),
-                ctx_norm[offset : offset + T].unsqueeze(0).to(DEVICE),
+                ctx_slice,
                 profile_norm.unsqueeze(0).to(DEVICE),
                 age_input[offset : offset + T].unsqueeze(0).to(DEVICE),
                 seq_mask=None,
+                days_gap_seq=days_gap_raw[offset : offset + T].unsqueeze(0).to(DEVICE),
+                init_context=ctx_norm[0:1].to(DEVICE),  # career start context
             )
 
         ability_seq = out["ability"][0].cpu().numpy()  # (T, 32)
@@ -795,12 +804,18 @@ def eval_decoder_quality(
             profile = sample["profile"].unsqueeze(0).to(DEVICE)
             age = sample["age"].unsqueeze(0).to(DEVICE)
             mask = sample["mask"].unsqueeze(0).to(DEVICE)
+            days_gap = sample["days_gap"].unsqueeze(0).to(DEVICE)
 
-            out = model.forward_sequence(box, pbp, ctx, profile, age, mask)
+            init_ctx = sample.get("init_context", ctx[0, 0]).unsqueeze(0).to(DEVICE)
+            out = model.forward_sequence(
+                box, pbp, ctx, profile, age, mask, days_gap, init_context=init_ctx
+            )
 
-            # stat_recon: (1, T, n_stat_targets)
-            pred = out["stat_recon"][0, :seq_len].cpu().numpy()
-            actual = sample["stat_target"][:seq_len].numpy()
+            # stat_recon and stat_target are both normalized — un-normalize for eval
+            box_mean = dataset.normalizer.box_mean.numpy()
+            box_std = dataset.normalizer.box_std.numpy()
+            pred = out["stat_recon"][0, :seq_len].cpu().numpy() * box_std + box_mean
+            actual = sample["stat_target"][:seq_len].numpy() * box_std + box_mean
 
             all_preds.append(pred)
             all_actuals.append(actual)

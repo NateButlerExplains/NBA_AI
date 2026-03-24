@@ -72,18 +72,21 @@ class NKEHConfig:
     w_reconstruction: float = 0.5
     w_next_game: float = 0.3
     w_dpm: float = 0.3
-    w_dpm_defense: float = 0.0  # extra weight on D-DPM head (added on top of w_dpm)
+    w_rapm: float = 0.1  # RAPM impact prediction (off_rapm, def_rapm)
+    w_dpm_defense: float = 0.05  # extra weight on D-DPM head (added on top of w_dpm)
     w_archetype: float = 0.1
     w_archetype_entropy: float = 0.05  # marginal entropy regularization
 
     # --- Loss weights (Phase 2: sequential Kalman training) ---
-    w_reconstruction_seq: float = 0.3
+    w_reconstruction_seq: float = 0.4  # balanced with DPM emphasis
     w_next_game_seq: float = 0.3
     w_dpm_seq: float = 0.4
-    w_dpm_defense_seq: float = 0.0  # extra weight on D-DPM in Phase 2
+    w_rapm_seq: float = 0.15  # RAPM impact prediction in Phase 2
+    w_dpm_defense_seq: float = 0.1  # extra weight on D-DPM in Phase 2
     w_archetype_entropy_seq: float = 0.05  # marginal entropy in Phase 2
     w_covariance_seq: float = 0.10
     w_variance_seq: float = 0.10
+    w_trade_consistency: float = 0.10  # trade boundary consistency (Phase 2 only)
 
     # --- Data splits ---
     pretrain_seasons_end: str = "2017-2018"
