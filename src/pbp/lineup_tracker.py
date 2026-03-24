@@ -34,7 +34,17 @@ class LineupTracker:
         events: list[Event],
         home_team_id: int,
         away_team_id: int,
+        player_names: dict[int, tuple[int, str]] | None = None,
     ):
+        """
+        Args:
+            events: parsed PBP events for one game
+            home_team_id: home team numeric ID
+            away_team_id: away team numeric ID
+            player_names: optional {player_id: (team_id, last_name)} from PlayerBox.
+                          Seeds the name map to resolve subs for players with no
+                          non-substitution events (bench warmers).
+        """
         self.events = events
         self.home_team_id = home_team_id
         self.away_team_id = away_team_id
@@ -49,6 +59,14 @@ class LineupTracker:
         # Build name → player_id lookup from all events
         self._name_to_id: dict[tuple[int, str], int] = {}  # (team_id, name) → pid
         self._name_to_id_global: dict[str, int] = {}  # name → pid (no team)
+
+        # Seed from external player names (e.g., PlayerBox) first
+        if player_names:
+            for pid, (tid, name) in player_names.items():
+                name_lower = name.lower()
+                self._name_to_id[(tid, name_lower)] = pid
+                self._name_to_id_global[name_lower] = pid
+
         self._build_name_lookup()
 
         # Track whether starters were successfully found for each period
@@ -300,10 +318,22 @@ class LineupTracker:
         if pid:
             return pid
 
-        # Try partial match (last name only)
+        # Try partial match: stored name is substring of incoming
+        # (handles "hardaway" matching "hardaway jr.")
         for (t, name), p in self._name_to_id.items():
-            if t == tid and name_lower in name:
+            if t == tid and name in name_lower:
                 return p
+
+        # Try first-word match: incoming "hardaway jr." → first word "hardaway"
+        first_word = name_lower.split()[0] if name_lower else ""
+        if first_word:
+            pid = self._name_to_id.get((tid, first_word), 0)
+            if pid:
+                return pid
+            # Global first-word fallback
+            pid = self._name_to_id_global.get(first_word, 0)
+            if pid:
+                return pid
 
         logger.debug(
             f"Could not resolve incoming sub player: '{incoming_name}' " f"(team {tid})"
