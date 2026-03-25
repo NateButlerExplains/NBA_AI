@@ -351,15 +351,15 @@ class LineupTracker:
         if pid:
             return pid
 
-        # Try partial match: stored name is substring of incoming
-        # (handles "hardaway" matching "hardaway jr.")
+        # Try partial match: stored name is substring of incoming or vice versa
+        # (handles "hardaway" ↔ "hardaway jr.", "mark morris" ↔ "markieff morris")
         for (t, name), p in self._name_to_id.items():
-            if t == tid and name in name_lower:
+            if t == tid and (name in name_lower or name_lower in name):
                 return p
 
         # Try first-word match: incoming "hardaway jr." → first word "hardaway"
         first_word = name_lower.split()[0] if name_lower else ""
-        if first_word:
+        if first_word and len(first_word) > 1:
             pid = self._name_to_id.get((tid, first_word), 0)
             if pid:
                 return pid
@@ -367,6 +367,21 @@ class LineupTracker:
             pid = self._name_to_id_global.get(first_word, 0)
             if pid:
                 return pid
+
+        # Try last-word match: incoming "Mark Morris" → "morris"
+        words = name_lower.split()
+        if len(words) > 1:
+            last_word = words[-1]
+            pid = self._name_to_id.get((tid, last_word), 0)
+            if pid:
+                return pid
+
+        # Prefix match: incoming "ha" matches stored "ha seung-jin"
+        # (handles truncated PBP names)
+        if len(name_lower) >= 2:
+            for (t, name), p in self._name_to_id.items():
+                if t == tid and name.startswith(name_lower):
+                    return p
 
         logger.debug(
             f"Could not resolve incoming sub player: '{incoming_name}' " f"(team {tid})"
