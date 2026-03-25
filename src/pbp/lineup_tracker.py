@@ -60,12 +60,28 @@ class LineupTracker:
         self._name_to_id: dict[tuple[int, str], int] = {}  # (team_id, name) → pid
         self._name_to_id_global: dict[str, int] = {}  # name → pid (no team)
 
+        # Game roster: {team_id: set of player_ids} from PlayerBox (all who played)
+        self._game_roster: dict[int, set[int]] = {
+            home_team_id: set(),
+            away_team_id: set(),
+        }
+        # Track all players ever seen on court (for roster inference)
+        self._ever_on_court: dict[int, set[int]] = {
+            home_team_id: set(),
+            away_team_id: set(),
+        }
+
         # Seed from external player names (e.g., PlayerBox) first
+        # player_names values can be (team_id, name) or (team_id, [name1, name2, ...])
         if player_names:
-            for pid, (tid, name) in player_names.items():
-                name_lower = name.lower()
-                self._name_to_id[(tid, name_lower)] = pid
-                self._name_to_id_global[name_lower] = pid
+            for pid, (tid, names) in player_names.items():
+                name_list = names if isinstance(names, list) else [names]
+                for name in name_list:
+                    name_lower = name.lower()
+                    self._name_to_id[(tid, name_lower)] = pid
+                    self._name_to_id_global[name_lower] = pid
+                if tid in self._game_roster:
+                    self._game_roster[tid].add(pid)
 
         self._build_name_lookup()
 
@@ -269,6 +285,9 @@ class LineupTracker:
         """Set the on-court players for the start of a period."""
         starters = self.detect_period_starters(period)
         self.on_court = {tid: set(players) for tid, players in starters.items()}
+        # Track starters as seen on court
+        for tid, players in self.on_court.items():
+            self._ever_on_court[tid].update(players)
 
     def process_substitution(self, evt: Event):
         """Update on-court players for a substitution event."""
@@ -280,13 +299,27 @@ class LineupTracker:
             self.on_court[tid].discard(evt.sub_out_player_id)
         elif evt.sub_direction == "in":
             self.on_court[tid].add(evt.sub_in_player_id)
+            self._ever_on_court[tid].add(evt.sub_in_player_id)
         elif evt.sub_direction == "both":
-            # Older format
+            # Older format: outgoing player ID is known, incoming resolved by name
             if evt.sub_out_player_id:
                 self.on_court[tid].discard(evt.sub_out_player_id)
             in_pid = self._resolve_sub_incoming(evt)
             if in_pid:
                 self.on_court[tid].add(in_pid)
+                self._ever_on_court[tid].add(in_pid)
+            elif len(self.on_court[tid]) < 5 and self._game_roster.get(tid):
+                # Roster inference: find who from the game roster hasn't been
+                # on court yet — they must be the incoming player
+                candidates = self._game_roster[tid] - self._ever_on_court[tid]
+                if len(candidates) == 1:
+                    inferred = candidates.pop()
+                    self.on_court[tid].add(inferred)
+                    self._ever_on_court[tid].add(inferred)
+                    logger.debug(
+                        f"Inferred incoming sub: player {inferred} "
+                        f"(team {tid}, only unseen roster player)"
+                    )
 
     def get_current_players(self) -> dict[int, set[int]]:
         """Get current on-court players: {team_id: set of player_ids}."""
