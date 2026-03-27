@@ -46,14 +46,15 @@ class LineupTracker:
                           non-substitution events (bench warmers).
         """
         self.events = events
-        self.home_team_id = home_team_id
-        self.away_team_id = away_team_id
-        self.team_ids = {home_team_id, away_team_id}
+        # Ensure team IDs are int (DB stores TEXT, PBP parser returns int)
+        self.home_team_id = int(home_team_id)
+        self.away_team_id = int(away_team_id)
+        self.team_ids = {self.home_team_id, self.away_team_id}
 
         # Current on-court players: {team_id: set of player_ids}
         self.on_court: dict[int, set[int]] = {
-            home_team_id: set(),
-            away_team_id: set(),
+            self.home_team_id: set(),
+            self.away_team_id: set(),
         }
 
         # Build name → player_id lookup from all events
@@ -62,19 +63,21 @@ class LineupTracker:
 
         # Game roster: {team_id: set of player_ids} from PlayerBox (all who played)
         self._game_roster: dict[int, set[int]] = {
-            home_team_id: set(),
-            away_team_id: set(),
+            self.home_team_id: set(),
+            self.away_team_id: set(),
         }
         # Track all players ever seen on court (for roster inference)
         self._ever_on_court: dict[int, set[int]] = {
-            home_team_id: set(),
-            away_team_id: set(),
+            self.home_team_id: set(),
+            self.away_team_id: set(),
         }
 
         # Seed from external player names (e.g., PlayerBox) first
         # player_names values can be (team_id, name) or (team_id, [name1, name2, ...])
         if player_names:
             for pid, (tid, names) in player_names.items():
+                pid = int(pid)
+                tid = int(tid)
                 name_list = names if isinstance(names, list) else [names]
                 for name in name_list:
                     name_lower = name.lower()
