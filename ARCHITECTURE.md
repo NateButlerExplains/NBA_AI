@@ -1,13 +1,32 @@
 # NBA Prediction Architecture
 
-> **Status**: Phase 1 Complete (15 experiments) | Phase 2 Complete (7 experiments) | Phase 3 Complete (10/10 experiments) | Phase 4 In Progress (Exps 1-5b + Exp 7 complete, Exp 6 planned)
-> **Last Updated**: March 18, 2026
+> **Status**: Phase 1-4 Complete | Phase 5 Complete (4-Level Hierarchical Model) | Phase 6 ATS Evaluation Complete
+> **Last Updated**: March 28, 2026
+>
+> **Current Best (Phase 5)**:
+> - Spread MAE: **10.01** (beats Vegas 10.62)
+> - Win AUC: **0.737** (best ever)
+> - ATS: **64.2%** on unseen 2024-2025 (ROI +22.5% at -110)
+> - Architecture: L1 Player (391K) → L2 Synergy (120K) → L3 Team (161K) → L4 Game (712K) = **1.38M params**
 
 ---
 
 ## Overview
 
-This project predicts NBA game outcomes (point spreads, scores, win probabilities) using a **sequence modeling** approach. A transformer processes each team's full season of historical games — scores, opponents, rosters, per-player contributions, and recent in-game score trajectories — to produce probabilistic predictions with calibrated uncertainty.
+This project predicts NBA game outcomes (point spreads, scores, win probabilities) using a **4-level hierarchical model**. Each level adds information the previous levels cannot capture:
+
+```
+Level 1 (Player)   →  "What can this player do?"        [NKE-H Kalman filter, 391K params]
+Level 2 (Synergy)  →  "How do these players interact?"   [FM + GATv2, 120K params]
+Level 3 (Team)     →  "What does the team do beyond talent?" [Coach + continuity gate, 161K params]
+Level 4 (Context)  →  "What does today's game context add?"  [Matchup + prediction heads, 712K params]
+```
+
+Phases 1-4 explored progressively richer approaches (PBP sequences, transformer architectures, generative models, LLM APIs). Phase 5 introduced the hierarchical decomposition which achieved the current best results. Phase 6 evaluated against-the-spread (ATS) profitability.
+
+### Historical progression (Phases 1-4)
+
+The original approach used sequence modeling — a transformer processing each team's full season of historical games to produce probabilistic predictions.
 
 Phase 1 explored PBP (play-by-play) history, roster encoding, and schedule embeddings across 15 experiments, establishing a Spread MAE ceiling of ~12.2. Phase 2 redesigned the architecture around richer per-game representations and full-season context, breaking that ceiling (MAE 11.61) and substantially improving win prediction (AUC 0.592 → 0.687). Phase 2 maximized standard transformer approaches for direct score prediction; future phases explore alternative architectures. Phase 3 Exp 3a broke the plateau by expanding from 1 stat (points) to 16 box score stats per player, reaching MAE 11.48 and AUC 0.707. Exp 4 added player interaction self-attention, achieving the current best: MAE 10.83, AUC 0.705, Win Acc 65.1%.
 
@@ -992,3 +1011,97 @@ Full design: `memory/project_phase6_design.md`
 - **HIGFormer** (KDD 2025): Heterogeneous player-team interaction graph, typed edges, MoE gating, per-match pre-training.
 - **GCN+RF**: 71.54% win accuracy on NBA data — 5% boost from hybridization over GCN alone.
 - **NeurIPS 2023**: GBDTs win with skewed/irregular distributions; NNs win with large data + complex interactions.
+
+---
+
+## Phase 5: Hierarchical Player-to-Game Model (Complete — March 2026)
+
+### Results Summary
+
+| Metric | Phase 5 | Phase 3 Best (Ensemble) | Vegas |
+|--------|---------|------------------------|-------|
+| **Spread MAE** | **10.01** | 10.66 | 10.62 |
+| **Win AUC** | **0.737** | 0.718 | — |
+| **Win Accuracy** | **67.9%** | 66.5% | — |
+| **ATS (2024-25 unseen)** | **64.2%** | 63.7% | 50% |
+| **ROI at -110** | **+22.5%** | — | — |
+| **Parameters** | **1.38M** | 4.4M (x5) | — |
+
+### Architecture
+
+Four-level hierarchy where each level adds information the previous levels cannot capture. Training follows a staged bottom-up pre-training → top-down assembly → end-to-end fine-tuning pipeline.
+
+#### Level 1: NKE-H (Neural Kalman Encoder with Hierarchical Prior) — 391K params
+- **Code**: `src/phase5/model.py`
+- **Function**: Produces 32-d ability vector per player via Kalman filtering over career game logs
+- **Components**: Population prior → archetype network (K=10) → game encoder → Kalman update with aging drift → multi-head decoder
+- **Training**: Phase 1 (single-game pretraining, 100 epochs) + Phase 2 (sequential Kalman, 60 epochs)
+- **Key metrics**: DPM correlation r=0.715, O-DPM r=0.766, D-DPM r=0.690, trade stability 0.937
+- **Key innovations**: VICReg regularization (covariance + variance), learned P_0 decoupled from population variance, time-gap-scaled drift, normalized stat targets, RAPM auxiliary loss
+
+#### Level 2: Player Synergy Network — 120K params
+- **Code**: `src/phase5/l2_model.py`
+- **Function**: Models pairwise player interactions and aggregates to team-level representation
+- **Stages**: Archetype Interaction Matrix (55 params) → FM Pairwise Residual with hybrid MLP+gated lookup (103K) → GATv2 Message Passing (4.5K, 4 heads, 9-d edge features) → Gated Attention Pooling (12K)
+- **Output**: 134-d per team (64 player + 64 synergy + 6 meta scalars)
+- **Training**: Hierarchical multi-resolution loss: 2-man WOWY primary (1.0) + 5-man secondary (0.3, ramped) + consistency (0.1)
+- **Data**: 110,652 pairwise WOWY pairs + 349,262 lineup stints from 33,003 games via LineupTracker (98.8% accuracy on older format, 100% on v3)
+
+#### Level 3: Team Model — 161K params
+- **Code**: `src/phase5/l3_model.py`
+- **Function**: Captures coaching, system, and organizational effects beyond player talent
+- **Components**: Coach embedding (16-d with shrinkage gate) + continuity gate (blends team history vs player composition) + 2 residual MLP blocks
+- **Input**: L2 team vector (134-d) + dual-scale rolling team features (34-d: 5-game and 15-game windows for Four Factors, efficiency, defensive scheme) + roster composition summary (12-d) + coach data
+- **Output**: 128-d team representation
+
+#### Level 4: Game Predictor — 712K params
+- **Code**: `src/phase5/l4_model.py`
+- **Function**: Constructs matchup representation, adds game context, produces final predictions
+- **Matchup**: concat(home, away) + diff + Hadamard = 512-d
+- **L2 skip connection**: L2 team diff projected to 256-d, additive injection (gradient bypass around L3)
+- **Context**: 14-d (rest, B2B, travel, altitude, timezone, season progress, playoffs)
+- **Heads**: spread (mu, sigma), win probability, total (mu, sigma), with spread sigma conditioned on total_mu
+- **Loss**: Gaussian NLL spread (1.0) + BCE win (0.3) + Gaussian NLL total (0.3) + consistency (0.1)
+
+### Training Pipeline
+
+| Phase | What | Levels | Data |
+|-------|------|--------|------|
+| A1 | L1 pre-training | L1 only | 2001-2017 |
+| A2 | L2 pre-training | L2 on frozen L1 | 2007-2017 WOWY |
+| B | Top-down assembly | L3+L4 on frozen L1+L2 | 2018-2023 |
+| C | End-to-end fine-tuning | L2+L3+L4 (L1 frozen) | 2018-2023 |
+
+Discriminative learning rates in Phase C: L2=3e-5, L3=1e-4, L4=3e-4. Gradual unfreezing: L4 only → L3+L4 → L2+L3+L4.
+
+### Data Pipeline
+
+| Data | Source | Volume |
+|------|--------|--------|
+| Player box stats | PlayerBox table | 670K rows |
+| PBP enriched stats | PBPPlayerGameStatsV2 | 784K rows, 56 features |
+| WOWY pairwise synergy | Computed from PBP+LineupTracker | 110K pairs, 349K lineups |
+| L1 ability vectors | Pre-computed from NKE-H | 2,274 players, 607K game vectors |
+| Team rolling features | Computed from TeamBox+PlayerBox | 31,743 games, 34+14 features |
+| Coaching data | CommonTeamRoster API | 5,010 records, 30 teams, 25 seasons |
+| Arena data | Static lookup | 36 teams with lat/lon/timezone |
+| Betting lines | ESPN + Covers closing spreads | 23,739 games, 2007-2025 |
+
+### Key Findings
+
+1. **Hierarchical decomposition works**: Each level adds measurable value. Ablation: removing L2 synergy degrades ATS by ~2%, removing L3 team features by ~1%.
+2. **Perfect roster knowledge is a structural edge**: Using actual rosters (PlayerBox min>0) gives information Vegas doesn't have at line-setting time.
+3. **MAE improvement doesn't automatically mean ATS improvement**: An ATS classification head and L1 unfreezing both improved MAE but didn't generalize to unseen ATS.
+4. **Coach embeddings overfit**: 16-d learned per-coach embeddings hurt performance. Hand-crafted coaching features (tenure, winpct) work better.
+5. **Data quality matters more than model complexity**: The season label bug in Phase B cache (found via leakage audit) would have invalidated all results if not caught.
+6. **Spread prediction compression**: Model predictions have std=8.5 vs actual margin std=15.7. Both the model and Vegas compress toward the mean; the edge comes from whose compression is more accurate.
+
+### Experiments Tried and Reverted
+
+| Experiment | Result | Reason |
+|-----------|--------|--------|
+| Coach embeddings (16-d) | MAE +0.14 worse | Overfitting on small sample |
+| ATS classification head | MAE +0.51 worse | Nuked spread prediction for tiny ATS gain |
+| Full L1 unfreezing | Val improved, unseen same | Overfit to validation period |
+| Spread decompression | ATS +0.2% | Marginal, not worth complexity |
+
