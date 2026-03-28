@@ -275,7 +275,26 @@ def extract_player(
 def main():
     parser = argparse.ArgumentParser(description="Extract L1 ability vectors for L2")
     parser.add_argument("--force", action="store_true", help="Overwrite existing files")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Override L1 checkpoint path (default: checkpoints/phase5/phase2_best.pt)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Override output directory (default: data/l2_cache/l1_vectors/)",
+    )
     args = parser.parse_args()
+
+    # Allow overriding globals
+    global CKPT_PATH, OUTPUT_DIR
+    if args.checkpoint:
+        CKPT_PATH = Path(args.checkpoint)
+    if args.output_dir:
+        OUTPUT_DIR = Path(args.output_dir)
 
     # Setup
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
