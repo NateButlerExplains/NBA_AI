@@ -43,6 +43,11 @@ class L4Config:
     w_total: float = 0.3  # Gaussian NLL for total
     w_consistency: float = 0.1  # MSE between Phi(mu/sigma) and win_prob
 
+    # --- ATS classification head ---
+    w_ats: float = 0.15  # BCE weight for ATS prediction
+    ats_ramp_start: int = 11  # epoch to start ramping ATS loss
+    ats_ramp_epochs: int = 5  # epochs over which to ramp from 0 to w_ats
+
     # --- Training ---
     learning_rate: float = 3e-4
     weight_decay: float = 1e-4

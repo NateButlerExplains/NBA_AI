@@ -229,6 +229,14 @@ class GamePredictor(nn.Module):
         # Heads
         self.heads = PredictionHeads(cfg)
 
+        # ATS classification head (Vegas-aware)
+        # Takes 256-d hidden + 1 Vegas spread scalar -> P(home covers)
+        self.ats_head = nn.Sequential(
+            nn.Linear(cfg.d_hidden + 1, 64),  # 257 -> 64
+            nn.GELU(),
+            nn.Linear(64, 1),
+        )
+
     def forward(
         self,
         team_home: torch.Tensor,
@@ -236,6 +244,7 @@ class GamePredictor(nn.Module):
         l2_home: torch.Tensor,
         l2_away: torch.Tensor,
         context: torch.Tensor,
+        vegas_spread: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Full L4 forward pass.
@@ -246,9 +255,11 @@ class GamePredictor(nn.Module):
             l2_home: (B, 134) L2 home team vector
             l2_away: (B, 134) L2 away team vector
             context: (B, 14) game-specific context features
+            vegas_spread: (B,) optional Vegas closing spread (negative=home favored)
         Returns:
             dict with spread_mu, spread_sigma, win_logit, win_prob,
             total_mu, total_sigma — all (B,)
+            If vegas_spread is provided, also includes ats_logit and ats_prob.
         """
         # 1. Build matchup representation
         matchup = self.matchup(team_home, team_away)  # (B, 512)
@@ -277,7 +288,16 @@ class GamePredictor(nn.Module):
         h = self.output_norm(h)
 
         # 9. Prediction heads
-        return self.heads(h)
+        out = self.heads(h)
+
+        # 10. ATS prediction (only when vegas_spread is provided)
+        if vegas_spread is not None:
+            ats_input = torch.cat([h, vegas_spread.unsqueeze(-1)], dim=-1)  # (B, 257)
+            ats_logit = self.ats_head(ats_input).squeeze(-1)  # (B,)
+            out["ats_logit"] = ats_logit
+            out["ats_prob"] = torch.sigmoid(ats_logit)
+
+        return out
 
 
 def count_parameters(model: nn.Module) -> int:

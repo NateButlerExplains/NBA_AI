@@ -127,6 +127,36 @@ def consistency_loss(
     return F.mse_loss(win_prob, gaussian_win_prob.detach())
 
 
+def ats_loss(
+    ats_logit: torch.Tensor,
+    actual_margin: torch.Tensor,
+    vegas_spread: torch.Tensor,
+) -> torch.Tensor:
+    """
+    BCE loss for ATS (against the spread) prediction.
+
+    Target: did home cover? i.e., actual_margin > -vegas_spread
+    Excludes pushes (|ats_result| < 0.25) since those have no payout.
+
+    Args:
+        ats_logit: (B,) raw logit for P(home covers)
+        actual_margin: (B,) home_score - away_score
+        vegas_spread: (B,) Vegas closing spread (negative = home favored)
+    Returns:
+        scalar loss (0 if no valid games)
+    """
+    # ats_result > 0 means home covered
+    ats_result = actual_margin - (-vegas_spread)  # = actual_margin + vegas_spread
+    target = (ats_result > 0).float()
+
+    # Exclude pushes
+    valid = ats_result.abs() > 0.25
+    if not valid.any():
+        return torch.tensor(0.0, device=ats_logit.device)
+
+    return F.binary_cross_entropy_with_logits(ats_logit[valid], target[valid])
+
+
 def game_prediction_loss(
     predictions: dict[str, torch.Tensor],
     actual_margin: torch.Tensor,
