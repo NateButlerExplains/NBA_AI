@@ -148,6 +148,8 @@ def train_epoch(
         away_rs = batch["away_roster_summary"].to(device)
         home_coach = batch["home_coach_idx"].to(device)
         away_coach = batch["away_coach_idx"].to(device)
+        home_coach_g = batch["home_coach_games"].to(device)
+        away_coach_g = batch["away_coach_games"].to(device)
         home_cont = batch["home_continuity"].to(device)
         away_cont = batch["away_continuity"].to(device)
         game_ctx = batch["game_context"].to(device)
@@ -163,6 +165,7 @@ def train_epoch(
             roster_summary=home_rs,
             coach_idx=home_coach,
             roster_continuity=home_cont,
+            coach_games=home_coach_g,
         )  # (B, 128)
 
         away_repr = l3_model(
@@ -171,6 +174,7 @@ def train_epoch(
             roster_summary=away_rs,
             coach_idx=away_coach,
             roster_continuity=away_cont,
+            coach_games=away_coach_g,
         )  # (B, 128)
 
         # L4 forward
@@ -241,6 +245,8 @@ def evaluate(
         away_rs = batch["away_roster_summary"].to(device)
         home_coach = batch["home_coach_idx"].to(device)
         away_coach = batch["away_coach_idx"].to(device)
+        home_coach_g = batch["home_coach_games"].to(device)
+        away_coach_g = batch["away_coach_games"].to(device)
         home_cont = batch["home_continuity"].to(device)
         away_cont = batch["away_continuity"].to(device)
         game_ctx = batch["game_context"].to(device)
@@ -256,6 +262,7 @@ def evaluate(
             roster_summary=home_rs,
             coach_idx=home_coach,
             roster_continuity=home_cont,
+            coach_games=home_coach_g,
         )
         away_repr = l3_model(
             l2_team=away_l2,
@@ -263,6 +270,7 @@ def evaluate(
             roster_summary=away_rs,
             coach_idx=away_coach,
             roster_continuity=away_cont,
+            coach_games=away_coach_g,
         )
 
         # L4

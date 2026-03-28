@@ -38,8 +38,31 @@ L2_CACHE_DIR = PROJECT_ROOT / "data" / "l2_cache"
 L1_VECTORS_DIR = L2_CACHE_DIR / "l1_vectors"
 WOWY_DB_PATH = L2_CACHE_DIR / "wowy.sqlite"
 
-# Curriculum: epochs before introducing 5-man loss
+# Curriculum: epochs before introducing 5-man loss (default, overridden by cfg)
 CURRICULUM_WARMUP = 10
+
+
+def get_effective_w_5man(cfg: L2Config, epoch: int) -> float:
+    """
+    Compute effective 5-man loss weight for a given epoch.
+
+    Before warmup: 0.0
+    After warmup: linear ramp from 0 to cfg.w_5man over cfg.lineup_ramp_epochs.
+
+    This avoids the abrupt curriculum transition that causes gradient conflict.
+    """
+    warmup = getattr(cfg, "curriculum_warmup", CURRICULUM_WARMUP)
+    ramp_epochs = getattr(cfg, "lineup_ramp_epochs", 0)
+
+    if epoch <= warmup:
+        return 0.0
+
+    if ramp_epochs <= 0:
+        return cfg.w_5man
+
+    elapsed = epoch - warmup
+    ramp_frac = min(1.0, elapsed / ramp_epochs)
+    return cfg.w_5man * ramp_frac
 
 
 # ---------------------------------------------------------------------------
@@ -373,8 +396,16 @@ def train_one_epoch_lineups(
     cfg: L2Config,
     device: str,
     test_mode: bool = False,
+    freeze_fm: bool = False,
 ) -> dict[str, float]:
-    """Train one epoch on 5-man lineup data."""
+    """Train one epoch on 5-man lineup data.
+
+    Args:
+        freeze_fm: If True, freeze FM synergy vectors (MLP + residual + gate)
+                   during lineup training to prevent gradient conflict with
+                   the pairwise objective. Only GATv2, pooling, and synergy
+                   aggregation layers are updated.
+    """
     model.train()
     total_losses = {}
     n_batches = 0
@@ -408,12 +439,28 @@ def train_one_epoch_lineups(
         ).unsqueeze(0)
         valid_pairs = pair_mask & diag_mask
 
-        # Sum pairwise synergies
-        sum_pairwise = (pairwise_total * valid_pairs.float()).sum(dim=(1, 2))  # (B,)
+        if freeze_fm:
+            # Detach FM/archetype pairwise scores so gradients only flow
+            # through GATv2 (player_vectors) and aggregation layers.
+            pairwise_detached = pairwise_total.detach()
+            sum_pairwise = (pairwise_detached * valid_pairs.float()).sum(dim=(1, 2))
 
-        # Sum individual ability norms as proxy for individual contributions
-        ability_norms = ability.norm(dim=-1)  # (B, A)
-        sum_individual = (ability_norms * mask.float()).sum(dim=1)  # (B,)
+            # Use GATv2-based team_player vector norm as individual proxy.
+            # This goes through GatedAttentionPooling which handles masking
+            # properly (no NaN issues from masked positions).
+            team_player = outputs["team_player"]  # (B, d_team_player) — from pooling
+            sum_individual = team_player.norm(
+                dim=-1
+            )  # (B,) — has gradients through GATv2+pool
+        else:
+            # Standard: sum pairwise synergies (gradients flow through FM)
+            sum_pairwise = (pairwise_total * valid_pairs.float()).sum(
+                dim=(1, 2)
+            )  # (B,)
+
+            # Sum individual ability norms as proxy for individual contributions
+            ability_norms = ability.norm(dim=-1)  # (B, A)
+            sum_individual = (ability_norms * mask.float()).sum(dim=1)  # (B,)
 
         # Predicted net rating = sum_individual + sum_pairwise
         pred_lineup = sum_individual + sum_pairwise
@@ -624,6 +671,7 @@ def train(
     train_lineups, val_lineups = load_lineup_data(
         seasons=cfg.pretrain_seasons,
         val_season=cfg.val_season,
+        min_possessions=getattr(cfg, "lineup_min_possessions", 50),
     )
 
     has_lineups = len(train_lineups) > 0
@@ -715,21 +763,30 @@ def train(
     best_val_loss = float("inf")
     patience_counter = 0
 
+    warmup = getattr(cfg, "curriculum_warmup", CURRICULUM_WARMUP)
+    ramp_epochs = getattr(cfg, "lineup_ramp_epochs", 0)
+    freeze_fm = getattr(cfg, "freeze_fm_for_lineup", False)
+    min_poss = getattr(cfg, "lineup_min_possessions", 50)
+
     logging.info(
-        f"Training: {epochs} epochs, curriculum warmup={CURRICULUM_WARMUP} epochs "
-        f"(2-man only), then w_5man={cfg.w_5man}"
+        f"Training: {epochs} epochs, curriculum warmup={warmup} epochs "
+        f"(2-man only), then w_5man ramps to {cfg.w_5man} over {ramp_epochs} epochs"
     )
-    logging.info(f"Patience: {cfg.patience}, gradient clip: {cfg.gradient_clip}")
+    logging.info(
+        f"Patience: {cfg.patience}, gradient clip: {cfg.gradient_clip}, "
+        f"freeze_fm_for_lineup: {freeze_fm}, lineup_min_poss: {min_poss}"
+    )
     logging.info("-" * 80)
 
     for epoch in range(1, epochs + 1):
         t0 = time.time()
-        use_5man = epoch > CURRICULUM_WARMUP and has_lineups
+        w_5man_eff = get_effective_w_5man(cfg, epoch) if has_lineups else 0.0
+        use_5man = w_5man_eff > 0.0
 
         # --- Curriculum: temporarily set w_5man for loss computation ---
         effective_cfg = L2Config(
             **{k: getattr(cfg, k) for k in cfg.__dataclass_fields__ if k != "w_5man"},
-            w_5man=cfg.w_5man if use_5man else 0.0,
+            w_5man=w_5man_eff,
         )
 
         # --- Train on pairs (primary) ---
@@ -741,7 +798,13 @@ def train(
         lineup_losses = {}
         if use_5man and train_lineup_loader is not None:
             lineup_losses = train_one_epoch_lineups(
-                model, train_lineup_loader, optimizer, effective_cfg, device, test_mode
+                model,
+                train_lineup_loader,
+                optimizer,
+                effective_cfg,
+                device,
+                test_mode,
+                freeze_fm=freeze_fm,
             )
 
         scheduler.step()
@@ -761,7 +824,7 @@ def train(
         lr = optimizer.param_groups[0]["lr"]
 
         # --- Logging ---
-        phase_str = "2man+5man" if use_5man else "2man-only"
+        phase_str = f"2man+5man(w={w_5man_eff:.3f})" if use_5man else "2man-only"
         lineup_str = ""
         if lineup_losses:
             lineup_str = f" lineup={lineup_losses.get('lineup', 0):.4f}"
@@ -819,6 +882,77 @@ def train(
 # ---------------------------------------------------------------------------
 
 
+def get_experiment_configs(epochs: int = 30) -> dict[str, L2Config]:
+    """
+    Return named experiment configs for the sign accuracy regression diagnosis.
+
+    Variants:
+      A (baseline): Original settings — w_5man=0.3, abrupt curriculum, 50 poss
+      B (low_w): Lower w_5man=0.05, so 5-man gradient is 0.2x of 2-man (not 1.2x)
+      C (ramp): Gradual ramp over 10 epochs + higher possession threshold (200)
+      D (freeze_fm): Freeze FM vectors during lineup phase — only GATv2/pool update
+      E (ramp+freeze): Combined: gradual ramp + FM frozen for lineups
+      F (pair_only): No 5-man loss at all — pure pairwise baseline
+    """
+    configs = {}
+
+    # A: Original (reproduces the sign accuracy regression)
+    configs["A_baseline"] = L2Config(
+        w_5man=0.3,
+        curriculum_warmup=10,
+        lineup_ramp_epochs=0,  # abrupt
+        lineup_min_possessions=50,
+        freeze_fm_for_lineup=False,
+    )
+
+    # B: Lower weight — reduce gradient domination from 1.2x to 0.2x
+    configs["B_low_w"] = L2Config(
+        w_5man=0.05,
+        curriculum_warmup=10,
+        lineup_ramp_epochs=0,
+        lineup_min_possessions=50,
+        freeze_fm_for_lineup=False,
+    )
+
+    # C: Gradual ramp + higher possession threshold for cleaner targets
+    configs["C_ramp_200poss"] = L2Config(
+        w_5man=0.1,
+        curriculum_warmup=10,
+        lineup_ramp_epochs=10,  # ramp over 10 epochs
+        lineup_min_possessions=200,  # cleaner targets (std 13 vs 23)
+        freeze_fm_for_lineup=False,
+    )
+
+    # D: Freeze FM vectors during lineup phase
+    configs["D_freeze_fm"] = L2Config(
+        w_5man=0.3,
+        curriculum_warmup=10,
+        lineup_ramp_epochs=0,
+        lineup_min_possessions=50,
+        freeze_fm_for_lineup=True,
+    )
+
+    # E: Combined: ramp + freeze
+    configs["E_ramp_freeze"] = L2Config(
+        w_5man=0.1,
+        curriculum_warmup=10,
+        lineup_ramp_epochs=10,
+        lineup_min_possessions=200,
+        freeze_fm_for_lineup=True,
+    )
+
+    # F: Pure pairwise (no 5-man loss) — upper bound for sign accuracy
+    configs["F_pair_only"] = L2Config(
+        w_5man=0.0,
+        curriculum_warmup=999,  # never introduce 5-man
+        lineup_ramp_epochs=0,
+        lineup_min_possessions=50,
+        freeze_fm_for_lineup=False,
+    )
+
+    return configs
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Train Phase 5 L2 Player Synergy Network"
@@ -831,6 +965,21 @@ def main():
     )
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--log-level", type=str, default="INFO")
+    parser.add_argument(
+        "--experiment",
+        type=str,
+        default=None,
+        choices=[
+            "A_baseline",
+            "B_low_w",
+            "C_ramp_200poss",
+            "D_freeze_fm",
+            "E_ramp_freeze",
+            "F_pair_only",
+            "compare_all",
+        ],
+        help="Run a specific experiment variant or 'compare_all' for full comparison",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -846,14 +995,60 @@ def main():
     # Validate data prerequisites
     validate_data_available()
 
-    cfg = L2Config()
-    epochs = args.epochs if args.epochs is not None else cfg.epochs
+    if args.experiment == "compare_all":
+        # Run all variants and print comparison
+        all_configs = get_experiment_configs()
+        epochs = args.epochs if args.epochs is not None else 30
+        if args.test:
+            epochs = min(epochs, 3)
 
-    if args.test:
-        logging.info("TEST MODE: running with reduced batches per epoch")
-        epochs = min(epochs, 3)
+        results = {}
+        for name, cfg in all_configs.items():
+            logging.info(f"\n{'='*80}")
+            logging.info(f"  EXPERIMENT: {name}")
+            logging.info(f"{'='*80}")
+            model = train(cfg, epochs=epochs, device=device, test_mode=args.test)
 
-    train(cfg, epochs=epochs, device=device, test_mode=args.test)
+            # Load best checkpoint and report metrics
+            ckpt_path = CHECKPOINT_DIR / "l2_best.pt"
+            if ckpt_path.exists():
+                ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+                results[name] = ckpt.get("val_metrics", {})
+                # Save per-experiment checkpoint
+                exp_ckpt = CHECKPOINT_DIR / f"l2_{name}.pt"
+                torch.save(ckpt, exp_ckpt)
+                logging.info(f"  Saved experiment checkpoint: {exp_ckpt}")
+
+        # Print comparison table
+        logging.info(f"\n{'='*80}")
+        logging.info("  COMPARISON TABLE")
+        logging.info(f"{'='*80}")
+        logging.info(
+            f"{'Experiment':<20s} {'sign_acc':>10s} {'pair_mae':>10s} {'lineup_mae':>10s} {'total':>10s}"
+        )
+        logging.info("-" * 62)
+        for name, metrics in results.items():
+            logging.info(
+                f"{name:<20s} "
+                f"{metrics.get('pair_sign_acc', 0):.4f}     "
+                f"{metrics.get('pair_mae', 0):.4f}     "
+                f"{metrics.get('lineup_mae', 0):.4f}     "
+                f"{metrics.get('total', 0):.4f}"
+            )
+    elif args.experiment:
+        all_configs = get_experiment_configs()
+        cfg = all_configs[args.experiment]
+        epochs = args.epochs if args.epochs is not None else cfg.epochs
+        if args.test:
+            epochs = min(epochs, 3)
+        train(cfg, epochs=epochs, device=device, test_mode=args.test)
+    else:
+        cfg = L2Config()
+        epochs = args.epochs if args.epochs is not None else cfg.epochs
+        if args.test:
+            logging.info("TEST MODE: running with reduced batches per epoch")
+            epochs = min(epochs, 3)
+        train(cfg, epochs=epochs, device=device, test_mode=args.test)
 
 
 if __name__ == "__main__":

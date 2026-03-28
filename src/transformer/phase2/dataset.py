@@ -18,7 +18,11 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from src.transformer.phase2.cache_builder import TEAM_TO_IDX, PerGameFeatures, HISTORICAL_TO_CURRENT
+from src.transformer.phase2.cache_builder import (
+    TEAM_TO_IDX,
+    PerGameFeatures,
+    HISTORICAL_TO_CURRENT,
+)
 from src.transformer.phase2.sequence_builder import Phase2SequenceBuilder
 
 logger = logging.getLogger(__name__)
@@ -32,21 +36,59 @@ TOTAL_STD = 20.0
 POINTS_NORM = 30.0
 
 # Fixed domain divisors for 16 PlayerBox stats (same order as STAT_COLUMNS)
-STAT_NORMS_16 = np.array([
-    48.0, 30.0, 5.0, 12.0, 10.0, 3.0, 3.0, 5.0,
-    6.0, 25.0, 15.0, 12.0, 8.0, 12.0, 10.0, 30.0,
-], dtype=np.float32)
-STAT_NORMS_17 = np.array([
-    48.0, 30.0, 5.0, 12.0, 10.0, 3.0, 3.0, 5.0,
-    6.0, 25.0, 15.0, 12.0, 8.0, 12.0, 10.0, 30.0,
-    20.0,  # years_in_league
-], dtype=np.float32)
+STAT_NORMS_16 = np.array(
+    [
+        48.0,
+        30.0,
+        5.0,
+        12.0,
+        10.0,
+        3.0,
+        3.0,
+        5.0,
+        6.0,
+        25.0,
+        15.0,
+        12.0,
+        8.0,
+        12.0,
+        10.0,
+        30.0,
+    ],
+    dtype=np.float32,
+)
+STAT_NORMS_17 = np.array(
+    [
+        48.0,
+        30.0,
+        5.0,
+        12.0,
+        10.0,
+        3.0,
+        3.0,
+        5.0,
+        6.0,
+        25.0,
+        15.0,
+        12.0,
+        8.0,
+        12.0,
+        10.0,
+        30.0,
+        20.0,  # years_in_league
+    ],
+    dtype=np.float32,
+)
 # Default: 16 stats (set dynamically based on n_player_stats)
 STAT_NORMS = STAT_NORMS_16
 
 # Team efficiency normalization constants (mean, std from historical data)
-EFFICIENCY_MEANS = np.array([0.539, 0.574, 0.121, 0.262, 0.381, 0.621, 111.3, 0.0], dtype=np.float32)
-EFFICIENCY_STDS = np.array([0.068, 0.063, 0.034, 0.092, 0.099, 0.095, 7.534, 13.0], dtype=np.float32)
+EFFICIENCY_MEANS = np.array(
+    [0.539, 0.574, 0.121, 0.262, 0.381, 0.621, 111.3, 0.0], dtype=np.float32
+)
+EFFICIENCY_STDS = np.array(
+    [0.068, 0.063, 0.034, 0.092, 0.099, 0.095, 7.534, 13.0], dtype=np.float32
+)
 
 
 def _normalize_scores(team_score: float, opp_score: float) -> list[float]:
@@ -78,8 +120,10 @@ def _compute_gs_summary(gs_data: dict, team_is_away: bool) -> np.ndarray:
     close_game = 1.0 if abs(final_margin) <= 5 else 0.0
     blowout = 1.0 if abs(final_margin) >= 20 else 0.0
 
-    return np.array([max_lead, max_deficit, lead_changes, score_volatility, close_game, blowout],
-                    dtype=np.float32)
+    return np.array(
+        [max_lead, max_deficit, lead_changes, score_volatility, close_game, blowout],
+        dtype=np.float32,
+    )
 
 
 def _encode_team_context(
@@ -120,16 +164,26 @@ def _encode_team_context(
 
     # Player stats arrays (only when n_player_stats > 0)
     use_stats = n_player_stats > 0
-    stat_norms = STAT_NORMS_17[:n_player_stats] if n_player_stats == 17 else STAT_NORMS_16[:n_player_stats]
+    stat_norms = (
+        STAT_NORMS_17[:n_player_stats]
+        if n_player_stats == 17
+        else STAT_NORMS_16[:n_player_stats]
+    )
     if use_stats:
-        player_stats_arr = np.zeros((n_games, max_players, n_player_stats), dtype=np.float32)
-        player_positions = np.full((n_games, max_players), 3, dtype=np.int64)  # 3 = UNK default
+        player_stats_arr = np.zeros(
+            (n_games, max_players, n_player_stats), dtype=np.float32
+        )
+        player_positions = np.full(
+            (n_games, max_players), 3, dtype=np.int64
+        )  # 3 = UNK default
         player_pm_available = np.zeros((n_games, max_players), dtype=np.float32)
 
     # Efficiency features (only when enabled)
     use_efficiency = n_efficiency_features > 0
     if use_efficiency:
-        efficiency_features = np.zeros((n_games, n_efficiency_features), dtype=np.float32)
+        efficiency_features = np.zeros(
+            (n_games, n_efficiency_features), dtype=np.float32
+        )
         gs_summary_features = np.zeros((n_games, 6), dtype=np.float32)
         context_flags = np.zeros((n_games, 2), dtype=np.float32)
 
@@ -153,10 +207,16 @@ def _encode_team_context(
 
         # Player contributions
         if use_stats and players_stats:
-            for j, (pid, stats, pos_idx, pm_avail) in enumerate(players_stats[:max_players]):
+            for j, (pid, stats, pos_idx, pm_avail) in enumerate(
+                players_stats[:max_players]
+            ):
                 player_ids[i, j] = player_id_map.get(pid, 0)
                 raw_stats = np.array(stats, dtype=np.float32)
-                if n_player_stats == 17 and player_experience is not None and season_start_year is not None:
+                if (
+                    n_player_stats == 17
+                    and player_experience is not None
+                    and season_start_year is not None
+                ):
                     # Append years_in_league as 17th stat
                     from_year = player_experience.get(pid, season_start_year)
                     years = min(max(season_start_year - from_year, 0), 20)
@@ -343,7 +403,9 @@ def _build_h2h_records(game_features: dict[str, PerGameFeatures]) -> list[tuple]
         away_idx = TEAM_TO_IDX.get(gf.away_team, -1)
         if home_idx < 0 or away_idx < 0:
             continue
-        records.append((gf.game_date, home_idx, away_idx, gf.home_score - gf.away_score))
+        records.append(
+            (gf.game_date, home_idx, away_idx, gf.home_score - gf.away_score)
+        )
     records.sort(key=lambda x: x[0])
     return records
 
@@ -367,6 +429,7 @@ def _compute_h2h_features(h2h_records: list[tuple], target_date: str) -> np.ndar
 
     # Binary search for cutoff
     import bisect
+
     cutoff = bisect.bisect_left([r[0] for r in h2h_records], target_date)
 
     for i in range(cutoff):
@@ -419,6 +482,7 @@ class Phase2Dataset(Dataset):
         enable_team_gat: bool = False,
         n_efficiency_features: int = 0,
         player_experience: Optional[dict] = None,
+        aux_features: Optional[dict[str, list[float]]] = None,
     ):
         self.game_features = game_features
         self.gs_cache = gs_cache
@@ -432,12 +496,15 @@ class Phase2Dataset(Dataset):
         self.enable_team_gat = enable_team_gat
         self.n_efficiency_features = n_efficiency_features
         self.player_experience = player_experience or {}
+        self.aux_features = aux_features  # game_id -> [N floats]
 
         # Build H2H records for GAT if enabled
         self.h2h_records = None
         if enable_team_gat:
             self.h2h_records = _build_h2h_records(game_features)
-            logger.info(f"Built H2H records: {len(self.h2h_records)} game records for GAT")
+            logger.info(
+                f"Built H2H records: {len(self.h2h_records)} game records for GAT"
+            )
 
         self.builder = Phase2SequenceBuilder(
             game_features=game_features,
@@ -466,14 +533,16 @@ class Phase2Dataset(Dataset):
         # Build roster arrays first (needed for form tensors)
         home_roster = np.zeros(self.max_roster, dtype=np.int64)
         away_roster = np.zeros(self.max_roster, dtype=np.int64)
-        for i, pid in enumerate(sample.home_roster[:self.max_roster]):
+        for i, pid in enumerate(sample.home_roster[: self.max_roster]):
             home_roster[i] = self.player_id_map.get(pid, 0)
-        for i, pid in enumerate(sample.away_roster[:self.max_roster]):
+        for i, pid in enumerate(sample.away_roster[: self.max_roster]):
             away_roster[i] = self.player_id_map.get(pid, 0)
 
         # Determine season start year for player experience
         target_gf = self.game_features[game_id]
-        season_start_year = int(target_gf.season.split("-")[0]) if target_gf.season else None
+        season_start_year = (
+            int(target_gf.season.split("-")[0]) if target_gf.season else None
+        )
 
         # Encode both teams
         common_kwargs = dict(
@@ -489,14 +558,18 @@ class Phase2Dataset(Dataset):
             season_start_year=season_start_year,
         )
         home_data = _encode_team_context(
-            sample.home_context, sample.home_team,
-            sample.home_days_before, sample.home_recent_indices,
+            sample.home_context,
+            sample.home_team,
+            sample.home_days_before,
+            sample.home_recent_indices,
             roster_ids=home_roster,
             **common_kwargs,
         )
         away_data = _encode_team_context(
-            sample.away_context, sample.away_team,
-            sample.away_days_before, sample.away_recent_indices,
+            sample.away_context,
+            sample.away_team,
+            sample.away_days_before,
+            sample.away_recent_indices,
             roster_ids=away_roster,
             **common_kwargs,
         )
@@ -533,6 +606,15 @@ class Phase2Dataset(Dataset):
             h2h = _compute_h2h_features(self.h2h_records, target_date)
             result["h2h_features"] = torch.from_numpy(h2h)  # (30, 30, 3)
 
+        # Auxiliary matchup features (Phase 6 Exp 1+)
+        if self.aux_features is not None:
+            feats = self.aux_features.get(game_id)
+            if feats is not None:
+                result["aux_features"] = torch.tensor(feats, dtype=torch.float32)
+            else:
+                n = len(next(iter(self.aux_features.values())))
+                result["aux_features"] = torch.zeros(n, dtype=torch.float32)
+
         # Home/away augmentation: 50% chance of swapping
         if self.enable_augmentation and random.random() < 0.5:
             result = self._swap_home_away(result)
@@ -557,6 +639,19 @@ class Phase2Dataset(Dataset):
                 swapped["target_home_score"] = value
             else:
                 swapped[key] = value
+
+        # Swap aux features: home/away pairs and negate directional features
+        if "aux_features" in swapped:
+            af = swapped["aux_features"].clone()
+            # Swap home/away pairs: (0,1), (2,3), (4,5)
+            af[0], af[1] = swapped["aux_features"][1], swapped["aux_features"][0]
+            af[2], af[3] = swapped["aux_features"][3], swapped["aux_features"][2]
+            af[4], af[5] = swapped["aux_features"][5], swapped["aux_features"][4]
+            # Negate directional: rest_diff[7], vegas_spread[8], vegas_ml_prob[10]
+            af[7] = -af[7]
+            af[8] = -af[8]
+            af[10] = -af[10]
+            swapped["aux_features"] = af
 
         return swapped
 
@@ -595,8 +690,20 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
 
     # Pad per-team sequences
     for prefix, max_games, max_players, max_gs_recent, max_gs_rows in [
-        ("home_", max_home_games, max_home_players, max_home_gs_recent, max_home_gs_rows),
-        ("away_", max_away_games, max_away_players, max_away_gs_recent, max_away_gs_rows),
+        (
+            "home_",
+            max_home_games,
+            max_home_players,
+            max_home_gs_recent,
+            max_home_gs_rows,
+        ),
+        (
+            "away_",
+            max_away_games,
+            max_away_players,
+            max_away_gs_recent,
+            max_away_gs_rows,
+        ),
     ]:
         # Game-level features
         scores = torch.zeros(B, max_games, 4)
@@ -615,7 +722,9 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
         if has_stats:
             n_stats = batch[0][prefix + "player_stats"].shape[-1]
             player_stats_t = torch.zeros(B, max_games, max_players, n_stats)
-            player_positions_t = torch.full((B, max_games, max_players), 3, dtype=torch.int64)
+            player_positions_t = torch.full(
+                (B, max_games, max_players), 3, dtype=torch.int64
+            )
             player_pm_available_t = torch.zeros(B, max_games, max_players)
 
         # Efficiency features (only when present)
@@ -725,5 +834,9 @@ def collate_phase2(batch: list[Optional[dict]]) -> Optional[dict]:
     # H2H features for Team GAT (fixed 30×30×3, just stack)
     if "h2h_features" in batch[0]:
         result["h2h_features"] = torch.stack([s["h2h_features"] for s in batch])
+
+    # Auxiliary matchup features (fixed size, just stack)
+    if "aux_features" in batch[0]:
+        result["aux_features"] = torch.stack([s["aux_features"] for s in batch])
 
     return result

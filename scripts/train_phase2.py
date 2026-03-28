@@ -51,14 +51,32 @@ def ensure_cache(config: Phase2ExperimentConfig) -> dict:
         logging.info(f"Loading existing cache from {cache_dir}")
         return load_cache(cache_dir)
     else:
-        all_seasons = sorted(set(
-            config.data.train_seasons +
-            config.data.val_seasons +
-            config.data.test_seasons
-        ))
+        all_seasons = sorted(
+            set(
+                config.data.train_seasons
+                + config.data.val_seasons
+                + config.data.test_seasons
+            )
+        )
         logging.info(f"Building cache for seasons: {all_seasons}")
         build_cache(all_seasons, cache_dir)
         return load_cache(cache_dir)
+
+
+def load_aux_features(path: str) -> dict | None:
+    """Load auxiliary features from JSON file if specified."""
+    if not path:
+        return None
+    import json
+
+    path = Path(path)
+    if not path.exists():
+        logging.warning(f"Aux features file not found: {path}")
+        return None
+    with open(path) as f:
+        data = json.load(f)
+    logging.info(f"Loaded {len(data)} aux feature vectors from {path}")
+    return data
 
 
 def create_dataloaders(
@@ -66,6 +84,8 @@ def create_dataloaders(
     cache: dict,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """Create train, validation, and test data loaders."""
+
+    aux_features = load_aux_features(config.data.aux_features_file)
 
     common_kwargs = dict(
         game_features=cache["game_features"],
@@ -83,6 +103,7 @@ def create_dataloaders(
         enable_team_gat=config.model.enable_team_gat,
         n_efficiency_features=config.data.n_efficiency_features,
         player_experience=cache.get("player_experience", {}),
+        aux_features=aux_features,
     )
 
     logging.info("Creating training dataset...")
@@ -144,7 +165,9 @@ def create_model(config: Phase2ExperimentConfig) -> Phase2Model:
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
+    logging.info(
+        f"Model parameters: {total_params:,} total, {trainable_params:,} trainable"
+    )
 
     param_counts = model.get_num_parameters()
     for name, count in param_counts.items():
@@ -157,8 +180,17 @@ def load_pretrained_weights(model: Phase2Model, weights_path: str) -> set[str]:
     """Load pre-trained weights into Phase2Model. Returns set of loaded parameter names."""
     logger = logging.getLogger(__name__)
 
-    state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
-    logger.info(f"Loading pre-trained weights from {weights_path} ({len(state_dict)} tensors)")
+    checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)
+
+    # Handle both raw state dicts and full training checkpoints
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+        logger.info(f"Extracted weights from checkpoint ({len(state_dict)} tensors)")
+    else:
+        state_dict = checkpoint
+    logger.info(
+        f"Loading pre-trained weights from {weights_path} ({len(state_dict)} tensors)"
+    )
 
     # Load matching parameters
     model_state = model.state_dict()
@@ -171,7 +203,9 @@ def load_pretrained_weights(model: Phase2Model, weights_path: str) -> set[str]:
                 model_state[name] = tensor
                 loaded.add(name)
             else:
-                skipped.append(f"{name}: shape mismatch {tensor.shape} vs {model_state[name].shape}")
+                skipped.append(
+                    f"{name}: shape mismatch {tensor.shape} vs {model_state[name].shape}"
+                )
         else:
             skipped.append(f"{name}: not in model")
 
@@ -183,8 +217,11 @@ def load_pretrained_weights(model: Phase2Model, weights_path: str) -> set[str]:
             logger.warning(f"  Skipped: {s}")
 
     # Log parameter norms for verification
-    for name in ["player_embed.weight", "per_game_encoder.context_combine.0.weight",
-                  "temporal_attention.layers.0.self_attn.in_proj_weight"]:
+    for name in [
+        "player_embed.weight",
+        "per_game_encoder.context_combine.0.weight",
+        "temporal_attention.layers.0.self_attn.in_proj_weight",
+    ]:
         if name in loaded:
             norm = model_state[name].norm().item()
             logger.info(f"  {name}: norm={norm:.4f}")
@@ -197,13 +234,23 @@ def main():
 
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config")
     parser.add_argument("--quick-test", action="store_true", help="Quick smoke test")
-    parser.add_argument("--resume", type=str, default=None, help="Checkpoint filename to resume from")
-    parser.add_argument("--pretrained", type=str, default=None,
-                        help="Path to pre-trained transferable_weights.pt")
+    parser.add_argument(
+        "--resume", type=str, default=None, help="Checkpoint filename to resume from"
+    )
+    parser.add_argument(
+        "--pretrained",
+        type=str,
+        default=None,
+        help="Path to pre-trained transferable_weights.pt",
+    )
     parser.add_argument("--experiment-name", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--log-level", type=str, default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+    )
     parser.add_argument("--seed", type=int, default=None)
 
     args = parser.parse_args()

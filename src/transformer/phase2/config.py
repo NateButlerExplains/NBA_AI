@@ -17,9 +17,15 @@ import yaml
 class Phase2DataConfig:
     """Data loading and preprocessing configuration."""
 
-    train_seasons: list[str] = field(default_factory=lambda: [
-        "2018-2019", "2019-2020", "2020-2021", "2021-2022", "2022-2023",
-    ])
+    train_seasons: list[str] = field(
+        default_factory=lambda: [
+            "2018-2019",
+            "2019-2020",
+            "2020-2021",
+            "2021-2022",
+            "2022-2023",
+        ]
+    )
     val_seasons: list[str] = field(default_factory=lambda: ["2023-2024"])
     test_seasons: list[str] = field(default_factory=lambda: ["2024-2025", "2025-2026"])
 
@@ -35,8 +41,9 @@ class Phase2DataConfig:
     pin_memory: bool = True
     enable_augmentation: bool = True
     mask_ratio: float = 0.0  # 0.0 = disabled (supervised), 0.4 = pre-training
-    n_player_stats: int = 0       # 0 = legacy, 16 = full (must match cache)
+    n_player_stats: int = 0  # 0 = legacy, 16 = full (must match cache)
     n_efficiency_features: int = 0  # 0 = disabled, 8 = full (must match model)
+    aux_features_file: str = ""  # Path to aux_features.json (empty = disabled)
 
 
 @dataclass
@@ -57,24 +64,26 @@ class Phase2ModelConfig:
     player_contribution_dropout: float = 0.2
 
     # Player stats (Phase 3+)
-    n_player_stats: int = 0       # 0 = legacy (points only), 16 = full box score
-    stat_hidden_dim: int = 64     # Stat MLP output dimension
-    n_positions: int = 4          # G/F/C/UNK
-    position_dim: int = 8         # Position embedding dimension
+    n_player_stats: int = 0  # 0 = legacy (points only), 16 = full box score
+    stat_hidden_dim: int = 64  # Stat MLP output dimension
+    n_positions: int = 4  # G/F/C/UNK
+    position_dim: int = 8  # Position embedding dimension
 
     # Team efficiency features (Phase 3 Exp 7+)
-    n_efficiency_features: int = 0    # 0 = disabled, 8 = full
+    n_efficiency_features: int = 0  # 0 = disabled, 8 = full
     efficiency_hidden_dim: int = 64
     gs_summary_dim: int = 32
     flag_dim: int = 16
     season_efficiency_dim: int = 64
 
     # Player interaction (Phase 3 Exp 4+)
-    player_interaction_layers: int = 0       # 0 = disabled (backward compat)
+    player_interaction_layers: int = 0  # 0 = disabled (backward compat)
     player_interaction_heads: int = 4
     player_interaction_ff_dim: int = 1024
     player_interaction_dropout: float = 0.2
-    player_contribution_n_pool_queries: int = 1  # 1 = single query (default), 4 = multi-query
+    player_contribution_n_pool_queries: int = (
+        1  # 1 = single query (default), 4 = multi-query
+    )
 
     # Roster-conditioned temporal (Phase 3 Exp 5+)
     enable_roster_context: bool = False
@@ -109,9 +118,9 @@ class Phase2ModelConfig:
 
     # GRU temporal (used when temporal_type == "gru")
     temporal_gru_layers: int = 2
-    temporal_gru_hidden: int = 256       # Per direction (bidir doubles to match hidden_dim)
+    temporal_gru_hidden: int = 256  # Per direction (bidir doubles to match hidden_dim)
     temporal_gru_dropout: float = 0.1
-    temporal_gru_time_dim: int = 64      # Time embedding dimension
+    temporal_gru_time_dim: int = 64  # Time embedding dimension
 
     # Roster encoder
     roster_layers: int = 2
@@ -141,13 +150,19 @@ class Phase2ModelConfig:
     use_cross_attention_fusion: bool = False
     fusion_heads: int = 8
 
+    # Auxiliary matchup features (Phase 6 Exp 1+)
+    n_aux_features: int = 0  # 0 = disabled, 12 = full (8 engineered + 4 betting)
+    aux_hidden_dim: int = 64  # MLP hidden dimension
+
     # Prediction heads
     prediction_hidden_dim: int = 256
     prediction_dropout: float = 0.3
     spread_min_std: float = 1.0
     spread_max_std: Optional[float] = None  # Cap spread sigma (e.g., 8.0)
     score_min_std: float = 5.0
-    derive_spread_from_scores: bool = False  # Derive spread = home - away (no separate head)
+    derive_spread_from_scores: bool = (
+        False  # Derive spread = home - away (no separate head)
+    )
 
 
 @dataclass
@@ -192,7 +207,7 @@ class Phase2TrainingConfig:
     nll_weight: float = 1.0
     mse_weight: float = 0.1
     spread_huber_delta: Optional[float] = None  # Use Huber instead of MSE for spread
-    score_huber_delta: Optional[float] = None   # Use Huber instead of MSE for scores
+    score_huber_delta: Optional[float] = None  # Use Huber instead of MSE for scores
 
     # Gradient accumulation
     gradient_accumulation_steps: int = 8
@@ -214,7 +229,9 @@ class Phase2TrainingConfig:
     pretrained_checkpoint: str = ""  # Path to transferable_weights.pt
     freeze_pretrained_epochs: int = 0  # Epochs to freeze pre-trained components
     unfreeze_top_epochs: int = 0  # Epochs with only top block unfrozen
-    lr_decay_factor: float = 1.0  # Per-layer LR decay (1.0 = uniform, 0.9 = discriminative)
+    lr_decay_factor: float = (
+        1.0  # Per-layer LR decay (1.0 = uniform, 0.9 = discriminative)
+    )
 
     # Reproducibility
     seed: int = 42

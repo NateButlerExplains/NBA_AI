@@ -5,24 +5,30 @@ ClockHead: next state normalized clock prediction.
 ContextMarginHead: expected final margin from context tokens.
 """
 
+import math
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.generative.config import GenerativeModelConfig
 
 
 class ScoreHead(nn.Module):
-    """Predict 7-class score event logits.
+    """Predict score event logits.
 
-    Classes: {no_score, home+1, home+2, home+3, away+1, away+2, away+3}
+    Default 7-class (Exp 1-4): {no_score, home+1, home+2, home+3, away+1, away+2, away+3}
+    6-class (Exp 5): {home+1, home+2, home+3, away+1, away+2, away+3} (no game_end)
     """
 
-    def __init__(self, hidden_dim: int, head_hidden_dim: int) -> None:
+    def __init__(
+        self, hidden_dim: int, head_hidden_dim: int, n_classes: int = 7
+    ) -> None:
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(hidden_dim, head_hidden_dim),
             nn.GELU(),
-            nn.Linear(head_hidden_dim, 7),
+            nn.Linear(head_hidden_dim, n_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -32,32 +38,49 @@ class ScoreHead(nn.Module):
             x: (..., hidden_dim) decoder output.
 
         Returns:
-            (..., 7) score event logits.
+            (..., n_classes) score event logits.
         """
         return self.net(x)
 
 
 class ClockHead(nn.Module):
-    """Predict next state's normalized clock value."""
+    """Predict next state's clock value (absolute or delta).
 
-    def __init__(self, hidden_dim: int, head_hidden_dim: int) -> None:
+    In delta mode, outputs a positive increment via softplus, guaranteeing
+    monotonic clock advancement during autoregressive rollout.
+    """
+
+    def __init__(
+        self, hidden_dim: int, head_hidden_dim: int, use_delta: bool = False
+    ) -> None:
         super().__init__()
+        self.use_delta = use_delta
         self.net = nn.Sequential(
             nn.Linear(hidden_dim, head_hidden_dim),
             nn.GELU(),
             nn.Linear(head_hidden_dim, 1),
         )
 
+        if use_delta:
+            # Initialize bias so softplus output ≈ 0.01
+            # (typical inter-event delta: ~100 events over progress 0→1)
+            # softplus^-1(0.01) = log(exp(0.01) - 1) ≈ -4.6
+            with torch.no_grad():
+                self.net[-1].bias.data.fill_(math.log(math.exp(0.01) - 1))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Predict clock value.
+        """Predict clock value or positive delta.
 
         Args:
             x: (..., hidden_dim) decoder output.
 
         Returns:
-            (..., 1) clock prediction.
+            (..., 1) clock prediction (absolute) or positive delta (delta mode).
         """
-        return self.net(x)
+        raw = self.net(x)
+        if self.use_delta:
+            return F.softplus(raw)
+        return raw
 
 
 class ContextMarginHead(nn.Module):

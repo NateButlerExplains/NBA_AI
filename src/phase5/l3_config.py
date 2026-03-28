@@ -21,7 +21,7 @@ class L3Config:
     d_coach_embed: int = 16  # learned per-coach embedding
 
     # --- Coach embedding ---
-    n_coaches: int = 200  # max coach embedding table size
+    n_coaches: int = 200  # max coach embedding table size (155 real + padding)
     coach_shrinkage_midpoint: float = 40.0  # games at which gate = 0.5
 
     # --- Architecture ---

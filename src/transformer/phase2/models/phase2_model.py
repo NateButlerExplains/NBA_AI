@@ -106,14 +106,16 @@ class Phase2Model(nn.Module):
                 nn.GELU(),
             )
             self.trajectory_attn = nn.MultiheadAttention(
-                h, config.roster_context_heads,
+                h,
+                config.roster_context_heads,
                 dropout=config.roster_context_dropout,
                 batch_first=True,
             )
             self.traj_no_history = nn.Parameter(torch.zeros(h))
             self.reinjection_norm = nn.LayerNorm(h)
             self.reinjection_crossattn = nn.MultiheadAttention(
-                h, config.roster_context_heads,
+                h,
+                config.roster_context_heads,
                 dropout=config.roster_context_dropout,
                 batch_first=True,
             )
@@ -121,6 +123,7 @@ class Phase2Model(nn.Module):
         # Temporal module (transformer or GRU)
         if config.temporal_type == "gru":
             from src.transformer.phase2.models.temporal_gru import Phase2TemporalGRU
+
             self.temporal_attention = Phase2TemporalGRU(
                 hidden_dim=h,
                 gru_hidden=config.temporal_gru_hidden,
@@ -147,7 +150,10 @@ class Phase2Model(nn.Module):
         self.form_encoder = None
         form_dim = 0
         if config.enable_player_form:
-            from src.transformer.phase2.models.player_form_encoder import PlayerFormEncoder
+            from src.transformer.phase2.models.player_form_encoder import (
+                PlayerFormEncoder,
+            )
+
             form_dim = config.player_form_dim
             self.form_encoder = PlayerFormEncoder(
                 form_dim=form_dim,
@@ -202,6 +208,21 @@ class Phase2Model(nn.Module):
             n_heads=config.fusion_heads,
         )
 
+        # Auxiliary matchup features encoder (Phase 6 Exp 1+)
+        # Output layer is zero-initialized so the residual starts at zero,
+        # preserving pre-trained model behavior at initialization.
+        self.aux_encoder = None
+        if config.n_aux_features > 0:
+            aux_output = nn.Linear(config.aux_hidden_dim, h)
+            nn.init.zeros_(aux_output.weight)
+            nn.init.zeros_(aux_output.bias)
+            self.aux_encoder = nn.Sequential(
+                nn.Linear(config.n_aux_features, config.aux_hidden_dim),
+                nn.LayerNorm(config.aux_hidden_dim),
+                nn.GELU(),
+                aux_output,
+            )
+
         # Prediction heads (reuse Phase 1)
         self.prediction_heads = PredictionHeads(
             input_dim=h,
@@ -243,7 +264,9 @@ class Phase2Model(nn.Module):
         dynamics_recent = self.gs_encoder(gs_data, gs_lengths)  # (B, N_recent, h)
 
         # 2. Scatter dynamics into full game sequence at is_recent positions
-        dynamics = torch.zeros(B, G, h, device=scores.device, dtype=dynamics_recent.dtype)
+        dynamics = torch.zeros(
+            B, G, h, device=scores.device, dtype=dynamics_recent.dtype
+        )
         for b in range(B):
             recent_positions = is_recent[b].nonzero(as_tuple=True)[0]
             n_avail = min(len(recent_positions), dynamics_recent.shape[1])
@@ -294,23 +317,27 @@ class Phase2Model(nn.Module):
             # player_ids: (B, G, 15) — players per historical game
             # roster_ids: (B, 15) — tonight's roster
             roster_exp = roster_ids.unsqueeze(2).unsqueeze(3)  # (B, R, 1, 1)
-            game_exp = player_ids.unsqueeze(1)                  # (B, 1, G, 15)
-            presence = (roster_exp == game_exp).any(dim=-1)     # (B, R, G)
+            game_exp = player_ids.unsqueeze(1)  # (B, 1, G, 15)
+            presence = (roster_exp == game_exp).any(dim=-1)  # (B, R, G)
 
             # Absence mask for attention: absent games + padded games + padded roster slots
-            absence = ~presence | game_mask.unsqueeze(1)                  # (B, R, G)
-            absence = absence | (roster_ids == 0).unsqueeze(-1)           # (B, R, G)
+            absence = ~presence | game_mask.unsqueeze(1)  # (B, R, G)
+            absence = absence | (roster_ids == 0).unsqueeze(-1)  # (B, R, G)
 
             # Roster overlap embedding: how many roster players appeared in each game
-            overlap_count = presence.sum(dim=1).clamp(max=15)             # (B, G)
+            overlap_count = presence.sum(dim=1).clamp(max=15)  # (B, G)
             game_reprs = game_reprs + self.roster_overlap_embed(overlap_count.long())
 
             # Pass 1: Game→Player trajectory extraction
             # Player queries: project player embeddings to hidden_dim
-            roster_emb = self.traj_query_proj(self.player_embed(roster_ids))  # (B, R, h)
+            roster_emb = self.traj_query_proj(
+                self.player_embed(roster_ids)
+            )  # (B, R, h)
 
             # Expand game_reprs for batched per-player attention
-            game_reprs_exp = game_reprs.unsqueeze(1).expand(-1, P, -1, -1).contiguous()  # (B, R, G, h)
+            game_reprs_exp = (
+                game_reprs.unsqueeze(1).expand(-1, P, -1, -1).contiguous()
+            )  # (B, R, G, h)
 
             # Batched cross-attention: (B*R, 1, h) queries, (B*R, G, h) keys/values
             BxP = B * P
@@ -325,13 +352,20 @@ class Phase2Model(nn.Module):
 
             # Players with zero historical appearances → learned fallback
             no_games = absence.all(dim=-1)  # (B, R)
-            player_trajectories = player_trajectories.masked_fill(no_games.unsqueeze(-1), 0)
-            player_trajectories = player_trajectories + no_games.unsqueeze(-1).float() * self.traj_no_history
+            player_trajectories = player_trajectories.masked_fill(
+                no_games.unsqueeze(-1), 0
+            )
+            player_trajectories = (
+                player_trajectories
+                + no_games.unsqueeze(-1).float() * self.traj_no_history
+            )
 
             # Pass 2: Player→Game re-injection
             game_reprs_norm = self.reinjection_norm(game_reprs)
             reinjected, _ = self.reinjection_crossattn(
-                game_reprs_norm, player_trajectories, player_trajectories,
+                game_reprs_norm,
+                player_trajectories,
+                player_trajectories,
                 key_padding_mask=(roster_ids == 0),  # mask padding roster slots
                 need_weights=False,
             )
@@ -376,12 +410,12 @@ class Phase2Model(nn.Module):
             eff_sum = eff_masked.sum(dim=1)  # (B, n_eff)
             eff_count = eff_mask.sum(dim=1, keepdim=True).float().clamp(min=1)  # (B, 1)
             eff_mean = eff_sum / eff_count  # (B, n_eff)
-            season_eff_repr = self.season_efficiency_proj(eff_mean)  # (B, season_eff_dim)
+            season_eff_repr = self.season_efficiency_proj(
+                eff_mean
+            )  # (B, season_eff_dim)
             combine_parts.append(season_eff_repr)
 
-        team_repr = self.team_combine(
-            torch.cat(combine_parts, dim=-1)
-        )  # (B, h)
+        team_repr = self.team_combine(torch.cat(combine_parts, dim=-1))  # (B, h)
 
         return team_repr
 
@@ -399,6 +433,11 @@ class Phase2Model(nn.Module):
         away_repr = self._encode_team(batch, "away_")
 
         matchup_repr = self.fusion(home_repr, away_repr)
+
+        # Inject auxiliary matchup features (Phase 6 Exp 1+)
+        if self.aux_encoder is not None and "aux_features" in batch:
+            aux_proj = self.aux_encoder(batch["aux_features"])  # (B, h)
+            matchup_repr = matchup_repr + aux_proj
 
         return self.prediction_heads(matchup_repr)
 
@@ -425,6 +464,9 @@ class Phase2Model(nn.Module):
         if self.season_efficiency_proj is not None:
             components["season_efficiency_proj"] = self.season_efficiency_proj
 
+        if self.aux_encoder is not None:
+            components["aux_encoder"] = self.aux_encoder
+
         counts = {}
         total = 0
         for name, module in components.items():
@@ -433,13 +475,15 @@ class Phase2Model(nn.Module):
             total += n
 
         if self.roster_context_enabled:
-            rc_modules = nn.ModuleList([
-                self.roster_overlap_embed,
-                self.traj_query_proj,
-                self.trajectory_attn,
-                self.reinjection_norm,
-                self.reinjection_crossattn,
-            ])
+            rc_modules = nn.ModuleList(
+                [
+                    self.roster_overlap_embed,
+                    self.traj_query_proj,
+                    self.trajectory_attn,
+                    self.reinjection_norm,
+                    self.reinjection_crossattn,
+                ]
+            )
             rc_params = sum(p.numel() for p in rc_modules.parameters())
             rc_params += self.traj_no_history.numel()
             counts["roster_context"] = rc_params

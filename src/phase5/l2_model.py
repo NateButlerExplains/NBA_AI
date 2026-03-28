@@ -205,6 +205,9 @@ class SynergyGATv2Layer(nn.Module):
 
         # Softmax over neighbors (dim=2: attending over j for each i)
         attn_weights = F.softmax(attn_scores, dim=2)  # (B, A, A, H)
+        # NaN fix: invalid players have all -inf neighbors, softmax gives NaN.
+        # Replace NaN with 0 (these positions are masked out downstream anyway).
+        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
         attn_weights = self.dropout(attn_weights)
 
         # Weighted sum of values

@@ -128,6 +128,38 @@ class GenerativeModelConfig:
         default_factory=lambda: [1.0, 4.0, 4.5, 5.0, 4.0, 4.5, 5.0]
     )
 
+    # Full context encoder (Exp 5) — Phase 3 player-aware context
+    use_full_context: bool = False
+    full_context_temporal_layers: int = 2
+    full_context_temporal_heads: int = 4
+    full_context_temporal_ff_dim: int = 1024
+    full_context_temporal_pool_queries: int = 2
+    full_context_player_dropout: float = 0.3
+    full_context_temporal_dropout: float = 0.2
+    n_positions: int = 5  # Guard, Forward, Center, Guard-Forward, Unknown
+    position_dim: int = 8
+    player_interaction_layers: int = 1
+    player_interaction_heads: int = 4
+    player_interaction_ff_dim: int = 1024
+    player_interaction_dropout: float = 0.2
+    rolling_stats_proj_dim: int = 128
+    player_contribution_dim: int = 256
+    player_contribution_heads: int = 4
+    player_contribution_dropout: float = 0.2
+    player_contribution_n_pool_queries: int = 1
+    stat_hidden_dim: int = 64
+    context_feature_dropout: float = (
+        0.0  # per-game dropout in context window (used by FullContextEncoder)
+    )
+
+    # Outcome head (Exp 5) — endpoint guidance
+    outcome_min_std: float = 1.0
+    outcome_max_std: float = 20.0
+
+    # Clock-delta mode: predict positive increment instead of absolute progress
+    use_clock_delta: bool = False
+    clock_delta_min: float = 0.001  # safety floor during rollout
+
 
 @dataclass
 class GenerativeOptimizerConfig:
@@ -166,6 +198,18 @@ class GenerativeTrainingConfig:
     context_loss_weight: float = 1.0
     pre_margin_weight: float = 1.0
     pre_win_weight: float = 0.5
+    outcome_loss_weight: float = 0.0  # Exp 5: endpoint guidance (0 for Exp 1-4 compat)
+
+    # Exp 5: separate context encoder optimization
+    context_encoder_lr_scale: float = (
+        1.0  # context_encoder LR = base_lr * scale (1.0 for compat)
+    )
+    context_encoder_weight_decay: float = (
+        0.01  # separate weight decay for context encoder
+    )
+    context_feature_dropout: float = (
+        0.0  # per-game dropout in context window (0 for compat)
+    )
 
     # Gradient accumulation
     gradient_accumulation_steps: int = 8
