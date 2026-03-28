@@ -52,6 +52,14 @@ class L2Config:
     w_consistency: float = 0.1  # additive consistency regularization
     w_fm_l2: float = 0.01  # L2 penalty on FM residual embeddings
 
+    # --- Curriculum control (tuned: Experiment C best) ---
+    curriculum_warmup: int = 10  # epochs of 2-man only before introducing 5-man
+    lineup_ramp_epochs: int = 10  # epochs over which w_5man ramps from 0 to full value
+    lineup_min_possessions: int = (
+        200  # minimum possessions for lineup inclusion (was 50, noisy)
+    )
+    freeze_fm_for_lineup: bool = False  # if True, freeze FM vectors during lineup phase
+
     # --- Time decay ---
     time_decay_beta: float = 0.997  # half-life ~231 days (1 season)
 
