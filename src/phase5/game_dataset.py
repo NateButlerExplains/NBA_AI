@@ -41,6 +41,9 @@ class PhaseBDataset(Dataset):
         targets_margin: np.ndarray,  # (N,)
         targets_win: np.ndarray,  # (N,)
         targets_total: np.ndarray,  # (N,)
+        # Coach data
+        coach_indices: np.ndarray | None = None,  # (N, 2) int64
+        coach_games: np.ndarray | None = None,  # (N, 2) float32
         # Normalization stats (from training set)
         l3_mean: np.ndarray | None = None,
         l3_std: np.ndarray | None = None,
@@ -58,6 +61,8 @@ class PhaseBDataset(Dataset):
             game_context: full cache array (N_total, 14)
             roster_summaries: full cache array (N_total, 2, 12)
             targets_*: full cache arrays (N_total,)
+            coach_indices: (N_total, 2) int64 — embedding indices (0=unknown)
+            coach_games: (N_total, 2) float32 — cumulative games coached
             l3/l4/rs_mean/std: normalization parameters (from training set)
         """
         self.indices = indices
@@ -68,6 +73,8 @@ class PhaseBDataset(Dataset):
         self.targets_margin = targets_margin
         self.targets_win = targets_win
         self.targets_total = targets_total
+        self.coach_indices = coach_indices
+        self.coach_games = coach_games
 
         # Normalization (None means no normalization)
         self.l3_mean = l3_mean
@@ -110,9 +117,20 @@ class PhaseBDataset(Dataset):
         # Game context (normalized)
         gc = self._normalize(self.game_context[i], self.l4_mean, self.l4_std)
 
-        # Coach indices (placeholder = 0 for all until coaching data available)
-        home_coach_idx = 0
-        away_coach_idx = 0
+        # Coach indices and experience
+        if self.coach_indices is not None:
+            home_coach_idx = int(self.coach_indices[i, 0])
+            away_coach_idx = int(self.coach_indices[i, 1])
+        else:
+            home_coach_idx = 0
+            away_coach_idx = 0
+
+        if self.coach_games is not None:
+            home_coach_games = float(self.coach_games[i, 0])
+            away_coach_games = float(self.coach_games[i, 1])
+        else:
+            home_coach_games = 0.0
+            away_coach_games = 0.0
 
         # Roster continuity (from team_features index 32)
         # This is already in the team features but L3 needs it separately
@@ -132,6 +150,8 @@ class PhaseBDataset(Dataset):
             "away_roster_summary": torch.tensor(away_rs, dtype=torch.float32),
             "home_coach_idx": torch.tensor(home_coach_idx, dtype=torch.long),
             "away_coach_idx": torch.tensor(away_coach_idx, dtype=torch.long),
+            "home_coach_games": torch.tensor(home_coach_games, dtype=torch.float32),
+            "away_coach_games": torch.tensor(away_coach_games, dtype=torch.float32),
             "home_continuity": torch.tensor([home_continuity], dtype=torch.float32),
             "away_continuity": torch.tensor([away_continuity], dtype=torch.float32),
             # L4 inputs
@@ -163,6 +183,21 @@ def load_phase_b_data(
     game_ids = np.load(str(cache_dir / "game_ids.npy"), allow_pickle=True)
     seasons = np.load(str(cache_dir / "seasons.npy"), allow_pickle=True)
 
+    # Coach data (optional — may not exist in older caches)
+    coach_indices_path = cache_dir / "coach_indices.npy"
+    coach_games_path = cache_dir / "coach_games.npy"
+    if coach_indices_path.exists() and coach_games_path.exists():
+        coach_indices = np.load(str(coach_indices_path))
+        coach_games = np.load(str(coach_games_path))
+        logger.info(
+            f"  Loaded coach data: {coach_indices.shape}, "
+            f"coverage={(coach_indices > 0).any(axis=1).mean():.1%}"
+        )
+    else:
+        coach_indices = None
+        coach_games = None
+        logger.info("  No coach data found (using placeholder 0s)")
+
     with open(str(cache_dir / "metadata.json")) as f:
         metadata = json.load(f)
 
@@ -179,6 +214,8 @@ def load_phase_b_data(
         "game_ids": game_ids,
         "seasons": seasons,
         "metadata": metadata,
+        "coach_indices": coach_indices,
+        "coach_games": coach_games,
         # Normalization arrays
         "l3_mean": np.array(norm["l3_mean"], dtype=np.float32),
         "l3_std": np.array(norm["l3_std"], dtype=np.float32),
@@ -272,6 +309,8 @@ def make_train_val_datasets(
         targets_margin=data["targets_margin"],
         targets_win=data["targets_win"],
         targets_total=data["targets_total"],
+        coach_indices=data.get("coach_indices"),
+        coach_games=data.get("coach_games"),
         l3_mean=l3_mean,
         l3_std=l3_std,
         l4_mean=l4_mean,
