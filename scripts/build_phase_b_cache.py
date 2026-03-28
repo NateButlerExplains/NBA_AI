@@ -412,7 +412,7 @@ def build_cache(args: argparse.Namespace) -> None:
     targets_margin = np.zeros(n_process, dtype=np.float32)
     targets_win = np.zeros(n_process, dtype=np.float32)
     targets_total = np.zeros(n_process, dtype=np.float32)
-    seasons = []
+    seasons = np.array([""] * n_process, dtype=object)
     valid_mask = np.ones(n_process, dtype=bool)
 
     # Track travel feature updates
@@ -521,7 +521,7 @@ def build_cache(args: argparse.Namespace) -> None:
         targets_margin[proc_idx] = h_pts - a_pts
         targets_win[proc_idx] = 1.0 if h_pts > a_pts else 0.0
         targets_total[proc_idx] = h_pts + a_pts
-        seasons.append(info["season"])
+        seasons[proc_idx] = info["season"]
 
         # Travel features (update game_context indices 8-11)
         cache_idx = game_id_to_idx.get(game_id)
@@ -633,7 +633,7 @@ def build_cache(args: argparse.Namespace) -> None:
     targets_win = targets_win[valid_indices]
     targets_total = targets_total[valid_indices]
     valid_game_ids = [game_ids_to_process[i] for i in valid_indices]
-    valid_seasons = [seasons[i] if i < len(seasons) else "" for i in valid_indices]
+    valid_seasons = seasons[valid_indices]
 
     # Map valid game_ids to L3/L4 cache indices for team_features and game_context
     cache_indices = np.array(
