@@ -5,16 +5,15 @@ This module provides functionality to fetch and process NBA game data from a SQL
 It consists of functions to:
 - Retrieve detailed game data based on game IDs.
 - Retrieve game data for a specific date.
-- Update predictions using various predictive models.
 
 Functions:
 - get_normal_data(conn, game_ids, predictor_name): Fetch detailed game data including play-by-play logs for specified game IDs.
-- get_games(game_ids, predictor=DEFAULT_PREDICTOR, update_predictions=True): Retrieve game data for specified game IDs.
-- get_games_for_date(date, predictor=DEFAULT_PREDICTOR, update_predictions=True): Retrieve game data for games on a specific date.
+- get_games(game_ids, predictor=DEFAULT_PREDICTOR): Retrieve game data for specified game IDs.
+- get_games_for_date(date, predictor=DEFAULT_PREDICTOR): Retrieve game data for games on a specific date.
 - main(): Main function to handle command-line arguments and invoke appropriate data fetching and output functions.
 
 Usage:
-- This script can be run directly to fetch game data and optionally update predictions.
+- This script can be run directly to fetch game data.
 - The output can be directed to a file, printed to the screen, or both, depending on the command-line arguments provided.
 
 Example:
@@ -28,19 +27,14 @@ import sqlite3
 
 from src.config import config
 from src.database import get_db
-from src.database_updater.database_update_manager import update_database
 from src.logging_config import setup_logging
-from src.predictions.prediction_manager import make_current_predictions
 from src.utils import (
-    date_to_season,
-    game_id_to_season,
     log_execution_time,
     validate_date_format,
     validate_game_ids,
 )
 
 # Configurations
-DB_PATH = config["database"]["path"]
 VALID_PREDICTORS = list(config["predictors"].keys()) + [None]
 DEFAULT_PREDICTOR = config["default_predictor"]
 
@@ -81,10 +75,12 @@ def get_normal_data(conn, game_ids, predictor_name, pbp_limit=50):
         g.season_type, g.pre_game_data_finalized, g.game_data_finalized,
         s.play_id AS state_play_id, s.game_date, s.home, s.away, s.clock, s.period,
         s.home_score, s.away_score, s.total, s.home_margin, s.is_final_state, s.players_data,
-        pr.predictor, pr.prediction_datetime, pr.prediction_set
+        pr.predictor, pr.prediction_datetime, pr.prediction_set,
+        b.espn_opening_spread
     FROM Games g
     LEFT JOIN LatestGameStates s ON g.game_id = s.game_id AND s.rn = 1
     LEFT JOIN Predictions pr ON g.game_id = pr.game_id AND pr.predictor = ?
+    LEFT JOIN Betting b ON g.game_id = b.game_id
     WHERE g.game_id IN ({placeholders})
     """
 
@@ -108,6 +104,7 @@ def get_normal_data(conn, game_ids, predictor_name, pbp_limit=50):
             "play_by_play": [],
             "game_states": [],
             "predictions": {"pre_game": {}},
+            "opening_spread": row["espn_opening_spread"],
         }
 
         # Add the latest game state (only one per game from CTE)
@@ -177,7 +174,6 @@ def get_normal_data(conn, game_ids, predictor_name, pbp_limit=50):
 def get_games(
     game_ids,
     predictor=DEFAULT_PREDICTOR,
-    update_predictions=True,
 ):
     """
     Retrieve game data for the specified game IDs.
@@ -185,7 +181,6 @@ def get_games(
     Args:
         game_ids (list): List of game IDs to fetch data for.
         predictor (str): Name of the predictor to use.
-        update_predictions (bool): Whether to update the predictions.
 
     Returns:
         dict: Dictionary containing game data including predictions and game states.
@@ -198,23 +193,11 @@ def get_games(
     if predictor not in VALID_PREDICTORS:
         raise ValueError(f"Invalid predictor: {predictor}")
 
-    # Update the database
-    seasons = set(game_id_to_season(game_id) for game_id in game_ids)
-    for season in seasons:
-        update_database(season, predictor, DB_PATH)
-
     # Use context manager to connect to the database
     with get_db() as conn:
         conn.row_factory = sqlite3.Row
 
         data = get_normal_data(conn, game_ids, predictor_name=predictor)
-
-    # Prepare data for updating predictions if required
-    if update_predictions:
-        current_predictions = make_current_predictions(game_ids, predictor)
-        for game_id, current_prediction_dict in current_predictions.items():
-            if game_id in data:
-                data[game_id]["predictions"]["current"] = current_prediction_dict
 
     logging.debug(f"Game info retrieval complete for {len(data)} games.")
 
@@ -222,14 +205,13 @@ def get_games(
 
 
 @log_execution_time(average_over="output")
-def get_games_for_date(date, predictor=DEFAULT_PREDICTOR, update_predictions=True):
+def get_games_for_date(date, predictor=DEFAULT_PREDICTOR):
     """
     Retrieve game data for games on a specific date.
 
     Args:
         date (str): The date to fetch games for (YYYY-MM-DD).
         predictor (str): Name of the predictor to use.
-        update_predictions (bool): Whether to update the predictions.
 
     Returns:
         dict: Dictionary containing game data for the specified date.
@@ -277,7 +259,6 @@ def get_games_for_date(date, predictor=DEFAULT_PREDICTOR, update_predictions=Tru
     games = get_games(
         game_ids,
         predictor=predictor,
-        update_predictions=update_predictions,
     )
 
     logging.debug(f"Game retrieval complete for {len(games)} games from date: {date}.")
@@ -297,12 +278,6 @@ def main():
         "--game_ids", type=str, help="Comma-separated list of game IDs to process"
     )
     parser.add_argument("--date", type=str, help="The date to get games for.")
-    parser.add_argument(
-        "--update_predictions",
-        type=bool,
-        default=True,
-        help="Whether to update the predictions.",
-    )
     parser.add_argument(
         "--log_level",
         type=str,
@@ -331,7 +306,6 @@ def main():
 
     game_ids = args.game_ids.split(",") if args.game_ids else None
     date = args.date
-    update_predictions = args.update_predictions
     predictor = args.predictor
     output_choice = args.output
 
@@ -346,14 +320,12 @@ def main():
         games = get_games(
             game_ids,
             predictor=predictor,
-            update_predictions=update_predictions,
         )
     elif date:
         output_file = args.output_file if args.output_file else f"games_{date}.json"
         games = get_games_for_date(
             date,
             predictor=predictor,
-            update_predictions=update_predictions,
         )
 
     # Handle output based on the user's choice

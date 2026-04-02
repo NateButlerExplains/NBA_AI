@@ -1,8 +1,9 @@
 /* Styles used directly in index.html */
 .navbar-text {
-    font-size: 56px;
-    line-height: 60px;
+    font-size: 28px;
+    line-height: 32px;
     margin-left: 10px;
+    font-weight: 700;
 }
 
 .border-bottom-custom {
@@ -68,4 +69,13 @@
     .breakpoint {
         display: inline;
     }
+}
+
+/* Prediction outcome color-coding for completed games */
+.pred-correct {
+    color: #1a7f37 !important;
+}
+
+.pred-wrong {
+    color: #cf222e !important;
 }

@@ -1407,7 +1407,13 @@ def get_games_for_prediction_update(season, predictor, db_path=DB_PATH):
     if season == "Current":
         season = determine_current_season()
 
-    query = """
+    # Phase5/Phase3 predictors are expensive (~2s/game). Only predict upcoming
+    # games (status=1) on-demand. Historical backtesting should be done
+    # deliberately via the orchestrator, not triggered by web app page loads.
+    expensive_predictors = {"Phase5", "Phase3"}
+    status_filter = "AND g.status = 1" if predictor in expensive_predictors else ""
+
+    query = f"""
         SELECT g.game_id
         FROM Games g
         JOIN Features f ON g.game_id = f.game_id
@@ -1418,6 +1424,7 @@ def get_games_for_prediction_update(season, predictor, db_path=DB_PATH):
             AND g.status_text != 'PPD'
             AND LENGTH(f.feature_set) > 10
             AND p.game_id IS NULL
+            {status_filter}
         """
 
     with get_db(db_path) as conn:

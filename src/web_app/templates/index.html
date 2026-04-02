@@ -25,10 +25,14 @@
     <nav class="navbar navbar-expand-lg navbar-light bg-light">
         <div class="container">
             <a class="navbar-brand d-flex align-items-center" href="{{ url_for('home') }}">
-                <img src="{{ url_for('static', filename='img/nba_ai_logo.png') }}" alt="NBA AI Logo" width="60"
-                    height="60">
+                <img src="{{ url_for('static', filename='img/nba_ai_logo.png') }}" alt="NBA AI Logo" width="36"
+                    height="36">
                 <span class="navbar-text">NBA AI</span>
             </a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link active" href="{{ url_for('home') }}">Games</a>
+                <a class="nav-link" href="{{ url_for('dashboard.dashboard_page') }}">Dashboard</a>
+            </div>
         </div>
     </nav>
 
@@ -58,18 +62,17 @@
                     <th rowspan="2"></th> <!-- Placeholder for Time Display -->
                     <th rowspan="2">Home</th>
                     <th rowspan="2">Away</th>
-                    <th colspan="2" class="text-center">Current Score</th>
-                    <th colspan="2" class="text-center">Predicted Score</th>
-                    <th rowspan="2" class="text-center">Predicted Winner</th>
+                    <th rowspan="2" class="text-center">Open</th>
+                    <th colspan="2" class="text-center">Score</th>
+                    <th colspan="2" class="text-center">Predictions</th>
                 </tr>
                 <tr>
-                    <!-- Subheaders for Current Score -->
+                    <!-- Subheaders for Score -->
                     <th class="text-center">Home</th>
                     <th class="text-center">Away</th>
-
-                    <!-- Subheaders for Predicted Score -->
-                    <th class="text-center">Home</th>
-                    <th class="text-center">Away</th>
+                    <!-- Subheaders for Predictions -->
+                    <th class="text-center">Spread</th>
+                    <th class="text-center">Winner</th>
                 </tr>
             </thead>
             <tbody id="gamesTableBody">
@@ -149,39 +152,39 @@
                 </table>
             </div>
 
-            <!-- Live Predictions Section -->
-            <div class="col-lg-7" id="live_predictions">
-                <!-- Live Predictions Title Row -->
-                <div class="row justify-content-center mb-2 border-bottom-custom" id="live_predictions_title">
+            <!-- Predictions Section -->
+            <div class="col-lg-7" id="predictions_section">
+                <!-- Predictions Title Row -->
+                <div class="row justify-content-center mb-2 border-bottom-custom">
                     <div class="col">
-                        <h1 class="text-center">Live Predictions</h1>
+                        <h3 class="text-center">Prediction</h3>
                     </div>
                 </div>
-                <!-- Live Predictions Data Row -->
+                <!-- Predictions Data Row -->
                 <div class="row mb-4 border-bottom-custom">
                     <!-- Home Team Column -->
                     <div class="col">
                         <div class="row align-items-center">
-                            <!-- Home Team Name and Predicted Score -->
                             <div class="col-6 text-center d-flex flex-column justify-content-center">
                                 <h4 id="templateHomeTeam"></h4>
-                                <h1 class="mb-0" id="templatePredictedHomeScore"></h1>
                             </div>
-                            <!-- Home Team Logo -->
                             <div class="col-6 d-flex align-items-center justify-content-center">
                                 <img id="templateHomeLogo" src="" alt="Team Logo" class="img-fluid-custom">
                             </div>
                         </div>
                     </div>
-                    <!-- Winner Prediction Column -->
+                    <!-- Spread + Winner Column -->
                     <div class="col d-flex align-items-center justify-content-center">
-                        <div class="row">
-                            <div class="col text-center d-flex justify-content-center align-items-center">
-                                <!-- Winner Prediction Icons and Text -->
+                        <div class="text-center">
+                            <div class="mb-2">
+                                <span class="text-muted" style="font-size: 0.85rem;">Spread</span>
+                                <h2 class="mb-0" id="templatePredictedSpread"></h2>
+                            </div>
+                            <div class="d-flex justify-content-center align-items-center">
                                 <i class="bi bi-caret-left-fill bi-caret-left-fill-custom me-0 text-success-custom"
                                     id="winnerLeftIcon"></i>
                                 <div>
-                                    <h5 class="mb-0">Winner</h5>
+                                    <span class="text-muted" style="font-size: 0.85rem;">Winner</span>
                                     <h4 id="templatePredictedWinPct" class="mb-0"></h4>
                                 </div>
                                 <i class="bi bi-caret-right-fill bi-caret-right-fill-custom ms-0 text-success-custom"
@@ -192,14 +195,11 @@
                     <!-- Away Team Column -->
                     <div class="col">
                         <div class="row align-items-center">
-                            <!-- Away Team Logo -->
                             <div class="col-6 d-flex align-items-center justify-content-center">
                                 <img id="templateAwayLogo" src="" alt="Team Logo" class="img-fluid-custom">
                             </div>
-                            <!-- Away Team Name and Predicted Score -->
                             <div class="col-6 text-center d-flex flex-column justify-content-center">
                                 <h4 id="templateAwayTeam"></h4>
-                                <h1 class="mb-0" id="templatePredictedAwayScore"></h1>
                             </div>
                         </div>
                     </div>

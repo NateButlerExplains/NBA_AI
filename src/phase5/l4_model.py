@@ -211,6 +211,8 @@ class GamePredictor(nn.Module):
         self.matchup = MatchupConstructor()
         self.context_encoder = ContextEncoder(cfg)
         self.l2_skip = L2SkipConnection(cfg)
+        # Learnable scaling factor for L2 skip — init 0.3 so L3 pathway dominates
+        self.skip_scale = nn.Parameter(torch.tensor(0.3))
 
         # Prediction MLP
         self.input_proj = nn.Linear(cfg.d_l4_input, cfg.d_hidden)
@@ -273,9 +275,9 @@ class GamePredictor(nn.Module):
         # 4. Project to hidden dim
         h = self.input_proj(l4_input)  # (B, 256)
 
-        # 5. Additive L2 skip connection after first projection
+        # 5. Additive L2 skip connection after first projection (scaled down)
         l2_skip = self.l2_skip(l2_home, l2_away)  # (B, 256)
-        h = h + l2_skip
+        h = h + self.skip_scale * l2_skip
 
         # 6. Normalize and activate
         h = self.input_dropout(F.gelu(self.input_norm(h)))

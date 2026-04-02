@@ -1282,7 +1282,11 @@ def main():
         weights_only=False,
     )
     l3_model.load_state_dict(b_ckpt["l3_state_dict"])
-    l4_model.load_state_dict(b_ckpt["l4_state_dict"])
+    missing_l4, unexpected_l4 = l4_model.load_state_dict(
+        b_ckpt["l4_state_dict"], strict=False
+    )
+    if missing_l4:
+        logger.info(f"L4 newly initialized keys (not in Phase B): {missing_l4}")
     logger.info(
         f"Loaded L3+L4 weights from phase_b_best.pt "
         f"(epoch {b_ckpt.get('epoch', '?')}, "

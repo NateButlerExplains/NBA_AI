@@ -14,7 +14,6 @@ Required Query Parameters:
 
 Optional Query Parameters:
 - `predictor` (optional, string): Specifies the predictive model to use. Must be one of the valid predictors defined in the config file. Defaults to default predictor set in the config.
-- `update_predictions` (optional, string): Indicates whether to update predictions. Must be "True" or "False". Defaults to "True".
 
 Functions:
 - games(): The main endpoint function that handles the retrieval of game data based on the provided query parameters.
@@ -53,7 +52,6 @@ def games():
     - game_ids (str): Comma-separated list of game IDs to retrieve data for. (e.g., "0042300401,0022300649"). Maximum 20 IDs allowed.
     - date (str): Date to retrieve games for, in the format "YYYY-MM-DD". Only the 2023-2024 or 2024-2025 season is allowed.
     - predictor (str, optional): Predictive model to use. Defaults to the default predictor set in the config.
-    - update_predictions (str, optional): Whether to update predictions. Must be "True" or "False". Defaults to "True".
 
     Returns:
     - JSON response containing game data, or an error message if inputs are invalid.
@@ -66,7 +64,6 @@ def games():
         game_ids = request.args.get("game_ids")
         date = request.args.get("date")
         predictor = request.args.get("predictor")
-        update_predictions_str = request.args.get("update_predictions", "True").lower()
 
         # Validate that only one of game_ids or date is provided
         if game_ids and date:
@@ -85,16 +82,6 @@ def games():
                 ),
                 400,
             )
-
-        # Validate update_predictions
-        if update_predictions_str not in ["true", "false"]:
-            return (
-                jsonify(
-                    {"error": "Invalid update_predictions. Must be 'True' or 'False'."}
-                ),
-                400,
-            )
-        update_predictions = update_predictions_str == "true"
 
         if game_ids:
             # Split and validate game_ids
@@ -129,7 +116,6 @@ def games():
             data = get_games(
                 game_ids_list,
                 predictor=predictor,
-                update_predictions=update_predictions,
             )
         elif date:
             try:
@@ -151,7 +137,6 @@ def games():
             data = get_games_for_date(
                 date,
                 predictor=predictor,
-                update_predictions=update_predictions,
             )
         else:
             return (

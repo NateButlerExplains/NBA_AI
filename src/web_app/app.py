@@ -27,6 +27,7 @@ from flask import Flask, flash, jsonify, render_template, request
 from src.config import config
 from src.games_api.api import api as api_blueprint
 from src.games_api.games import get_games, get_games_for_date
+from src.web_app.dashboard import dashboard as dashboard_blueprint
 from src.utils import validate_date_format
 from src.web_app.game_data_processor import get_user_datetime, process_game_data
 
@@ -54,6 +55,9 @@ def create_app(predictor):
     # Register the API blueprint
     app.register_blueprint(api_blueprint, url_prefix="/api")
 
+    # Register the dashboard blueprint
+    app.register_blueprint(dashboard_blueprint)
+
     @app.route("/")
     def home():
         """
@@ -77,7 +81,7 @@ def create_app(predictor):
             query_date_str = current_date_str
             query_date = current_date_local
 
-        query_date_display_str = query_date.strftime("%b %d")
+        query_date_display_str = query_date.strftime("%a, %b %d")
         next_date = query_date + timedelta(days=1)
         prev_date = query_date - timedelta(days=1)
         next_date_str = next_date.strftime("%Y-%m-%d")
@@ -115,12 +119,10 @@ def create_app(predictor):
                 else:
                     query_date_str = inbound_query_date_str
 
-                # Call get_games_for_date directly (no HTTP overhead)
-                # Note: This triggers database updates which log their own timing
+                # Read game data from DB (data collection handled by daily cron)
                 game_data = get_games_for_date(
                     query_date_str,
                     predictor=predictor,
-                    update_predictions=True,
                 )
                 log_context = query_date_str
 
@@ -135,11 +137,10 @@ def create_app(predictor):
                         400,
                     )
 
-                # Call get_games directly (no HTTP overhead)
+                # Read game data from DB (data collection handled by daily cron)
                 game_data = get_games(
                     game_ids,
                     predictor=predictor,
-                    update_predictions=True,
                 )
                 log_context = (
                     game_ids[0] if len(game_ids) == 1 else f"{len(game_ids)} games"

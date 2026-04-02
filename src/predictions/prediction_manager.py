@@ -5,12 +5,10 @@ This module orchestrates the prediction generation process.
 It consists of functions to:
 - Determine the proper predictor.
 - Make pre-game predictions.
-- Make current predictions.
 
 Functions:
 - determine_predictor_class(predictor_name): Determines the predictor class based on the provided predictor name.
 - make_pre_game_predictions(game_ids, predictor_name=None, save=True): Generates pre-game predictions for the given game IDs using the specified predictor.
-- make_current_predictions(game_ids, predictor_name=None): Generates current predictions for the given game IDs using the specified predictor.
 - main(): Main function to handle command-line arguments and orchestrate the prediction process.
 
 Usage:
@@ -46,22 +44,52 @@ def _get_predictor_map():
     saving ~2s startup time when using Baseline predictor.
     """
     from src.predictions.prediction_engines.baseline_predictor import BaselinePredictor
-    from src.predictions.prediction_engines.ensemble_predictor import EnsemblePredictor
     from src.predictions.prediction_engines.linear_predictor import LinearPredictor
     from src.predictions.prediction_engines.mlp_predictor import MLPPredictor
     from src.predictions.prediction_engines.tree_predictor import TreePredictor
 
-    return {
+    predictor_map = {
         "Baseline": BaselinePredictor,
         "Linear": LinearPredictor,
         "Tree": TreePredictor,
         "MLP": MLPPredictor,
-        "Ensemble": EnsemblePredictor,
     }
+
+    # Phase 5/Phase 3 pipeline predictors (lazy import — heavy torch dependencies)
+    try:
+        from src.pipeline.phase5_predictor import Phase5Predictor
+
+        predictor_map["Phase5"] = Phase5Predictor
+    except ImportError:
+        pass
+    try:
+        from src.pipeline.phase3_predictor import Phase3Predictor
+
+        predictor_map["Phase3"] = Phase3Predictor
+    except ImportError:
+        pass
+
+    # Ensemble predictor (reads from DB, no heavy dependencies)
+    try:
+        from src.pipeline.ensemble_predictor import EnsemblePredictor
+
+        predictor_map["Ensemble"] = EnsemblePredictor
+    except ImportError:
+        pass
+
+    return predictor_map
 
 
 # Valid predictor names (for validation before lazy import)
-VALID_PREDICTORS = {"Baseline", "Linear", "Tree", "MLP", "Ensemble"}
+VALID_PREDICTORS = {
+    "Baseline",
+    "Linear",
+    "Tree",
+    "MLP",
+    "Phase5",
+    "Phase3",
+    "Ensemble",
+}
 
 
 def determine_predictor_class(predictor_name):
@@ -114,68 +142,6 @@ def make_pre_game_predictions(game_ids, predictor_name=None, save=True):
         save_predictions(pre_game_predictions, predictor_name)
 
     return pre_game_predictions
-
-
-@log_execution_time(average_over="game_ids")
-def make_current_predictions(game_ids, predictor_name=None):
-    """
-    Generate current predictions by blending pre-game predictions with current game state.
-
-    This function loads pre-game predictions from the database and blends them with
-    the current game state (score, clock, period) using a weighted averaging formula.
-
-    For games in progress:
-    - Blends pre-game prediction with extrapolated current score based on pace
-    - Weight shifts from pre-game prediction to current score as game progresses
-
-    For completed games:
-    - Returns actual final scores as prediction
-
-    Args:
-        game_ids (list): List of game IDs to generate predictions for.
-        predictor_name (str, optional): Name of predictor (used to load pre-game predictions).
-                                       Defaults to DEFAULT_PREDICTOR.
-
-    Returns:
-        dict: Dictionary mapping game_id to current prediction dict.
-
-    Note:
-        This function does NOT use ML models - it uses formula-based blending regardless
-        of predictor type. ML models are only used for pre-game predictions.
-    """
-    from src.predictions.prediction_utils import (
-        load_current_game_data,
-        update_predictions,
-    )
-
-    # Determine predictor name
-    if predictor_name is None:
-        predictor_name = DEFAULT_PREDICTOR
-
-    if predictor_name not in VALID_PREDICTORS:
-        raise ValueError(
-            f"Predictor '{predictor_name}' not found. Options: {VALID_PREDICTORS}"
-        )
-
-    logging.debug(
-        f"Generating current predictions for {len(game_ids)} games using predictor '{predictor_name}'."
-    )
-
-    # Load pre-game predictions from DB and current game state
-    if not game_ids:
-        return {}
-
-    games = load_current_game_data(game_ids, predictor_name)
-
-    # Blend pre-game predictions with current state using formula
-    current_predictions = update_predictions(games)
-
-    logging.debug(
-        f"Current predictions generated successfully for {len(current_predictions)} games using predictor '{predictor_name}'."
-    )
-    logging.debug(f"Current Predictions: {current_predictions}")
-
-    return current_predictions
 
 
 @log_execution_time(average_over="predictions")
@@ -306,9 +272,6 @@ def main():
     pre_game_predictions = make_pre_game_predictions(
         game_ids, args.predictor, save=args.save  # Explicitly set save to args.save
     )
-
-    # Create predictions based on the current game state
-    current_predictions = make_current_predictions(game_ids, args.predictor)
 
 
 if __name__ == "__main__":

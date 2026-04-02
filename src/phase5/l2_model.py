@@ -237,6 +237,10 @@ class GatedAttentionPooling(nn.Module):
         self.attn = nn.Linear(d_in, 1)
         self.proj = nn.Linear(d_in, d_out)
 
+    @property
+    def d_out(self) -> int:
+        return self.proj.out_features
+
     def forward(self, h: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -245,12 +249,21 @@ class GatedAttentionPooling(nn.Module):
         Returns:
             team_vec: (B, d_out)
         """
+        # NaN guard: if entire batch has no valid players, return zeros
+        if not mask.any():
+            return torch.zeros(h.shape[0], self.d_out, device=h.device)
+
         gate = self.gate(h)  # (B, A, 1)
         attn_logits = self.attn(h)  # (B, A, 1)
 
         # Mask invalid players
         attn_logits = attn_logits.masked_fill(~mask.unsqueeze(-1), float("-inf"))
         attn_weights = F.softmax(attn_logits, dim=1)  # (B, A, 1)
+
+        # Per-sample NaN guard: samples where ALL players are masked get
+        # all-inf logits, producing NaN after softmax.  Zero them out so the
+        # downstream projection returns zeros for those samples.
+        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
 
         # Gated attention: element-wise gate * normalized attention
         combined = gate * attn_weights  # (B, A, 1)

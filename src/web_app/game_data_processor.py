@@ -109,20 +109,19 @@ def process_game_data(games, user_tz=None):
         # Format date and time for display (pass user_tz for Today/Tomorrow logic)
         outbound_game_data.update(_format_date_time_display(game, user_tz))
 
-        # Extract predictions
+        # Extract predictions (pre-game only — no in-game blending)
         predictions = game.get("predictions", {})
-        current_predictions = predictions.get("current", {})
         pre_game_predictions = predictions.get("pre_game", {}).get("prediction_set", {})
 
-        pred_home_score = current_predictions.get(
-            "pred_home_score", pre_game_predictions.get("pred_home_score", "")
-        )
-        pred_away_score = current_predictions.get(
-            "pred_away_score", pre_game_predictions.get("pred_away_score", "")
-        )
-        pred_home_win_pct = current_predictions.get(
-            "pred_home_win_pct", pre_game_predictions.get("pred_home_win_pct", "")
-        )
+        pred_home_win_pct = pre_game_predictions.get("pred_home_win_pct", "")
+        pred_home_score = pre_game_predictions.get("pred_home_score", "")
+        pred_away_score = pre_game_predictions.get("pred_away_score", "")
+
+        # Predicted spread: use pred_spread if available (Phase5/Phase3),
+        # otherwise derive from predicted scores (legacy models)
+        pred_spread = pre_game_predictions.get("pred_spread", "")
+        if pred_spread == "" and pred_home_score != "" and pred_away_score != "":
+            pred_spread = pred_home_score - pred_away_score
 
         # Determine the predicted winner and win probability
         if pred_home_win_pct != "":
@@ -136,13 +135,13 @@ def process_game_data(games, user_tz=None):
             pred_winner = ""
             pred_win_pct = ""
 
-        # Round the predicted scores
-        pred_home_score = round(pred_home_score) if pred_home_score != "" else ""
-        pred_away_score = round(pred_away_score) if pred_away_score != "" else ""
-
-        outbound_game_data["pred_home_score"] = pred_home_score
-        outbound_game_data["pred_away_score"] = pred_away_score
         outbound_game_data["pred_winner"] = pred_winner
+        outbound_game_data["pred_home_score"] = (
+            round(pred_home_score) if pred_home_score != "" else ""
+        )
+        outbound_game_data["pred_away_score"] = (
+            round(pred_away_score) if pred_away_score != "" else ""
+        )
 
         # Format predicted win percentage
         if pred_win_pct == "":
@@ -157,6 +156,57 @@ def process_game_data(games, user_tz=None):
             pred_win_pct_str = ""
 
         outbound_game_data["pred_win_pct"] = pred_win_pct_str
+
+        # Spread in Vegas convention (negative = home favored)
+        # Model's pred_spread: positive = home advantage → negate for display
+        outbound_game_data["pred_spread"] = (
+            f"{-pred_spread:+.1f}" if pred_spread != "" else ""
+        )
+
+        # Vegas opening spread (from Betting table)
+        opening_spread = game.get("opening_spread")
+        outbound_game_data["opening_spread"] = (
+            f"{opening_spread:+.1f}" if opening_spread is not None else ""
+        )
+
+        # Determine if predicted winner was correct (for completed games)
+        if (
+            game["status"] == 3
+            and pred_winner
+            and outbound_game_data["home_score"] != ""
+            and outbound_game_data["away_score"] != ""
+        ):
+            home_score = outbound_game_data["home_score"]
+            away_score = outbound_game_data["away_score"]
+            actual_winner = (
+                outbound_game_data["home"]
+                if home_score > away_score
+                else outbound_game_data["away"]
+            )
+            outbound_game_data["pred_winner_correct"] = pred_winner == actual_winner
+        else:
+            outbound_game_data["pred_winner_correct"] = None
+
+        # Determine if our predicted spread was closer to actual margin than Vegas
+        if (
+            game["status"] == 3
+            and pred_spread != ""
+            and opening_spread is not None
+            and outbound_game_data["home_score"] != ""
+            and outbound_game_data["away_score"] != ""
+        ):
+            home_score = outbound_game_data["home_score"]
+            away_score = outbound_game_data["away_score"]
+            # Actual margin in Vegas convention: negative = home won by that amount
+            actual_margin = -(home_score - away_score)
+            our_spread_val = (
+                -pred_spread
+            )  # pred_spread is model's home advantage; negate for Vegas convention
+            our_error = abs(our_spread_val - actual_margin)
+            vegas_error = abs(opening_spread - actual_margin)
+            outbound_game_data["spread_closer_than_vegas"] = our_error < vegas_error
+        else:
+            outbound_game_data["spread_closer_than_vegas"] = None
 
         # Add sorted players and condensed play-by-play logs if available
         outbound_game_data.update(_get_sorted_players(game, predictions))
@@ -304,9 +354,12 @@ def _format_date_time_display(game, user_tz=None):
 
 def _get_sorted_players(game, predictions):
     """
-    This function combines player data from the current game state and predictions, assigns a headshot image to each player,
-    sorts the players based on their predicted points in descending order, and returns a dictionary with the sorted lists of players
-    for both the home and away teams.
+    Combines player data from the current game state and predictions, assigns a headshot image
+    to each player, and sorts the players for display.
+
+    For completed/in-progress games: shows actual stats, sorted by actual points scored.
+    For upcoming games with predictions: shows predicted stats, sorted by predicted points.
+    For upcoming games without predictions: shows roster from game state (if available).
 
     Args:
         game (dict): A dictionary containing the current game state.
@@ -316,6 +369,9 @@ def _get_sorted_players(game, predictions):
         dict: A dictionary containing sorted home and away players.
     """
 
+    game_status = game.get("status", 1)
+    has_actual_stats = game_status in (2, 3)  # In-progress or Final
+
     players = {"home_players": [], "away_players": []}
 
     for team in ["home", "away"]:
@@ -323,9 +379,6 @@ def _get_sorted_players(game, predictions):
             game.get("game_states", [{}])[-1].get("players_data", {}).get(team, {})
             if game.get("game_states")
             else {}
-        )
-        current_team_predictions = (
-            predictions.get("current", {}).get("pred_players", {}).get(team, {})
         )
         pre_game_team_predictions = (
             predictions.get("pre_game", {})
@@ -335,30 +388,45 @@ def _get_sorted_players(game, predictions):
         )
 
         all_player_ids = set(team_players.keys()).union(
-            current_team_predictions.keys(), pre_game_team_predictions.keys()
+            pre_game_team_predictions.keys()
         )
+
+        has_pred_players = bool(pre_game_team_predictions)
 
         for player_id in all_player_ids:
             player_data = team_players.get(player_id, {})
-            player_prediction = current_team_predictions.get(
-                player_id, current_team_predictions.get(player_id, {})
-            )
+            player_prediction = pre_game_team_predictions.get(player_id, {})
 
             player_headshot_url = get_player_image(player_id)
+
+            # Actual points from game state (available for in-progress/completed games)
+            actual_points = player_data.get("points", None)
+            # Predicted points from predictor (may not be available for Phase 5)
+            pred_points = player_prediction.get("pred_points", None)
 
             player = {
                 "player_id": player_id,
                 "player_name": player_data.get("name", ""),
                 "player_headshot_url": player_headshot_url,
-                "points": player_data.get("points", 0),
-                "pred_points": player_prediction.get("pred_points", 0),
+                "points": actual_points,
+                "pred_points": pred_points,
             }
 
             players[f"{team}_players"].append(player)
 
-        players[f"{team}_players"] = sorted(
-            players[f"{team}_players"], key=lambda x: x["pred_points"], reverse=True
-        )
+        # Sort by actual points for completed/in-progress games, pred_points for upcoming
+        if has_actual_stats:
+            players[f"{team}_players"] = sorted(
+                players[f"{team}_players"],
+                key=lambda x: x["points"] if x["points"] is not None else -1,
+                reverse=True,
+            )
+        elif has_pred_players:
+            players[f"{team}_players"] = sorted(
+                players[f"{team}_players"],
+                key=lambda x: x["pred_points"] if x["pred_points"] is not None else -1,
+                reverse=True,
+            )
 
     return players
 

@@ -3,8 +3,8 @@ Loss functions for L4 Game Prediction training.
 
 Multi-task composite loss:
   Primary (w=1.0): Gaussian NLL for spread prediction
-  Auxiliary (w=0.3): BCE for win probability
-  Auxiliary (w=0.3): Gaussian NLL for total points
+  Auxiliary (w=0.3): BCE for win probability (label smoothing 0.05)
+  Auxiliary (w=0.15): Gaussian NLL for total points
   Consistency (w=0.1): MSE between Phi(mu/sigma) and win_prob
 """
 
@@ -73,17 +73,23 @@ def spread_loss(
 def win_loss(
     win_logit: torch.Tensor,
     actual_home_win: torch.Tensor,
+    label_smoothing: float = 0.05,
 ) -> torch.Tensor:
     """
-    Binary cross-entropy for win probability.
+    Binary cross-entropy for win probability with label smoothing.
+
+    Label smoothing (eps=0.05) maps hard 0/1 targets to [0.025, 0.975],
+    preventing overconfident logits and improving calibration.
 
     Args:
         win_logit: (B,) raw logit (before sigmoid)
         actual_home_win: (B,) 1.0 if home won, 0.0 otherwise
+        label_smoothing: smoothing factor (default 0.05)
     Returns:
         scalar loss
     """
-    return F.binary_cross_entropy_with_logits(win_logit, actual_home_win)
+    smoothed = actual_home_win * (1.0 - label_smoothing) + 0.5 * label_smoothing
+    return F.binary_cross_entropy_with_logits(win_logit, smoothed)
 
 
 def total_loss(

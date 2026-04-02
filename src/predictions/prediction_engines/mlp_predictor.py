@@ -19,7 +19,7 @@ Usage:
 import pandas as pd
 import torch
 
-from src.model_training.models import MLP
+from src.model_training.models import MLP, MLPv2
 from src.predictions.prediction_engines.base_predictor import BaseMLPredictor
 from src.predictions.prediction_utils import calculate_home_win_prob
 
@@ -54,11 +54,30 @@ class MLPPredictor(BaseMLPredictor):
             hidden_sizes = checkpoint.get("hidden_sizes", [64, 32])
             dropout = checkpoint.get("dropout", 0.2)
 
-            model = MLP(
-                input_size=checkpoint["input_size"],
-                hidden_sizes=hidden_sizes,
-                dropout=dropout,
-            )
+            # Use MLPv2 (BatchNorm) for v0.5+ models, MLP for legacy v0.4
+            use_v2 = checkpoint.get("use_v2", False)
+            if not use_v2:
+                # Auto-detect: v2 state dicts contain BatchNorm keys
+                state_keys = set(checkpoint["model_state_dict"].keys())
+                use_v2 = any(
+                    "batchnorm" in k.lower()
+                    or "bn" in k.lower()
+                    or ("running_mean" in k)
+                    for k in state_keys
+                )
+
+            if use_v2:
+                model = MLPv2(
+                    input_size=checkpoint["input_size"],
+                    hidden_sizes=hidden_sizes,
+                    dropout=dropout,
+                )
+            else:
+                model = MLP(
+                    input_size=checkpoint["input_size"],
+                    hidden_sizes=hidden_sizes,
+                    dropout=dropout,
+                )
             model.load_state_dict(checkpoint["model_state_dict"])
 
             # Store normalization params

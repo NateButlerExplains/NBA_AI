@@ -60,18 +60,28 @@ predictors:
   Baseline: {}  # Formula-based, no models required
   Linear:
     model_paths:
-      - "models/ridge_v0.4_mae11.2.joblib"
+      - "models/ridge_v0.5_mae9.7.joblib"
   Tree:
     model_paths:
-      - "models/xgboost_v0.4_mae10.1.joblib"
-  # MLP:  # Requires PyTorch - uncomment torch in requirements.txt to use
-  #   model_paths:
-  #     - "models/mlp_v0.4_mae11.1.pth"
+      - "models/xgboost_v0.5_mae9.6.joblib"
+  MLP:
+    model_paths:
+      - "models/mlp_v0.5_mae9.5.pth"
   # Ensemble:  # Requires PyTorch for MLP component
   #   model_paths:
   #     Linear:
-  #       - "models/ridge_v0.4_mae11.2.joblib"
+  #       - "models/ridge_v0.5_mae9.7.joblib"
   #     Tree:
-  #       - "models/xgboost_v0.4_mae10.1.joblib"
+  #       - "models/xgboost_v0.5_mae9.6.joblib"
   #     MLP:
-  #       - "models/mlp_v0.4_mae11.1.pth"
+  #       - "models/mlp_v0.5_mae9.5.pth"
+  Phase5:  # Phase 5 Hierarchical (L1→L2→L3→L4)
+    model_paths:
+      l2: "checkpoints/phase5/l2_best.pt"
+      l3l4: "checkpoints/phase5/phase_c_best.pt"
+  Phase3:  # Phase 3 Exp 5 Transformer (roster-temporal)
+    model_paths:
+      checkpoint: "checkpoints/phase3/phase3_exp5b_slim/best.pt"
+      config: "configs/transformer/phase3_exp5b_slim.yaml"
+  Ensemble:  # Combines Phase5, Phase3, Linear, Tree, MLP predictions
+    model_paths: {}

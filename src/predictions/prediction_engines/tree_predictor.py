@@ -67,8 +67,15 @@ class TreePredictor(BaseMLPredictor):
         features_df = pd.DataFrame(features).fillna(0)
 
         # Use the first model for predictions
-        scores = self.models[0].predict(features_df.values)
-        home_scores, away_scores = scores[:, 0], scores[:, 1]
+        # v0.5 saves a tuple of (home_model, away_model); v0.4 saves a single multi-output model
+        model = self.models[0]
+        if isinstance(model, tuple):
+            home_model, away_model = model
+            home_scores = home_model.predict(features_df.values)
+            away_scores = away_model.predict(features_df.values)
+        else:
+            scores = model.predict(features_df.values)
+            home_scores, away_scores = scores[:, 0], scores[:, 1]
 
         for game_id, home_score, away_score in zip(game_ids, home_scores, away_scores):
             home_win_prob = calculate_home_win_prob(home_score, away_score)
