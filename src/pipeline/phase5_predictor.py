@@ -22,16 +22,12 @@ import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-from src.phase5.cache_builder import ALTITUDE_MAP, BOX_STAT_COLUMNS, CONTEXT_COLUMNS
-from src.phase5.config import NKEHConfig
-from src.phase5.dataset import Normalizer, load_metadata, load_profiles
 from src.phase5.l2_config import L2Config
 from src.phase5.l2_model import PlayerSynergyNetwork
 from src.phase5.l3_config import L3Config
 from src.phase5.l3_model import TeamModel
 from src.phase5.l4_config import L4Config
 from src.phase5.l4_model import GamePredictor
-from src.phase5.model import NKEH
 from src.pipeline.roster_assembler import RosterAssembler
 from src.pipeline.team_features import TeamFeatureComputer
 from src.predictions.prediction_engines.base_predictor import BasePredictor
@@ -42,7 +38,6 @@ DB_PATH = PROJECT_ROOT / "data" / "NBA_AI_full.sqlite"
 L1_VECTORS_DIR = PROJECT_ROOT / "data" / "l2_cache" / "l1_vectors"
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints" / "phase5"
 PHASE_B_CACHE = PROJECT_ROOT / "data" / "phase_b_cache"
-L1_CACHE_DIR = PROJECT_ROOT / "data" / "phase5_cache"
 
 # Maximum players per team for L2 (must match training)
 MAX_PLAYERS = 13
@@ -72,15 +67,6 @@ class Phase5Predictor(BasePredictor):
         self._rs_std = None
         self._player_to_idx = None
         self._archetype_centroids = None
-
-        # L1 model for player stat predictions (lazy-loaded)
-        self._l1_model = None
-        self._l1_normalizer = None
-        self._l1_metadata = None
-        self._l1_profiles_data = None
-        self._l1_profile_idx = None
-        self._l1_box_mean = None
-        self._l1_box_std = None
 
     def _ensure_models_loaded(self):
         """Lazy-load models on first prediction call."""
@@ -324,21 +310,11 @@ class Phase5Predictor(BasePredictor):
 
         with get_db(str(DB_PATH)) as conn:
             row = conn.execute(
-                "SELECT status, home_team, away_team, date_time_utc, season "
-                "FROM Games WHERE game_id = ?",
+                "SELECT status FROM Games WHERE game_id = ?",
                 (game_id,),
             ).fetchone()
         game_status = row[0] if row else None
-        home_team = row[1] if row else ""
-        away_team = row[2] if row else ""
-        date_time_utc = row[3] if row else ""
-        season = row[4] if row else ""
         is_live = game_status == 1  # status=1 means scheduled (not yet played)
-
-        # Player-level stat predictions from L1 decoder
-        pred_players = self._predict_player_stats(
-            roster, home_team, away_team, date_time_utc, season
-        )
 
         return {
             "pred_home_score": round(home_score, 1),
@@ -353,7 +329,6 @@ class Phase5Predictor(BasePredictor):
                 roster.get("home_confidence", 1.0),
                 roster.get("away_confidence", 1.0),
             ),
-            "pred_players": pred_players,
         }
 
     def _load_player_data(self, player_ids: list[int]) -> dict:
@@ -443,251 +418,3 @@ class Phase5Predictor(BasePredictor):
     def _normalize(x: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
         """Z-score normalization."""
         return (x - mean) / (std + 1e-8)
-
-    # ------------------------------------------------------------------
-    # L1 decoder: player-level stat predictions
-    # ------------------------------------------------------------------
-
-    def _ensure_l1_loaded(self):
-        """Lazy-load the NKEH model and L1 normalization infrastructure."""
-        if self._l1_model is not None:
-            return
-
-        device = self._device or torch.device("cpu")
-
-        # Load metadata and normalizer
-        self._l1_metadata = load_metadata()
-        self._l1_normalizer = Normalizer(self._l1_metadata)
-        self._l1_box_mean = np.array(self._l1_metadata["box_mean"], dtype=np.float32)
-        self._l1_box_std = np.array(self._l1_metadata["box_std"], dtype=np.float32)
-
-        # Load profiles
-        self._l1_profiles_data = load_profiles()
-        self._l1_profile_idx = {
-            int(pid): i for i, pid in enumerate(self._l1_profiles_data["person_ids"])
-        }
-
-        # Load NKEH model
-        cfg = NKEHConfig(
-            n_box_stats=len(self._l1_metadata["box_stat_columns"]),
-            n_pbp_stats=len(self._l1_metadata["pbp_stat_columns"]),
-            n_context=len(self._l1_metadata["context_columns"]),
-            n_profile=len(self._l1_metadata["profile_columns"]),
-        )
-        model = NKEH(cfg)
-        ckpt_path = CHECKPOINT_DIR / "phase2_best.pt"
-        ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
-        model.load_state_dict(ckpt["model_state_dict"], strict=False)
-        model.to(device)
-        model.eval()
-        self._l1_model = model
-
-        logger.info(
-            f"L1 NKEH model loaded for player stat predictions "
-            f"(epoch {ckpt.get('epoch', '?')}, device={device})"
-        )
-
-    def _get_l1_profile_tensor(self, player_id: int) -> torch.Tensor | None:
-        """Get normalized profile tensor for a player."""
-        if player_id in self._l1_profile_idx:
-            idx = self._l1_profile_idx[player_id]
-            profile_cols = self._l1_metadata["profile_columns"]
-            vals = [float(self._l1_profiles_data[col][idx]) for col in profile_cols]
-            raw = torch.tensor(vals, dtype=torch.float32).unsqueeze(0)
-            return self._l1_normalizer.normalize_profile(raw)
-
-        # Fallback: load from DB for players not in cache
-        from src.database import get_db
-        from src.phase5.cache_builder import PROFILE_COLUMNS, _load_player_profile
-
-        with get_db(str(DB_PATH)) as conn:
-            profile_dict = _load_player_profile(conn, player_id)
-
-        if not profile_dict:
-            return None
-
-        vec = np.array(
-            [profile_dict.get(col, 0) for col in PROFILE_COLUMNS],
-            dtype=np.float32,
-        )
-        raw = torch.tensor(vec, dtype=torch.float32).unsqueeze(0)
-        return self._l1_normalizer.normalize_profile(raw)
-
-    def _build_prediction_context(
-        self,
-        player_id: int,
-        is_home: bool,
-        home_team: str,
-        away_team: str,
-        date_time_utc: str,
-        season: str,
-        n_career_games: int | None = None,
-    ) -> np.ndarray:
-        """
-        Build a 12-d context vector for next-game prediction.
-
-        Uses simplified defaults where exact rolling stats are not available,
-        mirroring the CONTEXT_COLUMNS order from cache_builder.
-        """
-        ctx = np.zeros(len(CONTEXT_COLUMNS), dtype=np.float32)
-
-        # Parse game date
-        game_date = date_time_utc[:10] if date_time_utc else ""
-        game_year = int(game_date[:4]) if len(game_date) >= 4 else 2026
-        game_month = int(game_date[5:7]) if len(game_date) >= 7 else 1
-
-        # [0] age_at_game: estimate from profile birth_year
-        birth_year = 1995.0  # default
-        if player_id in self._l1_profile_idx:
-            idx = self._l1_profile_idx[player_id]
-            birth_year = float(self._l1_profiles_data["birth_year"][idx])
-        ctx[0] = game_year - birth_year + (game_month - 6) / 12.0
-
-        # [1] rest_days: default 1 (typical NBA schedule)
-        ctx[1] = 1.0
-
-        # [2] home_flag
-        ctx[2] = 1.0 if is_home else 0.0
-
-        # [3] opponent_drtg: use league average
-        ctx[3] = 110.0
-
-        # [4] team_pace: use league average
-        ctx[4] = 200.0
-
-        # [5] minutes_share: estimate from career game count
-        # Players with more games tend to play more; default to average rotation share
-        if n_career_games is not None:
-            ctx[5] = min(0.20, 0.08 + 0.0005 * n_career_games)
-        else:
-            ctx[5] = 0.12
-
-        # [6] season_progress: compute from game month
-        # NBA season: Oct (0.0) to Apr (1.0), playoffs May-Jun
-        if game_month >= 10:
-            ctx[6] = (game_month - 10) / 7.0  # Oct=0, Nov~0.14, Dec~0.28
-        elif game_month <= 6:
-            ctx[6] = min(1.0, (game_month + 2) / 7.0)  # Jan~0.43, Feb~0.57, ...
-        else:
-            ctx[6] = 0.5  # offseason default
-
-        # [7] career_games_played
-        ctx[7] = float(n_career_games) if n_career_games is not None else 50.0
-
-        # [8] days_since_last_game: default 2 (typical NBA schedule)
-        ctx[8] = 2.0
-
-        # [9] opponent_pace: league average
-        ctx[9] = 200.0
-
-        # [10] team_ortg: league average
-        ctx[10] = 110.0
-
-        # [11] altitude_ft: from ALTITUDE_MAP using home team
-        ctx[11] = float(ALTITUDE_MAP.get(home_team, 0))
-
-        return ctx
-
-    def _predict_player_stats(
-        self,
-        roster: dict,
-        home_team: str,
-        away_team: str,
-        date_time_utc: str,
-        season: str,
-    ) -> dict:
-        """
-        Predict per-player box stats using the L1 NKEH decoder's next_game_head.
-
-        Returns:
-            {"home": {player_id: {"pred_points": X, "pred_rebounds": Y, ...}},
-             "away": {player_id: {...}}}
-        """
-        try:
-            self._ensure_l1_loaded()
-        except Exception as e:
-            logger.warning(f"Could not load L1 model for player stats: {e}")
-            return {"home": {}, "away": {}}
-
-        device = self._device or torch.device("cpu")
-        result = {"home": {}, "away": {}}
-
-        for side in ("home", "away"):
-            player_ids = roster.get(f"{side}_players", [])
-            is_home = side == "home"
-
-            for pid in player_ids:
-                # Load L1 vectors (ability, game count for context)
-                npz_path = L1_VECTORS_DIR / f"{pid}.npz"
-                if not npz_path.exists():
-                    continue
-                l1_data = np.load(str(npz_path), allow_pickle=True)
-                ability = l1_data["ability"][-1]  # (32,) most recent
-                n_career_games = len(l1_data["game_ids"])
-
-                # Build context
-                ctx_raw = self._build_prediction_context(
-                    pid,
-                    is_home,
-                    home_team,
-                    away_team,
-                    date_time_utc,
-                    season,
-                    n_career_games=n_career_games,
-                )
-                # Normalize context
-                ctx_t = self._l1_normalizer.normalize_context(
-                    torch.tensor(ctx_raw, dtype=torch.float32).unsqueeze(0)
-                ).to(device)
-
-                # Get normalized profile
-                profile_t = self._get_l1_profile_tensor(pid)
-                if profile_t is None:
-                    continue
-                profile_t = profile_t.to(device)
-
-                # Ability tensor
-                ability_t = (
-                    torch.tensor(ability, dtype=torch.float32).unsqueeze(0).to(device)
-                )
-
-                # Run decoder
-                with torch.no_grad():
-                    dec_out = self._l1_model.decoder(ability_t, ctx_t, profile_t)
-                    next_game_norm = dec_out["next_game"][0].cpu().numpy()  # (16,)
-
-                # Denormalize: predicted = normalized * std + mean
-                pred_raw = next_game_norm * self._l1_box_std + self._l1_box_mean
-
-                # Clamp non-negative (all stats except plus_minus must be >= 0)
-                for i in range(15):  # indices 0-14 are non-negative stats
-                    pred_raw[i] = max(0.0, pred_raw[i])
-
-                # Map to named predictions
-                # BOX_STAT_COLUMNS: min, pts, oreb, dreb, ast, stl, blk, tov, pf,
-                #                   fga, fgm, fg3a, fg3m, fta, ftm, plus_minus
-                player_preds = {
-                    "pred_minutes": round(float(pred_raw[0]), 1),
-                    "pred_points": round(float(pred_raw[1]), 1),
-                    "pred_rebounds": round(float(pred_raw[2] + pred_raw[3]), 1),
-                    "pred_oreb": round(float(pred_raw[2]), 1),
-                    "pred_dreb": round(float(pred_raw[3]), 1),
-                    "pred_assists": round(float(pred_raw[4]), 1),
-                    "pred_steals": round(float(pred_raw[5]), 1),
-                    "pred_blocks": round(float(pred_raw[6]), 1),
-                    "pred_turnovers": round(float(pred_raw[7]), 1),
-                    "pred_fouls": round(float(pred_raw[8]), 1),
-                    "pred_fga": round(float(pred_raw[9]), 1),
-                    "pred_fgm": round(float(pred_raw[10]), 1),
-                    "pred_fg3a": round(float(pred_raw[11]), 1),
-                    "pred_fg3m": round(float(pred_raw[12]), 1),
-                    "pred_fta": round(float(pred_raw[13]), 1),
-                    "pred_ftm": round(float(pred_raw[14]), 1),
-                    "pred_plus_minus": round(float(pred_raw[15]), 1),
-                }
-                result[side][str(pid)] = player_preds
-
-        n_home = len(result["home"])
-        n_away = len(result["away"])
-        logger.debug(f"Player stat predictions: {n_home} home, {n_away} away players")
-        return result
