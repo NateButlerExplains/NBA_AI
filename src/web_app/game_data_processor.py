@@ -23,11 +23,7 @@ from datetime import datetime, timedelta
 import pytz
 from tzlocal import get_localzone
 
-from src.pipeline.live_predictions import LivePredictor
 from src.utils import NBATeamConverter, get_player_image, log_execution_time
-
-# Single LivePredictor instance (stateless, safe to reuse)
-_live_predictor = LivePredictor()
 
 
 def get_user_datetime(as_eastern_tz=False):
@@ -172,47 +168,6 @@ def process_game_data(games, user_tz=None):
         outbound_game_data["opening_spread"] = (
             f"{opening_spread:+.1f}" if opening_spread is not None else ""
         )
-
-        # Compute live predictions for in-progress games
-        if game["status"] == 2 and game_states:
-            game_state = game_states[0]
-            clock = game_state.get("clock", "PT00M00.00S")
-            period = game_state.get("period", 1)
-            h_score = game_state.get("home_score", 0)
-            a_score = game_state.get("away_score", 0)
-
-            # pred_spread is in model convention (positive = home advantage)
-            live_result = _live_predictor.compute_live_prediction(
-                {
-                    "home_score": h_score,
-                    "away_score": a_score,
-                    "period": period,
-                    "clock": clock,
-                    "pred_spread": pred_spread if pred_spread != "" else None,
-                }
-            )
-
-            # Live spread in Vegas convention (negate model's home-advantage sign)
-            outbound_game_data["live_spread"] = f"{-live_result['live_spread']:+.1f}"
-
-            # Live win probability: show for whichever team is leading
-            live_home_wp = live_result["live_win_prob"]
-            if live_home_wp >= 0.5:
-                live_winner = outbound_game_data["home"]
-                live_wp = live_home_wp
-            else:
-                live_winner = outbound_game_data["away"]
-                live_wp = 1 - live_home_wp
-            if live_wp >= 0.995:
-                live_wp_str = ">99%"
-            else:
-                live_wp_str = f"{live_wp:.0%}"
-            outbound_game_data["live_winner"] = live_winner
-            outbound_game_data["live_win_pct"] = live_wp_str
-
-            # Game progress as integer percentage
-            outbound_game_data["game_progress"] = f"{live_result['game_progress']:.0%}"
-            outbound_game_data["minutes_remaining"] = live_result["minutes_remaining"]
 
         # Determine if predicted winner was correct (for completed games)
         if (

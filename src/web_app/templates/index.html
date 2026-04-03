@@ -132,82 +132,91 @@
 
     <!-- Start of Game Details Template -->
     <template id="gameDetailsTemplate">
-        <!-- Prediction Section -->
-        <div class="row mb-3 pb-3 border-bottom">
-            <!-- Home Team -->
-            <div class="col text-center">
-                <img id="templateHomeLogo" src="" alt="Team Logo" class="img-fluid-custom mb-2">
-                <h4 id="templateHomeTeam" class="mb-0"></h4>
+        <!-- Main Row - Contains Play By Play and Live Predictions -->
+        <div class="row flex-column-reverse flex-xl-row">
+            <!-- Play By Play Section -->
+            <div class="col-lg-5" id="play_by_play">
+                <!-- Play By Play Table -->
+                <table class="table">
+                    <!-- Table Header -->
+                    <thead>
+                        <tr>
+                            <th colspan="2">Play By Play</th>
+                            <th id="homeTeamHeader">Home</th>
+                            <th id="awayTeamHeader">Away</th>
+                        </tr>
+                    </thead>
+                    <!-- Table Body - This is where the play-by-play rows will be dynamically added -->
+                    <tbody id="playByPlayBody">
+                    </tbody>
+                </table>
             </div>
-            <!-- Spread + Winner -->
-            <div class="col text-center d-flex flex-column justify-content-center">
-                <div class="mb-2">
-                    <span class="text-muted" style="font-size: 0.8rem;">OPEN</span>
-                    <h4 class="mb-0" id="templateOpenSpread" style="color: #6c757d;"></h4>
-                </div>
-                <div class="mb-2">
-                    <span class="text-muted" style="font-size: 0.8rem;">PREDICTED</span>
-                    <h3 class="mb-0" id="templatePredictedSpread"></h3>
-                </div>
-                <div id="templateResultSection" style="display: none;">
-                    <span class="text-muted" style="font-size: 0.8rem;">ACTUAL</span>
-                    <h4 class="mb-0" id="templateActualMargin"></h4>
-                </div>
-                <div id="templateLiveSection" style="display: none;">
-                    <span class="text-muted" style="font-size: 0.8rem;"><span class="live-badge">LIVE</span> SPREAD</span>
-                    <h3 class="mb-0" id="templateLiveSpread"></h3>
-                    <div class="mt-2">
-                        <span class="text-muted" style="font-size: 0.8rem;"><span class="live-badge">LIVE</span> WINNER</span>
-                        <h4 class="mb-0" id="templateLiveWinPct"></h4>
-                    </div>
-                    <div class="mt-1">
-                        <span class="text-muted" style="font-size: 0.75rem;">PROGRESS: <span id="templateGameProgress"></span></span>
+
+            <!-- Predictions Section -->
+            <div class="col-lg-7" id="predictions_section">
+                <!-- Predictions Title Row -->
+                <div class="row justify-content-center mb-2 border-bottom-custom">
+                    <div class="col">
+                        <h3 class="text-center">Prediction</h3>
                     </div>
                 </div>
-            </div>
-            <!-- Away Team -->
-            <div class="col text-center">
-                <img id="templateAwayLogo" src="" alt="Team Logo" class="img-fluid-custom mb-2">
-                <h4 id="templateAwayTeam" class="mb-0"></h4>
-            </div>
-        </div>
-
-        <!-- Winner Row -->
-        <div class="row mb-3 pb-3 border-bottom">
-            <div class="col text-center d-flex justify-content-center align-items-center">
-                <i class="bi bi-caret-left-fill bi-caret-left-fill-custom me-1 text-success-custom" id="winnerLeftIcon"></i>
-                <div>
-                    <span class="text-muted" style="font-size: 0.8rem;">PREDICTED WINNER</span>
-                    <h4 id="templatePredictedWinPct" class="mb-0"></h4>
+                <!-- Predictions Data Row -->
+                <div class="row mb-4 border-bottom-custom">
+                    <!-- Home Team Column -->
+                    <div class="col">
+                        <div class="row align-items-center">
+                            <div class="col-6 text-center d-flex flex-column justify-content-center">
+                                <h4 id="templateHomeTeam"></h4>
+                            </div>
+                            <div class="col-6 d-flex align-items-center justify-content-center">
+                                <img id="templateHomeLogo" src="" alt="Team Logo" class="img-fluid-custom">
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Spread + Winner Column -->
+                    <div class="col d-flex align-items-center justify-content-center">
+                        <div class="text-center">
+                            <div class="mb-2">
+                                <span class="text-muted" style="font-size: 0.85rem;">Spread</span>
+                                <h2 class="mb-0" id="templatePredictedSpread"></h2>
+                            </div>
+                            <div class="d-flex justify-content-center align-items-center">
+                                <i class="bi bi-caret-left-fill bi-caret-left-fill-custom me-0 text-success-custom"
+                                    id="winnerLeftIcon"></i>
+                                <div>
+                                    <span class="text-muted" style="font-size: 0.85rem;">Winner</span>
+                                    <h4 id="templatePredictedWinPct" class="mb-0"></h4>
+                                </div>
+                                <i class="bi bi-caret-right-fill bi-caret-right-fill-custom ms-0 text-success-custom"
+                                    id="winnerRightIcon"></i>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Away Team Column -->
+                    <div class="col">
+                        <div class="row align-items-center">
+                            <div class="col-6 d-flex align-items-center justify-content-center">
+                                <img id="templateAwayLogo" src="" alt="Team Logo" class="img-fluid-custom">
+                            </div>
+                            <div class="col-6 text-center d-flex flex-column justify-content-center">
+                                <h4 id="templateAwayTeam"></h4>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <i class="bi bi-caret-right-fill bi-caret-right-fill-custom ms-1 text-success-custom" id="winnerRightIcon"></i>
-            </div>
-        </div>
+                <!-- Player Information Container -->
+                <div class="row" id="playerInfoContainer">
+                    <!-- Home Team Players Column -->
+                    <div class="col-1"></div>
+                    <div class="col-5 d-flex justify-content-center flex-column" id="homeTeamPlayers">
+                        <!-- This is where the home team players will be dynamically added -->
+                    </div>
 
-        <!-- Player Information Container -->
-        <div class="row mb-3 pb-3 border-bottom">
-            <div class="col-6" id="homeTeamPlayers"></div>
-            <div class="col-6" id="awayTeamPlayers"></div>
-        </div>
-
-        <!-- Play By Play Section (collapsible) -->
-        <div class="row">
-            <div class="col">
-                <button class="btn btn-outline-secondary btn-sm w-100 mb-2" type="button" data-bs-toggle="collapse" data-bs-target="#pbpCollapse">
-                    Play By Play
-                </button>
-                <div class="collapse" id="pbpCollapse">
-                    <table class="table table-sm">
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Play</th>
-                                <th id="homeTeamHeader">Home</th>
-                                <th id="awayTeamHeader">Away</th>
-                            </tr>
-                        </thead>
-                        <tbody id="playByPlayBody"></tbody>
-                    </table>
+                    <!-- Road Team Players Column -->
+                    <div class="col-1"></div>
+                    <div class="col-5 d-flex justify-content-center flex-column" id="awayTeamPlayers">
+                        <!-- This is where the away team players will be dynamically added -->
+                    </div>
                 </div>
             </div>
         </div>

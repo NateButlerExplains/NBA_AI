@@ -6,7 +6,6 @@
  * - Populating player details in a specified container.
  * - Displaying play-by-play data for a game.
  * - Fetching and showing detailed information for a specific game.
- * - Live prediction display and auto-refresh for in-progress games.
  *
  * Functions:
  * - fetchAndUpdateGames(): Fetches games for a specific date and updates the games table.
@@ -17,9 +16,6 @@
  * Each function handles specific aspects of game data presentation, aiming to provide a seamless
  * user experience by dynamically updating the UI with fetched data.
  */
-
-// Track the auto-refresh interval so we can clear it if needed
-let liveRefreshInterval = null;
 
 /**
  * Fetches games for a specific date and updates the games table.
@@ -50,15 +46,9 @@ function fetchAndUpdateGames() {
       const tableBody = document.querySelector("#gamesTableBody");
       tableBody.innerHTML = ""; // Clear the table body
 
-      let hasLiveGames = false;
-
       if (games.length > 0) {
         games.forEach((game) => {
           console.log("Game:", game);
-
-          const isLive = game.game_status_code === 2;
-          if (isLive) hasLiveGames = true;
-
           const row = document.createElement("tr");
           row.className = "game-row custom-vertical-align-middle";
           row.setAttribute("data-game-id", game.game_id);
@@ -71,21 +61,10 @@ function fetchAndUpdateGames() {
           const homeScore = isPostponed ? "-" : game.home_score;
           const awayScore = isPostponed ? "-" : game.away_score;
           const openSpread = isPostponed ? "-" : game.opening_spread || "-";
-
-          // For in-progress games with live predictions, show live values
-          let predSpreadDisplay;
-          let predWinnerDisplay;
-          if (isPostponed) {
-            predSpreadDisplay = "-";
-            predWinnerDisplay = "-";
-          } else if (isLive && game.live_spread) {
-            // Show live spread with LIVE badge
-            predSpreadDisplay = `<span class="live-badge">LIVE</span> ${game.live_spread}`;
-            predWinnerDisplay = `<span class="live-badge">LIVE</span> ${game.live_winner || ""} ${game.live_win_pct || ""}`;
-          } else {
-            predSpreadDisplay = game.pred_spread || "-";
-            predWinnerDisplay = `${game.pred_winner} ${game.pred_win_pct}`;
-          }
+          const predSpread = isPostponed ? "-" : game.pred_spread || "-";
+          const predWinner = isPostponed
+            ? "-"
+            : `${game.pred_winner} ${game.pred_win_pct}`;
 
           // Color-coding classes for completed games
           const winnerClass =
@@ -126,23 +105,14 @@ function fetchAndUpdateGames() {
                         <td class="text-center custom-vertical-align-middle">${openSpread}</td>
                         <td class="text-center custom-vertical-align-middle">${homeScore}</td>
                         <td class="text-center custom-vertical-align-middle">${awayScore}</td>
-                        <td class="text-center custom-vertical-align-middle${spreadClass}">${predSpreadDisplay}</td>
-                        <td class="text-center custom-vertical-align-middle${winnerClass}">${predWinnerDisplay}</td>
+                        <td class="text-center custom-vertical-align-middle${spreadClass}">${predSpread}</td>
+                        <td class="text-center custom-vertical-align-middle${winnerClass}">${predWinner}</td>
                     `;
           tableBody.appendChild(row);
         });
       } else {
         tableBody.innerHTML =
           '<tr><td colspan="8" class="text-center">No Games for the selected date</td></tr>';
-      }
-
-      // Auto-refresh: if there are live games, poll every 60 seconds
-      if (hasLiveGames && !liveRefreshInterval) {
-        liveRefreshInterval = setInterval(() => fetchAndUpdateGames(), 60000);
-      } else if (!hasLiveGames && liveRefreshInterval) {
-        // No more live games — stop polling
-        clearInterval(liveRefreshInterval);
-        liveRefreshInterval = null;
       }
     })
     .catch((error) => {
@@ -270,6 +240,8 @@ function showGameDetails(gameId) {
     .then((data) => {
       const game = data[0];
 
+      console.log("Game details:", game);
+
       const {
         home,
         away,
@@ -284,67 +256,31 @@ function showGameDetails(gameId) {
         condensed_pbp: playByPlay,
         home_players: homePlayers,
         away_players: awayPlayers,
+        pred_home_score: predictedHomeScore,
+        pred_away_score: predictedAwayScore,
         pred_winner: predictedWinner,
         pred_win_pct: predictedWinPercentage,
       } = game;
 
-      const isLive = gameStatusCode === 2;
-
-      // Modal title — show score for completed games, time for upcoming
       const modalTitle = document.querySelector("#gameDetailsModalLabel");
-      const scoreDisplay =
-        gameStatusCode === 3
-          ? `${homeScore} - ${awayScore}`
-          : gameStatusCode === 2
-            ? `${homeScore} - ${awayScore} <span class="live-badge">LIVE</span>`
-            : "vs";
       modalTitle.innerHTML = `
-                ${homeFullName} <img src="${homeLogoUrl}" alt="${homeFullName}" class="team-logo">
-                ${scoreDisplay}
-                <img src="${awayLogoUrl}" alt="${awayFullName}" class="team-logo"> ${awayFullName}
+                ${homeFullName} <img src="${homeLogoUrl}" alt="${homeFullName}" class="team-logo"> 
+                ${homeScore} - ${awayScore} 
+                <img src="${awayLogoUrl}" alt="${awayFullName}" class="team-logo"> ${awayFullName} 
                 <span class="breakpoint"> - <wbr></span>${dateTimeDisplay}
             `;
 
       const template = document
         .querySelector("#gameDetailsTemplate")
         .content.cloneNode(true);
-      template.querySelector("#templateHomeTeam").textContent = home;
-      template.querySelector("#templateAwayTeam").textContent = away;
+      template.querySelector("#templateHomeTeam").textContent += `${home}`;
+      template.querySelector("#templateAwayTeam").textContent += `${away}`;
       template.querySelector("#templateHomeLogo").src = homeLogoUrl;
       template.querySelector("#templateAwayLogo").src = awayLogoUrl;
-
-      // Spreads
-      template.querySelector("#templateOpenSpread").textContent =
-        game.opening_spread || "-";
       template.querySelector("#templatePredictedSpread").textContent =
         game.pred_spread || "-";
-
-      // Show actual margin for completed games
-      if (gameStatusCode === 3 && homeScore !== "" && awayScore !== "") {
-        const actualMargin = homeScore - awayScore;
-        const marginStr = (actualMargin >= 0 ? "+" : "") + actualMargin;
-        template.querySelector("#templateActualMargin").textContent = marginStr;
-        template.querySelector("#templateResultSection").style.display =
-          "block";
-      }
-
-      // For live games, show live spread and progress in the modal
-      if (isLive && game.live_spread) {
-        const liveSection = template.querySelector("#templateLiveSection");
-        if (liveSection) {
-          liveSection.style.display = "block";
-          template.querySelector("#templateLiveSpread").textContent =
-            game.live_spread;
-          template.querySelector("#templateLiveWinPct").textContent =
-            `${game.live_winner || ""} ${game.live_win_pct || ""}`;
-          template.querySelector("#templateGameProgress").textContent =
-            game.game_progress || "";
-        }
-      }
-
-      // Winner
-      template.querySelector("#templatePredictedWinPct").textContent =
-        predictedWinPercentage || "";
+      template.querySelector("#templatePredictedWinPct").textContent +=
+        `${predictedWinPercentage}`;
 
       populatePlayerDetails(
         homePlayers,
