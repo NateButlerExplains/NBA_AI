@@ -53,16 +53,6 @@ class TestGamesAPIValidation:
         assert "error" in data
         assert "Invalid predictor" in data["error"]
 
-    def test_invalid_update_predictions_returns_error(self, flask_test_client):
-        """Invalid update_predictions value should return 400."""
-        response = flask_test_client.get(
-            "/api/games?date=2024-10-22&update_predictions=maybe"
-        )
-        assert response.status_code == 400
-        data = response.get_json()
-        assert "error" in data
-        assert "update_predictions" in data["error"]
-
     def test_too_many_game_ids_returns_error(self, flask_test_client):
         """Too many game IDs should return 400."""
         from src.config import config
@@ -93,9 +83,7 @@ class TestGamesAPIResponses:
 
     def test_valid_date_returns_dict(self, flask_test_client, sample_date):
         """Valid date should return a dict of games keyed by game_id or season error."""
-        response = flask_test_client.get(
-            f"/api/games?date={sample_date}&update_predictions=False"
-        )
+        response = flask_test_client.get(f"/api/games?date={sample_date}")
 
         # May return 200 with games, 200 with empty dict, or 400 if season not valid
         # The season restriction is configurable, so both are acceptable
@@ -108,9 +96,7 @@ class TestGamesAPIResponses:
 
     def test_response_structure(self, flask_test_client, sample_date):
         """Response should have expected game structure if data available."""
-        response = flask_test_client.get(
-            f"/api/games?date={sample_date}&update_predictions=False"
-        )
+        response = flask_test_client.get(f"/api/games?date={sample_date}")
 
         if response.status_code == 200:
             data = response.get_json()

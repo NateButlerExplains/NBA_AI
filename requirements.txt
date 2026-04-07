@@ -4,9 +4,6 @@ python-dotenv==1.2.1
 PyYAML==6.0.3
 requests==2.32.5
 
-# Database
-SQLAlchemy==2.0.44
-
 # Data Processing
 numpy==2.3.5
 pandas==2.3.3
@@ -21,6 +18,7 @@ scikit-learn==1.7.2
 scipy==1.16.3
 xgboost==3.1.2
 joblib==1.5.2
+optuna==4.7.0
 
 # PyTorch - Optional for public release (MLP/Ensemble predictors)
 # Required for transformer training (Phase 1+ neural model, needs CUDA GPU)
@@ -33,7 +31,7 @@ joblib==1.5.2
 # NBA API
 nba_api==1.11.3
 
-# openai - removed Nov 2025, rebuilding GenAI from scratch with different architecture
+# openai - removed (generative path deprecated)
 
 # Logging
 python-json-logger==4.0.0
@@ -47,7 +45,7 @@ matplotlib==3.9.1
 seaborn==0.13.2
 
 # Removed unused dependencies:
-# - wandb (experiment tracking - removed Nov 2025, not needed for GenAI path)
+# - wandb (experiment tracking - removed, not needed)
 # - docker-pycreds (was a wandb dependency, not directly used)
 # - pyan3 (code analysis tool, not needed for runtime)
 # - Many transitive dependencies that pip will install automatically

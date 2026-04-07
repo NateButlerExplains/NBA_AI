@@ -87,8 +87,9 @@ class TestConfigPaths:
         for predictor_name, predictor_config in config["predictors"].items():
             model_paths = predictor_config.get("model_paths", [])
 
-            # Ensemble uses predictor names, not file paths
-            if predictor_name == "Ensemble":
+            # Pipeline predictors (Phase5, Phase3, Ensemble) use dict-style
+            # paths or predictor names rather than simple file path lists
+            if predictor_name in ("Ensemble", "Phase5", "Phase3"):
                 continue
 
             for path in model_paths:
