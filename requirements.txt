@@ -50,3 +50,4 @@ seaborn==0.13.2
 # - docker-pycreds (was a wandb dependency, not directly used)
 # - pyan3 (code analysis tool, not needed for runtime)
 # - Many transitive dependencies that pip will install automatically
+aiohttp>=3.9.0  # collect_pbpstats.py

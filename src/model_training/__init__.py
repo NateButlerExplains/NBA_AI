@@ -1,12 +1,6 @@
 """
-model_training module
+Model training utilities.
 
-Contains training, evaluation, and model registry for NBA prediction models.
-
-Components:
-- train.py: Unified training script for Linear/Tree/MLP models
-- evaluation.py: Evaluation metrics and reporting
-- model_registry.py: JSON-based model tracking and deployment
-- models.py: Neural network architecture definitions
-- modeling_utils.py: Data loading utilities
+Contains model class definitions (MLP, MLPv2) used by prediction engines.
+Training is done via scripts/train_legacy_models.py.
 """

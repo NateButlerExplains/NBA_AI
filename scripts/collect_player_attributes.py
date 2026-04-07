@@ -30,7 +30,7 @@ from src.logging_config import setup_logging
 # --- Constants ---
 
 PLAYER_EXPERIENCE_PATH = (
-    PROJECT_ROOT / "data" / "phase3_exp7_cache" / "player_experience.json"
+    PROJECT_ROOT / "data" / "phase3_cache" / "player_experience.json"
 )
 
 CREATE_TABLE_SQL = """

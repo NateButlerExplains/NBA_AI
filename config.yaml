@@ -2,7 +2,7 @@ project:
   root: "${PROJECT_ROOT}"  # Should be updated in the .env file.
 
 database:
-  path: "${DATABASE_PATH}"  # Should be updated in the .env file. Defaults to data/NBA_AI_BASE.sqlite
+  path: "${DATABASE_PATH}"  # Set via DATABASE_PATH in .env file
 
 # Limited to seasons with data in database.
 # Developers can add more seasons locally if needed.
