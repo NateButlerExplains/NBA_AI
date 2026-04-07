@@ -11,10 +11,10 @@ Supports:
 
 Usage:
     # Train single model
-    python -m src.model_training.train --model_type Linear --train_season 2023-2024 --test_season 2024-2025
+    python -m src.model_training.train --model_type Linear --train_season 2024-2025 --test_season 2025-2026
 
     # Train all models
-    python -m src.model_training.train --model_type all --train_season 2023-2024 --test_season 2024-2025
+    python -m src.model_training.train --model_type all --train_season 2024-2025 --test_season 2025-2026
 
 Model Versioning:
     Models saved as: {type}_v{version}_mae{score}.{ext}

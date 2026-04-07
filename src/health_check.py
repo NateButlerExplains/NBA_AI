@@ -15,9 +15,9 @@ Phase 2: Season-level database validation with checks for:
     - Temporal: Status matches game dates
 
 Usage:
-    python -m src.health_check --season=2024-2025
-    python -m src.health_check --season=2024-2025 --skip-pipeline --json
-    python -m src.health_check --season=2024-2025 --format=table
+    python -m src.health_check --season=2025-2026
+    python -m src.health_check --season=2025-2026 --skip-pipeline --json
+    python -m src.health_check --season=2025-2026 --format=table
 
 Exit Codes:
     0: All checks passed
@@ -1619,9 +1619,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python -m src.health_check --season=2024-2025
-    python -m src.health_check --season=2024-2025 --skip-pipeline --json
-    python -m src.health_check --season=2024-2025 --format=table --log_level=DEBUG
+    python -m src.health_check --season=2025-2026
+    python -m src.health_check --season=2025-2026 --skip-pipeline --json
+    python -m src.health_check --season=2025-2026 --format=table --log_level=DEBUG
         """,
     )
 

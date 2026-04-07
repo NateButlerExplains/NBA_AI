@@ -102,15 +102,13 @@ def _filter_failed_covers_dates(
         Filtered list of dates that should be attempted
     """
     # Create table to track failed attempts if it doesn't exist
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS CoversAttempts (
             date_str TEXT PRIMARY KEY,
             last_attempt_datetime TEXT NOT NULL,
             match_count INTEGER DEFAULT 0
         )
-    """
-    )
+    """)
 
     # Filter out dates attempted recently:
     # - Zero matches: cache for 6 hours (date mismatch, try again later)
@@ -747,7 +745,11 @@ def fetch_betting_for_game(
 
     # Get ESPN event ID
     # Extract time as string (HH:MM:SS) from datetime object for timezone checking
-    game_time_str = game_datetime.strftime("%H:%M:%S") if isinstance(game_datetime, datetime) else game_datetime
+    game_time_str = (
+        game_datetime.strftime("%H:%M:%S")
+        if isinstance(game_datetime, datetime)
+        else game_datetime
+    )
     espn_id = get_espn_event_id(
         game_id, game_date, home_team, away_team, game_time_utc=game_time_str
     )
@@ -1303,12 +1305,18 @@ def _fetch_espn_batch(games: list, conn: sqlite3.Connection, stage_logger=None) 
         game_datetime_str = game["date_time_utc"]
         game_datetime = datetime.strptime(game_datetime_str, "%Y-%m-%dT%H:%M:%SZ")
         existing = existing_betting.get(game_id)
-        if not (existing and _should_use_cache(existing, game_status, now, game_datetime)):
+        if not (
+            existing and _should_use_cache(existing, game_status, now, game_datetime)
+        ):
             all_cached = False
             break
 
     # Only show progress bar if we're fetching (not all cached)
-    pbar = None if all_cached else tqdm(games, desc="Tier 1: ESPN API", unit="game", leave=False)
+    pbar = (
+        None
+        if all_cached
+        else tqdm(games, desc="Tier 1: ESPN API", unit="game", leave=False)
+    )
 
     for game in games:
         game_id = game["game_id"]
@@ -1683,13 +1691,13 @@ Examples:
   python -m src.database_updater.betting
   
   # Update specific season
-  python -m src.database_updater.betting --season=2024-2025
-  
+  python -m src.database_updater.betting --season=2025-2026
+
   # Backfill historical season (Tier 3 Covers team schedules)
-  python -m src.database_updater.betting --backfill --season=2023-2024
-  
+  python -m src.database_updater.betting --backfill --season=2024-2025
+
   # Force re-fetch even if finalized
-  python -m src.database_updater.betting --season=2024-2025 --force
+  python -m src.database_updater.betting --season=2025-2026 --force
   
   # Update specific games
   python -m src.database_updater.betting --game_ids=0022400123,0022400124

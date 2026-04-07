@@ -18,10 +18,10 @@ per-game player-level stats that go beyond standard box scores:
 Data coverage: The API covers 2000-01 through the current season.
 
 Usage:
-    python scripts/collect_pbpstats.py --season 2024-2025
+    python scripts/collect_pbpstats.py --season 2025-2026
     python scripts/collect_pbpstats.py --all
     python scripts/collect_pbpstats.py --all --concurrency 5
-    python scripts/collect_pbpstats.py --season 2024-2025 --include-playoffs
+    python scripts/collect_pbpstats.py --season 2025-2026 --include-playoffs
 """
 
 import argparse

@@ -188,7 +188,6 @@ def create_dataloaders(
         dataloaders["train"] = DataLoader(
             train_dataset,
             batch_size=batch_size,
-
             # -----------------------------------------------------------------
             # SHUFFLE=TRUE: SAFE FOR THIS ARCHITECTURE
             # -----------------------------------------------------------------
@@ -210,7 +209,6 @@ def create_dataloaders(
             # 3. Each epoch traverses the data in a different order, providing
             #    beneficial stochasticity that helps generalization.
             shuffle=True,
-
             # -----------------------------------------------------------------
             # COLLATE_FN: COMBINING SAMPLES INTO BATCHES
             # -----------------------------------------------------------------
@@ -236,7 +234,6 @@ def create_dataloaders(
             # It preserves game_lengths in the batch, and the EventEncoder
             # uses those to build src_key_padding_mask during the forward pass.
             collate_fn=collate_games,
-
             # -----------------------------------------------------------------
             # NUM_WORKERS: PARALLEL DATA LOADING
             # -----------------------------------------------------------------
@@ -262,7 +259,6 @@ def create_dataloaders(
             # IMPORTANT: On Windows, num_workers > 0 requires specific
             # if __name__ == "__main__": guards due to multiprocessing quirks.
             num_workers=num_workers,
-
             # -----------------------------------------------------------------
             # PIN_MEMORY: FASTER CPU-TO-GPU TRANSFER
             # -----------------------------------------------------------------
@@ -287,7 +283,6 @@ def create_dataloaders(
             # MEMORY COST: Pinned memory is slightly more expensive to
             # allocate and reduces available system RAM for other uses.
             pin_memory=pin_memory and torch.cuda.is_available(),
-
             # -----------------------------------------------------------------
             # DROP_LAST: HANDLING INCOMPLETE FINAL BATCHES
             # -----------------------------------------------------------------
@@ -413,10 +408,10 @@ def create_single_dataloader(
         A configured DataLoader ready for iteration.
 
     Example:
-        >>> # Create loader for just the 2023-2024 season
+        >>> # Create loader for a single season
         >>> loader = create_single_dataloader(
         ...     tokenizer=tokenizer,
-        ...     seasons=["2023-2024"],
+        ...     seasons=["2025-2026"],
         ...     batch_size=16,
         ... )
         >>> for batch in loader:
@@ -737,8 +732,10 @@ def test_dataloader():
     for i, batch in enumerate(loader):
         if i >= 3:
             break
-        print(f"  Batch {i+1}: {len(batch['game_ids'])} games, "
-              f"home_history shape {batch['home_history']['action_type_ids'].shape}")
+        print(
+            f"  Batch {i+1}: {len(batch['game_ids'])} games, "
+            f"home_history shape {batch['home_history']['action_type_ids'].shape}"
+        )
 
     print("\n=== Test Complete ===")
     return 0

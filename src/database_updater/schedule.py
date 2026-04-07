@@ -16,7 +16,7 @@ Functions:
 Usage:
 - Typically run as part of a larger data collection pipeline.
 - Script can be run directly from the command line (project root) to fetch and save NBA schedule data:
-    python -m src.database_updater.schedule --season=2023-2024 --log_level=DEBUG
+    python -m src.database_updater.schedule --season=2025-2026 --log_level=DEBUG
 - Successful execution will print the number of games fetched and saved along with logging information.
 """
 

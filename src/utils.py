@@ -461,7 +461,7 @@ class StageLogger:
     Unified logger for pipeline stages - outputs ONE line per stage.
 
     Format: [Stage] season: +added ~updated -removed (total, validation) | duration | api_calls
-    Example: [Schedule] 2024-2025: +3 ~47 -0 (1230 total, WARN: 18 TBD) | 1.2s | 1 API call
+    Example: [Schedule] 2025-2026: +3 ~47 -0 (1230 total, WARN: 18 TBD) | 1.2s | 1 API call
     """
 
     def __init__(self, stage_name: str):
