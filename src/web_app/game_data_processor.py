@@ -157,16 +157,34 @@ def process_game_data(games, user_tz=None):
 
         outbound_game_data["pred_win_pct"] = pred_win_pct_str
 
-        # Spread in Vegas convention (negative = home favored)
-        # Model's pred_spread: positive = home advantage → negate for display
+        # Format spreads as "TEAM by X" (e.g., "BOS by 6.5")
+        home_abbr = outbound_game_data["home"]
+        away_abbr = outbound_game_data["away"]
+
+        def _spread_display(spread_val, home, away):
+            """Format spread as 'TEAM by X'. Positive = home favored."""
+            if spread_val is None or spread_val == "":
+                return ""
+            v = float(spread_val)
+            if v > 0:
+                return f"{home} by {v:.1f}"
+            elif v < 0:
+                return f"{away} by {abs(v):.1f}"
+            return "Pick"
+
+        # Model's pred_spread: positive = home advantage
         outbound_game_data["pred_spread"] = (
-            f"{-pred_spread:+.1f}" if pred_spread != "" else ""
+            _spread_display(pred_spread, home_abbr, away_abbr)
+            if pred_spread != ""
+            else ""
         )
 
-        # Vegas opening spread (from Betting table)
+        # Vegas opening spread: negative = home favored → negate for our convention
         opening_spread = game.get("opening_spread")
         outbound_game_data["opening_spread"] = (
-            f"{opening_spread:+.1f}" if opening_spread is not None else ""
+            _spread_display(-opening_spread, home_abbr, away_abbr)
+            if opening_spread is not None
+            else ""
         )
 
         # Determine if predicted winner was correct (for completed games)

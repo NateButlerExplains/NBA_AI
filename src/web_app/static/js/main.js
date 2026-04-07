@@ -286,11 +286,14 @@ function showGameDetails(gameId) {
       template.querySelector("#templatePredictedSpread").textContent =
         game.pred_spread || "-";
 
-      // Show actual margin for completed games
+      // Show actual margin for completed games as "TEAM by X"
       if (gameStatusCode === 3 && homeScore !== "" && awayScore !== "") {
-        const actualMargin = homeScore - awayScore;
-        const marginStr = (actualMargin >= 0 ? "+" : "") + actualMargin;
-        template.querySelector("#templateActualMargin").textContent = marginStr;
+        const margin = homeScore - awayScore;
+        let resultStr;
+        if (margin > 0) resultStr = `${home} by ${margin}`;
+        else if (margin < 0) resultStr = `${away} by ${Math.abs(margin)}`;
+        else resultStr = "Tie";
+        template.querySelector("#templateActualMargin").textContent = resultStr;
         template.querySelector("#templateResultSection").style.display =
           "block";
       }
