@@ -13,12 +13,13 @@ tzlocal==5.3.1
 pdfplumber==0.11.9
 beautifulsoup4==4.13.3
 
+# Training scripts (scripts/train_legacy_models.py) additionally require: optuna
+
 # Machine Learning
 scikit-learn==1.7.2
 scipy==1.16.3
 xgboost==3.1.2
 joblib==1.5.2
-optuna==4.7.0
 
 # PyTorch - Optional for public release (MLP/Ensemble predictors)
 # Required for transformer training (Phase 1+ neural model, needs CUDA GPU)

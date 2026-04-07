@@ -32,7 +32,7 @@ import torch.nn.functional as F
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.database import get_db
+from src.database import DB_PATH, get_db
 from src.phase5.cache_builder import (
     ALTITUDE_MAP,
     BOX_STAT_COLUMNS,
@@ -51,7 +51,6 @@ from src.phase5.model import NKEH
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = PROJECT_ROOT / "data" / "NBA_AI_full.sqlite"
 L1_VECTORS_DIR = PROJECT_ROOT / "data" / "l2_cache" / "l1_vectors"
 L1_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "phase5" / "phase2_best.pt"
 

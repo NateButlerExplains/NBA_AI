@@ -349,9 +349,9 @@ class Phase3Predictor(BasePredictor):
         """
         from src.transformer.phase2.sequence_builder import Phase2Sample
         from src.transformer.phase2.cache_builder import HISTORICAL_TO_CURRENT
-        from src.database import get_db
+        from src.database import DB_PATH, get_db
 
-        db_path = PROJECT_ROOT / "data" / "NBA_AI_full.sqlite"
+        db_path = DB_PATH
 
         # Step 1: Look up game metadata from the DB
         with get_db(str(db_path)) as conn:

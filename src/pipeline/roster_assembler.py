@@ -20,11 +20,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-from src.database import get_db
+from src.database import DB_PATH, get_db
 
 logger = logging.getLogger(__name__)
-
-DB_PATH = PROJECT_ROOT / "data" / "NBA_AI_full.sqlite"
 
 
 class RosterAssembler:

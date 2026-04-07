@@ -22,6 +22,7 @@ import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+from src.database import DB_PATH
 from src.phase5.l2_config import L2Config
 from src.phase5.l2_model import PlayerSynergyNetwork
 from src.phase5.l3_config import L3Config
@@ -34,7 +35,6 @@ from src.predictions.prediction_engines.base_predictor import BasePredictor
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = PROJECT_ROOT / "data" / "NBA_AI_full.sqlite"
 L1_VECTORS_DIR = PROJECT_ROOT / "data" / "l2_cache" / "l1_vectors"
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints" / "phase5"
 PHASE_B_CACHE = PROJECT_ROOT / "data" / "phase_b_cache"

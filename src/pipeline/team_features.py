@@ -26,11 +26,10 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-from src.database import get_db
+from src.database import DB_PATH, get_db
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = PROJECT_ROOT / "data" / "NBA_AI_full.sqlite"
 L3L4_CACHE_DIR = PROJECT_ROOT / "data" / "l3l4_cache"
 
 # Altitude map (must match build_l3l4_cache.py exactly)

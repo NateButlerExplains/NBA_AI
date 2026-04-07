@@ -24,34 +24,22 @@ from typing import Optional
 
 import torch
 
-from src.database import get_db
+from src.database import DB_PATH, get_db
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DB_PATH = PROJECT_ROOT / "data" / "NBA_AI_full.sqlite"
 
-# All seasons the Phase 3 cache covers (matches Exp 5 config)
-DEFAULT_CACHE_SEASONS = [
-    "2008-2009",
-    "2009-2010",
-    "2010-2011",
-    "2011-2012",
-    "2012-2013",
-    "2013-2014",
-    "2014-2015",
-    "2015-2016",
-    "2016-2017",
-    "2017-2018",
-    "2018-2019",
-    "2019-2020",
-    "2020-2021",
-    "2021-2022",
-    "2022-2023",
-    "2023-2024",
-    "2024-2025",
-    "2025-2026",
-]
+
+def _get_available_seasons() -> list[str]:
+    """Get all seasons with finalized games from the database."""
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT DISTINCT season FROM Games
+            WHERE status = 3 AND season_type IN ('Regular Season', 'Post Season')
+            ORDER BY season
+        """).fetchall()
+    return [row[0] for row in rows if row[0]]
 
 
 class Phase3CacheUpdater:
@@ -64,7 +52,7 @@ class Phase3CacheUpdater:
         db_path: Optional[str] = None,
     ):
         self.cache_dir = Path(cache_dir)
-        self.seasons = seasons or DEFAULT_CACHE_SEASONS
+        self.seasons = seasons or _get_available_seasons()
         self.db_path = str(db_path) if db_path else str(DB_PATH)
         self._cached_game_ids: Optional[set[str]] = None
 
