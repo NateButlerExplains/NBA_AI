@@ -39,7 +39,7 @@ from src.config import config
 from src.database import create_connection, get_db
 
 # Suppress verbose DEBUG logging from pdfminer (used by pdfplumber)
-logging.getLogger('pdfminer').setLevel(logging.WARNING)
+logging.getLogger("pdfminer").setLevel(logging.WARNING)
 
 DB_PATH = config["database"]["path"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -459,15 +459,13 @@ def _ensure_injury_cache_table(db_path: str = DB_PATH):
     """Create InjuryCache table if it doesn't exist."""
     with get_db(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS InjuryCache (
                 report_date TEXT PRIMARY KEY,
                 last_fetched_at TEXT NOT NULL,
                 status TEXT DEFAULT 'success'
             )
-            """
-        )
+            """)
         # Add status column if it doesn't exist (migration for existing tables)
         cursor.execute("PRAGMA table_info(InjuryCache)")
         columns = [row[1] for row in cursor.fetchall()]
@@ -601,7 +599,20 @@ def _should_fetch_injury_date(report_date: datetime, db_path: str = DB_PATH) -> 
         )
         return True
     else:
-        # Past date: permanent cache
+        # Past date: permanent cache UNLESS it was 'not_found' within the last 7 days
+        # (the NBA publishes injury PDFs at 7pm ET, so a 10am fetch may miss them)
+        from src.utils import get_utc_now
+
+        if cached_status == "not_found":
+            now_utc = get_utc_now()
+            if last_fetch.tzinfo is None:
+                last_fetch = last_fetch.replace(tzinfo=timezone.utc)
+            days_ago = (now_utc - last_fetch).total_seconds() / 86400
+            if days_ago < 7:
+                logging.debug(
+                    f"Past date {date_str} was 'not_found' {days_ago:.1f} days ago - retrying"
+                )
+                return True
         return False
 
 
@@ -740,27 +751,23 @@ def _ensure_injury_unique_constraint(db_path: str = DB_PATH):
         logging.debug(
             "Removing duplicate injury records before adding unique constraint..."
         )
-        cursor.execute(
-            """
+        cursor.execute("""
             DELETE FROM InjuryReports
             WHERE id NOT IN (
                 SELECT MIN(CASE WHEN nba_player_id IS NOT NULL THEN id ELSE id + 1000000000 END)
                 FROM InjuryReports
                 GROUP BY player_name, report_timestamp, source, COALESCE(team, '')
             )
-        """
-        )
+        """)
         removed = cursor.rowcount
         if removed > 0:
             logging.info(f"Removed {removed} duplicate injury records")
 
         # Add semantic unique constraint (without nba_player_id which can be NULL)
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_injury_semantic_unique 
             ON InjuryReports(player_name, report_timestamp, source, COALESCE(team, ''))
-        """
-        )
+        """)
         conn.commit()
 
 
