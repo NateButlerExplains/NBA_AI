@@ -35,14 +35,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Checkpoint search order (first existing file wins)
 DEFAULT_CHECKPOINT_PATHS = [
-    PROJECT_ROOT / "checkpoints" / "phase3" / "phase3_exp5b_slim" / "best.pt",
-    PROJECT_ROOT / "checkpoints" / "phase3" / "phase3_exp5_roster_temporal" / "best.pt",
+    PROJECT_ROOT / "models" / "phase3" / "model.pt",
+    PROJECT_ROOT / "models" / "phase3" / "model_fallback.pt",
 ]
 
 # Config search order (must match selected checkpoint)
 DEFAULT_CONFIG_PATHS = [
-    PROJECT_ROOT / "configs" / "transformer" / "phase3_exp5b_slim.yaml",
-    PROJECT_ROOT / "configs" / "transformer" / "phase3_exp5_roster_temporal.yaml",
+    PROJECT_ROOT / "models" / "phase3" / "config.yaml",
+    PROJECT_ROOT / "models" / "phase3" / "config_fallback.yaml",
 ]
 
 DEFAULT_CACHE_DIR = PROJECT_ROOT / "data" / "phase3_cache"

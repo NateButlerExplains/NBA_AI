@@ -36,7 +36,7 @@ from src.predictions.prediction_engines.base_predictor import BasePredictor
 logger = logging.getLogger(__name__)
 
 L1_VECTORS_DIR = PROJECT_ROOT / "data" / "l2_cache" / "l1_vectors"
-CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints" / "phase5"
+MODELS_DIR = PROJECT_ROOT / "models" / "phase5"
 PHASE_B_CACHE = PROJECT_ROOT / "data" / "phase_b_cache"
 
 # Maximum players per team for L2 (must match training)
@@ -120,14 +120,14 @@ class Phase5Predictor(BasePredictor):
 
         # Load checkpoints
         l2_ckpt = torch.load(
-            str(CHECKPOINT_DIR / "l2_best.pt"),
+            str(MODELS_DIR / "l2.pt"),
             map_location=self._device,
             weights_only=False,
         )
         self._l2_model.load_state_dict(l2_ckpt["model_state_dict"], strict=False)
 
         c_ckpt = torch.load(
-            str(CHECKPOINT_DIR / "phase_c_best.pt"),
+            str(MODELS_DIR / "l3l4.pt"),
             map_location=self._device,
             weights_only=False,
         )

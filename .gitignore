@@ -17,12 +17,9 @@ models.zip
 # Data directory (download from GitHub Releases)
 /data/
 
-# Models directory (trained models - download from GitHub Releases or train locally)
+# Trained models (weights, configs, metadata - train locally)
 # Leading slash restricts to root-level only, so src/transformer/models/ is NOT ignored.
 /models/
-
-# Training checkpoints (large binary files, train locally)
-/checkpoints/
 
 # Documentation build
 docs/_site/

@@ -52,7 +52,7 @@ from src.phase5.model import NKEH
 logger = logging.getLogger(__name__)
 
 L1_VECTORS_DIR = PROJECT_ROOT / "data" / "l2_cache" / "l1_vectors"
-L1_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "phase5" / "phase2_best.pt"
+L1_CHECKPOINT = PROJECT_ROOT / "models" / "phase5" / "l1.pt"
 
 # Maximum sequence length for full-sequence fallback (new players)
 MAX_LEN = 300
