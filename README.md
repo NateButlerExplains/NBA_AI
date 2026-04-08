@@ -70,9 +70,10 @@ The system runs multiple prediction engines, each taking a different approach to
 
 ### Performance
 
-All models are evaluated against the spread (ATS) using Vegas closing lines. The chart below shows live prediction performance — predictions generated before each game with no data leakage.
+All models are evaluated against the spread (ATS) using Vegas closing lines on live predictions only — predictions generated before each game with no data leakage. Performance chart will be updated once sufficient live data has accumulated.
 
-![Prediction Engine Performance Metrics](docs/images/predictor_performance.png)
+<!-- Regenerate with: python scripts/generate_readme_chart.py -->
+<!-- ![Prediction Engine Performance Metrics](docs/images/predictor_performance.png) -->
 
 ## Quick Start
 
