@@ -6,7 +6,7 @@
 * [Project Overview](#project-overview)
     * [Architecture](#architecture)
     * [Guiding Principles](#guiding-principles)
-* [Web App](#web-app)
+* [Web App & Dashboard](#web-app--dashboard)
 * [Prediction Engines](#prediction-engines)
 * [Quick Start](#quick-start)
 * [Development Status](#development-status)
@@ -17,7 +17,7 @@
 
 This project predicts NBA game spreads and winners using a combination of deep learning models and traditional ML. Unlike my previous project, [NBA Betting](https://github.com/NBA-Betting/NBA_Betting/tree/main), which focused on extensive data collection and feature engineering, this project focuses on building advanced prediction models that learn directly from play-by-play data, box scores, and player tracking — minimizing manual feature engineering in favor of letting the models find the signal.
 
-The system runs a fully automated daily pipeline that collects game data, updates player ability models, and generates pre-game predictions for all upcoming games using 7 different prediction engines. A Flask web app displays predictions alongside Vegas opening lines, with a dashboard for tracking model performance over time.
+The system runs a fully automated daily pipeline that collects game data, updates player ability models, and generates pre-game predictions for all upcoming games using multiple prediction engines. A Flask web app displays predictions alongside Vegas opening lines, with a dashboard for tracking model performance over time.
 
 ### Architecture
 
@@ -41,29 +41,36 @@ The system has three main layers:
 - **Advanced Modeling System:** Developing a system that is not only a learning tool but also potentially novel compared to the methods used by odds setters.
 - **Minimal Human Decisions:** Reducing the reliance on human decision-making to minimize errors and the limitations of individual expertise.
 
-## Web App
+## Web App & Dashboard
 
 ![Web App Home Page](docs/images/web_app_homepage.png)
 ![Web App Game Details](docs/images/web_app_game_details.png)
+![Web App Dashboard](docs/images/web_app_dashboard.png)
 
 ## Prediction Engines
 
-Currently, there are a few basic prediction engines used to predict the outcomes of NBA games. These serve as placeholders for the more advanced DL and GenAI engines that will be implemented in the future. The current engines make pre-game predictions for home and away scores using ML models. These predictions are then used to calculate the win percentage and margin for the home team. Updated (after game start) predictions are based on a combination of the current game score, time remaining, and the pre-game predictions.
+The system runs multiple prediction engines, each taking a different approach to predicting game spreads and winners. All engines generate pre-game predictions that are evaluated against Vegas closing lines.
 
-### Current Prediction Engines
+### Deep Learning Models
 
-- **Baseline**: A simple predictor that predicts scores based on teams' PPG and opponents' PPG.
-- **Linear**: Ridge Regression model using 34 rolling average features from prior game states.
-- **Tree**: XGBoost model using the same features as the Linear model (default, best performance).
-- **MLP** *(optional)*: PyTorch MLP model - requires uncommenting PyTorch in requirements.txt.
-- **Ensemble** *(optional)*: Weighted average of Linear (30%), Tree (40%), and MLP (30%) - requires PyTorch.
+- **Phase 5 (Hierarchical)**: A 4-level neural architecture that models basketball from the ground up — individual player abilities (L1, Kalman filter), player synergy (L2, GATv2), team effects (L3), and game-level matchup prediction (L4). ~1.4M parameters, trained on play-by-play and box score data.
 
+- **Phase 3 (Transformer)**: A roster-conditioned temporal transformer that processes each team's full season history with player-level attention. ~25M parameters, captures game-to-game dynamics and roster interactions.
 
-### Performance Metrics
+### Traditional ML Models
 
-The current metrics are based on pre-game predictions for the home and away team scores, along with downstream metrics such as win percentage and margin. These simple predictors currently outperform the baseline predictor.
+- **Baseline**: Formula-based predictor using team PPG and opponent PPG averages.
+- **Linear**: Ridge Regression on 43 rolling features from prior game states.
+- **Tree**: XGBoost on the same features, with Optuna-tuned hyperparameters.
+- **MLP**: PyTorch neural network (256→128→64) with batch normalization and Huber loss.
 
-In the future, a more challenging baseline based on the Vegas spread will be added when the DL and GenAI models are implemented.
+### Ensemble
+
+- **Ensemble**: Equal-weight combination of all five models above. Averages spreads arithmetically and win probabilities in log-odds space.
+
+### Performance
+
+All models are evaluated against the spread (ATS) using Vegas closing lines. The chart below shows live prediction performance — predictions generated before each game with no data leakage.
 
 ![Prediction Engine Performance Metrics](docs/images/predictor_performance.png)
 
@@ -72,7 +79,8 @@ In the future, a more challenging baseline based on the Vegas spread will be add
 ### Requirements
 
 - Python 3.10+
-- ~2GB disk space (database + models + dependencies)
+- PyTorch (required for Phase5, Phase3, and MLP predictors)
+- ~30GB disk space for the full database
 
 ### Installation
 
@@ -81,85 +89,61 @@ In the future, a more challenging baseline based on the Vegas spread will be add
 git clone https://github.com/NBA-Betting/NBA_AI.git
 cd NBA_AI
 
-# Run automated setup
-python setup.py
+# Create and activate a virtual environment
+python -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your settings
 ```
 
-The setup script will:
-
-1. Create a virtual environment
-2. Install all dependencies
-3. Download the database and trained models from GitHub Releases
-4. Create your `.env` configuration file
-5. Verify the installation
+The database (~26GB) and trained model checkpoints are not included in the repository. You must build the database using the data collection pipeline and train models using the scripts in `scripts/`.
 
 ### Running the Web App
 
 ```bash
-# Activate the virtual environment
-source venv/bin/activate
-
-# Start the web app
-python start_app.py
+python start_app.py --predictor=Phase5
 ```
 
 Visit `http://localhost:5000` to view games and predictions.
 
-### Command Line Options
+Available predictors: `Phase5`, `Phase3`, `Baseline`, `Linear`, `Tree`, `MLP`, `Ensemble`
+
+Phase5 and Phase3 require PyTorch and trained checkpoints. Baseline, Linear, and Tree work out of the box once the database is populated.
+
+### Daily Pipeline
+
+The automated pipeline collects game data, updates player models, and generates predictions:
 
 ```bash
-# Use a specific predictor
-python start_app.py --predictor=Tree
-
-# Enable debug mode
-python start_app.py --debug
-
-# Set log level
-python start_app.py --log_level=DEBUG
+python -m src.pipeline.orchestrator --mode=full --season=Current
 ```
 
-Available predictors: `Baseline`, `Linear`, `Tree` (default), `MLP`*, `Ensemble`*
-
-*Requires PyTorch - uncomment in requirements.txt
+This can be scheduled via cron for fully automated operation.
 
 ---
 
 ## Development Status
 
-**This project is in active development.**
-
-The core data pipeline and prediction engines are functional. The focus is now on building advanced DL/GenAI prediction engines using play-by-play data.
+**This project is a stable release. No active development is planned.**
 
 ### Disclaimer
 
-This is a personal side project provided "as is" with no guarantees of quality, functionality, or ongoing maintenance. I've vibe-coded much of this release and while I'll try to address issues, I can't promise timely responses or fixes.
+This is a personal side project provided "as is" with no guarantees of quality, functionality, or ongoing maintenance. While I'll try to address issues, I can't promise timely responses or fixes.
 
 **For production or commercial use**: Consider using [SportsRadar](https://sportradar.com/), the official NBA data partner. Their API would greatly simplify data management compared to scraping the NBA Stats API. I use this approach only because I can't justify the cost for a personal project.
 
-### Historical Data
-
-The default setup downloads only the current season (2025-2026, ~1,300 games). A development database with 3 seasons (2023-2024 through 2025-2026, ~4,100 games total) is available from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases).
-
-To use it:
-
-1. Download `NBA_AI_dev.zip` from the latest release
-2. Extract to `data/NBA_AI_dev.sqlite`
-3. Update your `.env`:
-
-```bash
-DATABASE_PATH=data/NBA_AI_dev.sqlite
-```
-
 ### Usage Notes
 
-- **First run for a date**: When viewing a date for the first time, the app fetches data from the NBA API. This initial update may take a few seconds per game. Subsequent views are instant since data is cached in the database.
+- **Data collection**: The web app reads from the database — it does not fetch from the NBA API on page load. Run the daily pipeline to keep data current.
 
 - **Season restrictions**: By default, the web app allows seasons 2023-2024 through 2025-2026. To restrict or expand this, modify `valid_seasons` in `config.yaml`.
 
 ### Technical Notes
 
-- Default focus: 2025-2026 season (current season for public release)
-- Database: SQLite with complete pipeline (Schedule → Players → Injuries → Betting → PBP → GameStates → Boxscores → Features → Predictions)
-- Built with Python, Flask, SQLite, scikit-learn, XGBoost, and nba_api (PyTorch optional for MLP/Ensemble)
-
-
+- Database: SQLite (~26GB full) with complete pipeline (Schedule → Players → Injuries → Betting → PBP → GameStates → Boxscores → Features → Predictions)
+- Built with Python, Flask, SQLite, PyTorch, scikit-learn, XGBoost, and nba_api
