@@ -1,4 +1,4 @@
-<img src='images/nba_ai_header_15x6.png' alt='NBA AI'/>
+<img src='docs/images/nba_ai_header_15x6.png' alt='NBA AI'/>
 
 # NBA AI
 
@@ -24,7 +24,7 @@ The project is in active development with a complete data collection pipeline an
 
 The current system supports seasons 2023-2026 with complete PBP → GameStates → PlayerBox/TeamBox → Features → Predictions pipeline. The default installation includes only the current season (2025-2026); historical data is available separately. The web app provides a simple interface for displaying games with current scores and predictions.
 
-![Project Flowchart](images/project_flowchart.png)
+![Project Flowchart](docs/images/project_flowchart.png)
 
 The project is built around a few key components:
 * **Database Updater**: This component is responsible for updating the database with the latest NBA game data. It fetches data from the NBA Stats API, performs ETL operations, generates features, creates predictions, and stores the data in a SQLite database. The pipeline includes:
@@ -53,7 +53,7 @@ The project is built around a few key components:
 
 ### Future Goals
 
-![Foundational Model Outline](images/foundational_model_outline.png)
+![Foundational Model Outline](docs/images/foundational_model_outline.png)
 
 1. **Data Sourcing**: Focus on a minimal number of data sources that fundamentally describe basketball. Currently, we use play-by-play data from the NBA API. In the future, incorporating video and tracking data would be interesting, though these require considerably more resources and access.
 
@@ -65,7 +65,7 @@ The project is built around a few key components:
 
 ### Guiding Principles
 
-![Project Guiding Principles](images/guiding_principles.png)
+![Project Guiding Principles](docs/images/guiding_principles.png)
 
 - **Time Series Data Inclusive:** A focus on incorporating the sequential nature of events in games and across seasons, recognizing the significance of order and timing in the NBA.
 - **Minimal Data Collection:** Streamlining data sourcing to the essentials, aiming for maximum impact with minimal data, thereby reducing time and resource investment.
@@ -75,8 +75,8 @@ The project is built around a few key components:
 
 ## Web App
 
-![Web App Home Page](images/web_app_homepage.png)
-![Web App Game Details](images/web_app_game_details.png)
+![Web App Home Page](docs/images/web_app_homepage.png)
+![Web App Game Details](docs/images/web_app_game_details.png)
 
 ## Prediction Engines
 
@@ -97,7 +97,7 @@ The current metrics are based on pre-game predictions for the home and away team
 
 In the future, a more challenging baseline based on the Vegas spread will be added when the DL and GenAI models are implemented.
 
-![Prediction Engine Performance Metrics](images/predictor_performance.png)
+![Prediction Engine Performance Metrics](docs/images/predictor_performance.png)
 
 ## Quick Start
 
