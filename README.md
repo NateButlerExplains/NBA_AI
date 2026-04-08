@@ -70,7 +70,7 @@ The system runs multiple prediction engines, each taking a different approach to
 
 ### Performance
 
-All models are evaluated against the spread (ATS) using Vegas closing lines on live predictions only — predictions generated before each game with no data leakage. Performance chart will be updated once sufficient live data has accumulated.
+All models are evaluated against the spread (ATS) using Vegas closing lines. Performance chart will be updated once sufficient live data has accumulated.
 
 <!-- Regenerate with: python scripts/generate_readme_chart.py -->
 <!-- ![Prediction Engine Performance Metrics](docs/images/predictor_performance.png) -->
@@ -102,7 +102,9 @@ cp .env.example .env
 # Edit .env with your settings
 ```
 
-The database (~26GB) and trained model checkpoints are not included in the repository. You must build the database using the data collection pipeline and train models using the scripts in `scripts/`.
+A starter database with the current season (~1.3GB) is available from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases). Download and extract to `data/NBA_AI_starter.sqlite`, then update your `.env` to point to it. This includes all game data for the current season — enough to run the web app and daily pipeline with the Baseline predictor.
+
+Trained model checkpoints for the deep learning and ML predictors are not included. To use Phase5, Phase3, or the ML predictors, train your own models using the scripts in `scripts/`.
 
 ### Running the Web App
 
