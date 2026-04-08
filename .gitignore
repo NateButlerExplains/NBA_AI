@@ -1,71 +1,50 @@
-# Project Specific
+# === Project-specific ===
 
-# Development/planning docs (local only)
-TODO.md
-DATA_MODEL.md
-ARCHITECTURE.md
-
-# GitHub Copilot workspace instructions (local only)
-.github/
-
-# Test scripts (local only)
-test_setup.sh
-
-# Release assets (upload to GitHub Releases, not repo)
-models.zip
-
-# Data directory (download from GitHub Releases)
+# Data (database, caches - too large for git)
 /data/
 
-# Trained models (weights, configs, metadata - train locally)
+# Trained models (weights, configs, metadata)
 # Leading slash restricts to root-level only, so src/transformer/models/ is NOT ignored.
 /models/
 
-# Documentation build
+# Pipeline logs
+/logs/
+
+# Documentation build artifacts
 docs/_site/
 
-# Environment and build files
-.nba_ai_venv
+# === Environment ===
 .env
-.venv
-env/
+.envrc
 venv/
-ENV/
-env.bak/
-venv.bak/
+.venv/
+env/
 
-# Byte-compiled / optimized / DLL files
+# === Python ===
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Distribution / packaging
+*.egg-info/
+*.egg
 build/
 dist/
-*.egg-info/
-.installed.cfg
-*.egg
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
+# === Testing ===
 .coverage
 .coverage.*
-.cache
+htmlcov/
 .pytest_cache/
+.tox/
 
-# Logs
-*.log
-
-# Editor and OS files
+# === Editors & OS ===
 .DS_Store
 *.swp
 *~
 .vscode/
 .idea/
 
-# Claude Code
+# === Claude Code ===
 .claude/
 
-# direnv
-.envrc
+# === Local-only files ===
+test_setup.sh
