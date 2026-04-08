@@ -113,14 +113,12 @@
     <div class="modal fade" id="gameDetailsModal" tabindex="-1" aria-labelledby="gameDetailsModalLabel"
         aria-hidden="true">
         <!-- Modal Dialog Container -->
-        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-dialog modal-lg">
             <!-- Modal Content Container -->
             <div class="modal-content">
                 <!-- Modal Header -->
-                <div class="modal-header">
-                    <h5 class="modal-title" id="gameDetailsModalLabel">Game Details</h5>
-                    <!-- Close Button for Modal -->
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                <div class="modal-header justify-content-center border-bottom">
+                    <h5 class="modal-title text-center" id="gameDetailsModalLabel">Game Details</h5>
                 </div>
                 <!-- Modal Body - This is where the game details will be dynamically loaded -->
                 <div class="modal-body">
@@ -164,19 +162,24 @@
         <!-- Winner Row -->
         <div class="row mb-3 pb-3 border-bottom">
             <div class="col text-center d-flex justify-content-center align-items-center">
-                <i class="bi bi-caret-left-fill bi-caret-left-fill-custom me-1 text-success-custom" id="winnerLeftIcon"></i>
+                <i class="bi bi-caret-left-fill bi-caret-left-fill-custom me-1" id="winnerLeftIcon"></i>
                 <div>
                     <span class="text-muted" style="font-size: 0.8rem;">PREDICTED WINNER</span>
                     <h4 id="templatePredictedWinPct" class="mb-0"></h4>
                 </div>
-                <i class="bi bi-caret-right-fill bi-caret-right-fill-custom ms-1 text-success-custom" id="winnerRightIcon"></i>
+                <i class="bi bi-caret-right-fill bi-caret-right-fill-custom ms-1" id="winnerRightIcon"></i>
             </div>
         </div>
 
-        <!-- Player Information Container -->
+        <!-- Player Information Container (matches team logo columns above) -->
         <div class="row mb-3 pb-3 border-bottom">
-            <div class="col-6" id="homeTeamPlayers"></div>
-            <div class="col-6" id="awayTeamPlayers"></div>
+            <div class="col d-flex justify-content-center">
+                <div id="homeTeamPlayers"></div>
+            </div>
+            <div class="col-2"></div>
+            <div class="col d-flex justify-content-center">
+                <div id="awayTeamPlayers"></div>
+            </div>
         </div>
 
         <!-- Play By Play Section (collapsible) -->

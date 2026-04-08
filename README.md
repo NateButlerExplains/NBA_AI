@@ -4,8 +4,7 @@
 
 ## Table of Contents
 * [Project Overview](#project-overview)
-    * [Current State](#current-state)
-    * [Future Goals](#future-goals)
+    * [Architecture](#architecture)
     * [Guiding Principles](#guiding-principles)
 * [Web App](#web-app)
 * [Prediction Engines](#prediction-engines)
@@ -16,58 +15,27 @@
 
 #### Using AI to predict the outcomes of NBA games.
 
-This project aims to streamline the process of predicting NBA game outcomes by focusing on advanced AI prediction models rather than extensive data collection and management. Unlike my previous project, [NBA Betting](https://github.com/NBA-Betting/NBA_Betting/tree/main), which aimed to create a comprehensive feature set for predicting NBA games through extensive data collection, this project simplifies the process. While the previous approach benefited from various industry-derived metrics, the cost and complexity of managing the data collection were too high. This project focuses on a core data set, such as play-by-play data, and leverages deep learning and GenAI to predict game outcomes.
+This project predicts NBA game spreads and winners using a combination of deep learning models and traditional ML. Unlike my previous project, [NBA Betting](https://github.com/NBA-Betting/NBA_Betting/tree/main), which focused on extensive data collection and feature engineering, this project focuses on building advanced prediction models that learn directly from play-by-play data, box scores, and player tracking — minimizing manual feature engineering in favor of letting the models find the signal.
 
-### Current State
+The system runs a fully automated daily pipeline that collects game data, updates player ability models, and generates pre-game predictions for all upcoming games using 7 different prediction engines. A Flask web app displays predictions alongside Vegas opening lines, with a dashboard for tracking model performance over time.
 
-The project is in active development with a complete data collection pipeline and basic prediction engines. Recent infrastructure cleanup removed unnecessary complexity (Airflow orchestration, Wandb experiment tracking) to focus on the core GenAI prediction engine development.
+### Architecture
 
-The current system supports seasons 2023-2026 with complete PBP → GameStates → PlayerBox/TeamBox → Features → Predictions pipeline. The default installation includes only the current season (2025-2026); historical data is available separately. The web app provides a simple interface for displaying games with current scores and predictions.
+The system has three main layers:
+
+* **Data Collection** — Automatically collects game data, box scores, play-by-play, injury reports, and betting lines from the NBA API and ESPN into a SQLite database.
+
+* **Prediction Models** — Multiple prediction engines analyze the data and generate pre-game spread and winner predictions. Includes custom deep learning models, traditional ML models, and an ensemble.
+
+* **Web App & Dashboard** — Displays games with predictions alongside Vegas lines and actual results. A dashboard tracks each model's performance over time.
 
 ![Project Flowchart](docs/images/project_flowchart.png)
-
-The project is built around a few key components:
-* **Database Updater**: This component is responsible for updating the database with the latest NBA game data. It fetches data from the NBA Stats API, performs ETL operations, generates features, creates predictions, and stores the data in a SQLite database. The pipeline includes:
-    * `database_update_manager.py`: The main module that orchestrates the entire process.
-    * `schedule.py`: Fetches the schedule from the NBA API and updates the database.
-    * `players.py`: Fetches and updates player reference data.
-    * `nba_official_injuries.py`: Fetches injury reports from NBA's official injury report PDFs.
-    * `betting.py`: Fetches betting lines (spreads/totals) from ESPN API and Covers.com.
-    * `pbp.py`: Fetches play-by-play data for games and updates the database.
-    * `game_states.py`: Parses play-by-play data to generate game states and updates the database.
-    * `boxscores.py`: Fetches traditional boxscore stats (PlayerBox and TeamBox).
-    * `prior_states.py`: Determines prior final game states for teams.
-    * `features.py`: Uses prior final game states to generate features for the prediction engine.
-    * `prediction_manager.py`: Generates predictions for games using the chosen prediction engine.
-
-* **Games API**: This component is responsible for updating predictions for ongoing or completed games and providing the data to the web app. It fetches data from the database, generates predictions, and serves the data to the web app.
-    * `games.py`: Fetches game data from the database, manages prediction updating and data formatting.
-    * `api.py`: Defines the API endpoints.
-
-* **Web App**: This component is the front end of the project, providing a simple interface for users to view games and predictions. It is built using Flask.
-    * `start_app.py`: The main entry point for the web app found in the root directory.
-    * `app.py`: The main module that defines the Flask app and routes.
-    * `game_data_processor.py`: Formats game data from the API for the web app.
-    * `templates/`: Contains the HTML templates for the web app.
-    * `static/`: Contains the CSS and JavaScript files for the web app.
-
-### Future Goals
-
-![Foundational Model Outline](docs/images/foundational_model_outline.png)
-
-1. **Data Sourcing**: Focus on a minimal number of data sources that fundamentally describe basketball. Currently, we use play-by-play data from the NBA API. In the future, incorporating video and tracking data would be interesting, though these require considerably more resources and access.
-
-2. **Prediction Engine**: This is the core of the project and the current development focus. The current prediction engine options will be replaced with a DL and GenAI-based engine, allowing for decreased data parsing and feature engineering while also scaling to predict more complex outcomes, including individual player performance.
-
-3. **Data Storage**: Future data storage will more seamlessly integrate with the prediction engine. The storage requirements will combine the current SQL-based data used for the API and web app with more advanced vector-based storage for RAG-based GenAI models.
-
-4. **Web App**: This is the project's front end, displaying the games for the selected date along with current scores and predictions. The interface will remain simple while usability is gradually improved. A separate GenAI chat will be added in the future to allow users to interact with the prediction engine and modify individual predictions based on their preferences.
 
 ### Guiding Principles
 
 ![Project Guiding Principles](docs/images/guiding_principles.png)
 
-- **Time Series Data Inclusive:** A focus on incorporating the sequential nature of events in games and across seasons, recognizing the significance of order and timing in the NBA.
+- **Time Series Data Inclusive:** Incorporating the sequential nature of events in games and across seasons, recognizing the significance of order and timing in the NBA.
 - **Minimal Data Collection:** Streamlining data sourcing to the essentials, aiming for maximum impact with minimal data, thereby reducing time and resource investment.
 - **Wider Applicability:** Extending the scope to cover more comprehensive outcomes, moving beyond standard predictions like point spreads or over/unders.
 - **Advanced Modeling System:** Developing a system that is not only a learning tool but also potentially novel compared to the methods used by odds setters.

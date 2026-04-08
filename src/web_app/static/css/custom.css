@@ -48,8 +48,9 @@
 }
 
 .player-headshot {
-    width: 80px;
+    width: 60px;
     height: auto;
+    flex-shrink: 0;
 }
 
 .no-pbp-data {

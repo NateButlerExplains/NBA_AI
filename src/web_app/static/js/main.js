@@ -148,8 +148,7 @@ function populatePlayerDetails(players, container, gameStatusCode, limit = 5) {
 
   players.slice(0, limit).forEach((player) => {
     const playerDetailDiv = document.createElement("div");
-    playerDetailDiv.className =
-      "player-detail row d-flex align-items-center mb-3";
+    playerDetailDiv.className = "player-detail d-flex align-items-center mb-2";
 
     let statsDisplay;
     if (
@@ -169,10 +168,8 @@ function populatePlayerDetails(players, container, gameStatusCode, limit = 5) {
     }
 
     playerDetailDiv.innerHTML = `
-            <div class="col-auto">
-                <img src="${player.player_headshot_url}" alt="${player.player_name}" class="img-fluid mb-2 player-headshot">
-            </div>
-            <div class="col">
+            <img src="${player.player_headshot_url}" alt="${player.player_name}" class="player-headshot me-2">
+            <div>
                 <p class="mb-0"><strong>${player.player_name}</strong></p>
                 ${statsDisplay ? `<p class="mb-0">${statsDisplay}</p>` : ""}
             </div>
@@ -266,17 +263,17 @@ function showGameDetails(gameId) {
             ? `${homeScore} - ${awayScore}`
             : "vs";
       modalTitle.innerHTML = `
-                ${homeFullName} <img src="${homeLogoUrl}" alt="${homeFullName}" class="team-logo">
+                ${home} <img src="${homeLogoUrl}" alt="${home}" class="team-logo">
                 ${scoreDisplay}
-                <img src="${awayLogoUrl}" alt="${awayFullName}" class="team-logo"> ${awayFullName}
-                <span class="breakpoint"> - <wbr></span>${dateTimeDisplay}
+                <img src="${awayLogoUrl}" alt="${away}" class="team-logo"> ${away}
+                <br><small class="text-muted">${dateTimeDisplay}</small>
             `;
 
       const template = document
         .querySelector("#gameDetailsTemplate")
         .content.cloneNode(true);
-      template.querySelector("#templateHomeTeam").textContent = home;
-      template.querySelector("#templateAwayTeam").textContent = away;
+      template.querySelector("#templateHomeTeam").textContent = homeFullName;
+      template.querySelector("#templateAwayTeam").textContent = awayFullName;
       template.querySelector("#templateHomeLogo").src = homeLogoUrl;
       template.querySelector("#templateAwayLogo").src = awayLogoUrl;
 
@@ -320,11 +317,21 @@ function showGameDetails(gameId) {
       const winnerLeftIcon = document.getElementById("winnerLeftIcon");
       const winnerRightIcon = document.getElementById("winnerRightIcon");
 
+      // Determine arrow color: black for upcoming, green/red for completed
+      let arrowColor = "#2C3E50"; // default black
+      if (gameStatusCode === 3 && homeScore !== "" && awayScore !== "") {
+        const actualWinner =
+          homeScore > awayScore ? home : awayScore > homeScore ? away : "";
+        arrowColor = predictedWinner === actualWinner ? "#1a7f37" : "#cf222e";
+      }
+
       if (predictedWinner === home) {
         winnerLeftIcon.style.visibility = "visible";
+        winnerLeftIcon.style.color = arrowColor;
         winnerRightIcon.style.visibility = "hidden";
       } else if (predictedWinner === away) {
         winnerRightIcon.style.visibility = "visible";
+        winnerRightIcon.style.color = arrowColor;
         winnerLeftIcon.style.visibility = "hidden";
       } else {
         winnerLeftIcon.style.visibility = "hidden";
