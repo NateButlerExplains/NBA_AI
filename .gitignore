@@ -49,6 +49,9 @@ htmlcov/
 .vscode/
 .idea/
 
+# Player headshot cache (loaded from NBA CDN at runtime)
+src/web_app/static/img/player_images/
+
 # === Claude Code ===
 .claude/
 

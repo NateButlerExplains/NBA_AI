@@ -312,44 +312,15 @@ def get_season_start_date(season: str, db_path: str = DB_PATH) -> datetime:
 
 def get_player_image(player_id):
     """
-    Gets the player's image by checking locally first, then attempting to download it,
-    and finally falling back to a default image if the first two steps fail.
+    Returns the NBA CDN URL for a player's headshot image.
 
     Args:
         player_id (str): The ID of the player whose image is to be retrieved.
 
     Returns:
-        str: The relative path to the player's image from the static directory.
+        str: URL to the player's headshot on the NBA CDN, or a local default fallback.
     """
-    # Define paths using Path objects based on the PROJECT_ROOT
-    player_images_dir = PROJECT_ROOT / "src/web_app/static/img/player_images"
-    player_image_file = player_images_dir / f"{player_id}.png"
-    default_image = PROJECT_ROOT / "src/web_app/static/img/basketball_player.png"
-
-    # Check if the image exists locally
-    if player_image_file.exists():
-        return f"static/img/player_images/{player_id}.png"
-
-    # Attempt to download the image if it doesn't exist locally
-    try:
-        url = f"https://cdn.nba.com/headshots/nba/latest/260x190/{player_id}.png"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-
-        if response.status_code == 200:
-            # Save the image locally
-            with player_image_file.open("wb") as f:
-                f.write(response.content)
-            return f"static/img/player_images/{player_id}.png"
-        else:
-            print(f"Image not found at {url}, status code: {response.status_code}")
-    except requests.RequestException as e:
-        print(f"Failed to download the image for player {player_id}: {e}")
-
-    # If all else fails, return the default image
-    return str(default_image.relative_to(PROJECT_ROOT / "src/web_app/static"))
+    return f"https://cdn.nba.com/headshots/nba/latest/260x190/{player_id}.png"
 
 
 def log_execution_time(average_over=None):
