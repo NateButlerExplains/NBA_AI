@@ -493,6 +493,17 @@ def save_model(model, model_name, metrics, hyperparams, meta):
         filepath = MODELS_DIR / filename
         dump(model, filepath)
 
+        # Save scaler params so the predictor can standardize features at inference
+        scaler_path = filepath.parent / "scaler.json"
+        scaler_data = {
+            "feature_names": FEATURE_NAMES,
+            "mean": meta["scaler_mean"].tolist(),
+            "std": meta["scaler_std"].tolist(),
+        }
+        with open(scaler_path, "w") as f:
+            json.dump(scaler_data, f, indent=2)
+        log.info(f"  Saved scaler: {scaler_path}")
+
     elif model_name == "xgboost":
         from joblib import dump
 
@@ -500,6 +511,17 @@ def save_model(model, model_name, metrics, hyperparams, meta):
         filepath = MODELS_DIR / filename
         # model is (home_xgb, away_xgb) tuple
         dump(model, filepath)
+
+        # Save scaler params so the predictor can standardize features at inference
+        scaler_path = filepath.parent / "scaler.json"
+        scaler_data = {
+            "feature_names": FEATURE_NAMES,
+            "mean": meta["scaler_mean"].tolist(),
+            "std": meta["scaler_std"].tolist(),
+        }
+        with open(scaler_path, "w") as f:
+            json.dump(scaler_data, f, indent=2)
+        log.info(f"  Saved scaler: {scaler_path}")
 
     elif model_name == "mlp":
         filename = f"mlp_v{MODEL_VERSION}_mae{mae_str}.pth"
