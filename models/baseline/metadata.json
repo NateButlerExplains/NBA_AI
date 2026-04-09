@@ -1,0 +1,5 @@
+{
+    "description": "Formula-based baseline: pred_score = (team_ppg + opp_opp_ppg) / 2",
+    "requires_model_file": false,
+    "created_at": "2024-01-01"
+}

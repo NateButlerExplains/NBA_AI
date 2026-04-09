@@ -1,14 +1,20 @@
 # === Project-specific ===
 
 # Data (database, caches - too large for git)
-/data/
+/data/*
+!/data/.gitkeep
 
-# Trained models (weights, configs, metadata)
-# Leading slash restricts to root-level only, so src/transformer/models/ is NOT ignored.
-/models/
+# Deep learning models (too large / private)
+/models/phase3/
+/models/phase5/
+/checkpoints/
+/results/
+
+# Legacy models are tracked (Baseline, Linear, Tree, MLP, Ensemble)
 
 # Pipeline logs
-/logs/
+/logs/*
+!/logs/.gitkeep
 
 # Documentation build artifacts
 docs/_site/

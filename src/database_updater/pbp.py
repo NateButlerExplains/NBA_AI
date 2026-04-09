@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -146,7 +147,7 @@ def get_pbp(game_ids, pbp_endpoint="both", stage_logger=None):
 
     validate_game_ids(game_ids)
 
-    # Limit concurrency to avoid NBA API throttling during catch-up
+    n = len(game_ids)
     thread_pool_size = min(3, os.cpu_count() or 4)
     results = {}
 
@@ -169,37 +170,60 @@ def get_pbp(game_ids, pbp_endpoint="both", stage_logger=None):
 
     endpoint_priority = get_endpoint_priority(pbp_endpoint)
 
-    with requests_retry_session() as session:
-        with ThreadPoolExecutor(max_workers=thread_pool_size) as executor:
-            futures = [
-                executor.submit(
-                    fetch_game_data,
-                    session,
-                    endpoint_settings[endpoint_priority[0]]["base_url"],
-                    (
-                        endpoint_settings[endpoint_priority[1]]["base_url"]
-                        if len(endpoint_priority) > 1
-                        else None
-                    ),
-                    endpoint_settings[endpoint_priority[0]]["headers"],
-                    (
-                        endpoint_settings[endpoint_priority[1]]["headers"]
-                        if len(endpoint_priority) > 1
-                        else None
-                    ),
-                    game_id,
-                )
-                for game_id in game_ids
-            ]
-            with tqdm(
-                total=len(futures), desc="Fetching PBP", unit="game", leave=False
-            ) as pbar:
-                for future in as_completed(futures):
-                    game_id, actions_sorted = future.result()
+    def _fetch_one(session, game_id):
+        return fetch_game_data(
+            session,
+            endpoint_settings[endpoint_priority[0]]["base_url"],
+            (
+                endpoint_settings[endpoint_priority[1]]["base_url"]
+                if len(endpoint_priority) > 1
+                else None
+            ),
+            endpoint_settings[endpoint_priority[0]]["headers"],
+            (
+                endpoint_settings[endpoint_priority[1]]["headers"]
+                if len(endpoint_priority) > 1
+                else None
+            ),
+            game_id,
+        )
+
+    # Daily updates (<=15 games): use threading for speed
+    # Catch-up mode (>15 games): process in bursts with cooldown pauses
+    if n <= 15:
+        with requests_retry_session() as session:
+            with ThreadPoolExecutor(max_workers=thread_pool_size) as executor:
+                futures = [
+                    executor.submit(_fetch_one, session, gid) for gid in game_ids
+                ]
+                with tqdm(
+                    total=len(futures), desc="Fetching PBP", unit="game", leave=False
+                ) as pbar:
+                    for future in as_completed(futures):
+                        game_id, actions_sorted = future.result()
+                        results[game_id] = actions_sorted if actions_sorted else []
+                        if stage_logger:
+                            stage_logger.log_api_call()
+                        pbar.update(1)
+    else:
+        # Sequential with burst pauses to avoid NBA API throttling.
+        burst_size = 10
+        cooldown = 10  # seconds between bursts
+        logging.info(
+            f"PBP catch-up mode: {n} games, fetching {burst_size} at a time "
+            f"with {cooldown}s cooldown"
+        )
+        with requests_retry_session() as session:
+            with tqdm(total=n, desc="Fetching PBP", unit="game", leave=False) as pbar:
+                for i, game_id in enumerate(game_ids):
+                    game_id, actions_sorted = _fetch_one(session, game_id)
                     results[game_id] = actions_sorted if actions_sorted else []
                     if stage_logger:
-                        stage_logger.log_api_call()  # Track each API call
+                        stage_logger.log_api_call()
                     pbar.update(1)
+                    # Cooldown between bursts
+                    if (i + 1) % burst_size == 0 and i + 1 < n:
+                        time.sleep(cooldown)
 
     logging.debug(f"Fetched play-by-play data for {len(results)} games.")
 

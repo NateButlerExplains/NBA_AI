@@ -80,53 +80,78 @@ All models are evaluated against the spread (ATS) using Vegas closing lines. Per
 ### Requirements
 
 - Python 3.10+
-- PyTorch (required for Phase5, Phase3, and MLP predictors)
-- ~30GB disk space for the full database
+- PyTorch (required for MLP predictor; optional for others)
+- ~2GB disk space (starter database expands to ~1.4GB)
 
-### Installation
+### 1. Install
 
 ```bash
-# Clone the repository
 git clone https://github.com/NBA-Betting/NBA_AI.git
 cd NBA_AI
 
-# Create and activate a virtual environment
 python -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 
-# Configure environment
 cp .env.example .env
-# Edit .env with your settings
 ```
 
-A starter database with the current season (~1.3GB) is available from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases). Download and extract to `data/NBA_AI_starter.sqlite`, then update your `.env` to point to it. This includes all game data for the current season — enough to run the web app and daily pipeline with the Baseline predictor.
+### 2. Download the Starter Database
 
-Trained model checkpoints for the deep learning and ML predictors are not included. To use Phase5, Phase3, or the ML predictors, train your own models using the scripts in `scripts/`.
-
-### Running the Web App
+Download `NBA_AI_starter.sqlite.gz` from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases) and extract it:
 
 ```bash
-python start_app.py --predictor=Phase5
+python -c "import gzip, shutil; shutil.copyfileobj(gzip.open('NBA_AI_starter.sqlite.gz','rb'), open('data/NBA_AI_starter.sqlite','wb'))"
 ```
 
-Visit `http://localhost:5000` to view games and predictions.
+The starter database contains the current season's games, box scores, play-by-play, betting lines, injury reports, and predictions from all models. The `.env` file is already configured to use it.
 
-Available predictors: `Phase5`, `Phase3`, `Baseline`, `Linear`, `Tree`, `MLP`, `Ensemble`
+### 3. Run the Web App
 
-Phase5 and Phase3 require PyTorch and trained checkpoints. Baseline, Linear, and Tree work out of the box once the database is populated.
+```bash
+python start_app.py
+```
 
-### Daily Pipeline
+Visit `http://localhost:5000` to view games and predictions. The dashboard is at `/dashboard`.
 
-The automated pipeline collects game data, updates player models, and generates predictions:
+The web app shows whatever is in the database. With a fresh starter DB, you'll see the full season up to the date it was exported.
+
+### 4. Update Data
+
+The web app does not fetch new data on its own. To collect games that have occurred since the starter database was exported, run the pipeline:
 
 ```bash
 python -m src.pipeline.orchestrator --mode=full --season=Current
 ```
 
-This can be scheduled via cron for fully automated operation.
+> **Note:** On first run, the pipeline will backfill any missing games since the starter DB was exported. This involves many API calls with rate-limit pauses and **may take 10-30+ minutes** depending on the gap. Subsequent runs complete in 1-2 minutes.
+
+To keep data current, run the pipeline manually whenever you want, or optionally set up a cron job (Linux/Mac):
+
+```bash
+# Automated (add via 'crontab -e')
+TZ=US/Eastern
+0 10 * * * cd /path/to/NBA_AI && venv/bin/python -m src.pipeline.orchestrator --mode=full --season=Current >> logs/cron_daily.log 2>&1
+```
+
+### Included Models
+
+The repository includes trained models for four predictors that work out of the box:
+
+| Model | Type | Description |
+|-------|------|-------------|
+| **Baseline** | Formula | Team PPG averages (no model file needed) |
+| **Linear** | Ridge Regression | 43 rolling features from prior game states |
+| **Tree** | XGBoost | Same features, Optuna-tuned hyperparameters |
+| **MLP** | Neural Network | 256-128-64 architecture with Huber loss |
+
+These models are combined by the **Ensemble** predictor (equal-weight average).
+
+The deep learning models (**Phase5** and **Phase3**) are not included due to size. To use them, train your own using the scripts in `scripts/`. To retrain the legacy models on updated data:
+
+```bash
+python scripts/train_legacy_models.py --cutoff-date 2026-03-31
+```
 
 ---
 
@@ -144,9 +169,11 @@ This is a personal side project provided "as is" with no guarantees of quality, 
 
 - **Data collection**: The web app reads from the database — it does not fetch from the NBA API on page load. Run the daily pipeline to keep data current.
 
+- **API rate limits**: The pipeline uses rate-limited requests to external APIs (NBA Stats, ESPN, Covers.com). Large backfills automatically throttle to avoid being blocked. Do not run multiple pipeline instances simultaneously.
+
 - **Season restrictions**: By default, the web app allows seasons 2023-2024 through 2025-2026. To restrict or expand this, modify `valid_seasons` in `config.yaml`.
 
 ### Technical Notes
 
-- Database: SQLite (~26GB full) with complete pipeline (Schedule → Players → Injuries → Betting → PBP → GameStates → Boxscores → Features → Predictions)
+- Database: SQLite with complete pipeline (Schedule → Players → Injuries → Betting → PBP → GameStates → Boxscores → Features → Predictions)
 - Built with Python, Flask, SQLite, PyTorch, scikit-learn, XGBoost, and nba_api

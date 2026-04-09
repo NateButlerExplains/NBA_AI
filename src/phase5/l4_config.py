@@ -40,7 +40,7 @@ class L4Config:
     # --- Loss weights ---
     w_spread: float = 1.0  # Gaussian NLL for spread
     w_win: float = 0.3  # BCE for win probability
-    w_total: float = 0.15  # Gaussian NLL for total (reduced from 0.3)
+    w_total: float = 0.0  # Disabled: total head was hurting spread (MAE 105 off)
     w_consistency: float = 0.1  # MSE between Phi(mu/sigma) and win_prob
 
     # --- ATS classification head ---

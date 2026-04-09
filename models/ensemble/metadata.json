@@ -1,0 +1,7 @@
+{
+    "description": "Equal-weight ensemble of Phase5, Phase3, Linear, Tree, MLP",
+    "component_models": ["Phase5", "Phase3", "Linear", "Tree", "MLP"],
+    "method": "spread: arithmetic average, win_prob: log-odds average",
+    "min_components": 2,
+    "created_at": "2026-04-02"
+}

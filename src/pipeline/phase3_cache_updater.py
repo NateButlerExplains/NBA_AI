@@ -1,12 +1,11 @@
 """
-Phase 3 Cache Updater: detect new games and rebuild the Phase 3 cache.
+Phase 3 Cache Updater: detect new games and incrementally update the cache.
 
 The Phase 3 transformer cache consists of several interrelated files
 (game_features.pt, season_index.pt, gamestates_cache.pt, player_mapping.json,
-team_mapping.json). These are tightly coupled -- e.g. player_mapping indices
-must be consistent across all games. For the MVP, we detect new games and
-trigger a full cache rebuild when needed, rather than attempting incremental
-updates that risk index inconsistencies.
+team_mapping.json). Incremental updates load the existing cache, process only
+new games, and merge them in. Player mapping indices are append-only to
+preserve consistency. Falls back to a full rebuild if the cache is missing.
 
 Usage:
     from src.pipeline.phase3_cache_updater import Phase3CacheUpdater
@@ -142,9 +141,11 @@ class Phase3CacheUpdater:
 
     def append_new_games(self, dry_run: bool = False) -> int:
         """
-        Append new games to the cache. Since the Phase 3 cache files are
-        tightly coupled (player_mapping indices, season_index references),
-        this triggers a full rebuild when new games are detected.
+        Append new games to the cache incrementally.
+
+        Tries an incremental update first (load existing cache, process only
+        new games, merge). Falls back to a full rebuild if the cache is
+        missing or incomplete.
 
         Args:
             dry_run: If True, report what would be done without modifying the cache.
@@ -159,31 +160,42 @@ class Phase3CacheUpdater:
 
         if dry_run:
             logger.info(
-                "[DRY RUN] Would rebuild cache with %d new games "
-                "(total would be %d)",
+                "[DRY RUN] Would update cache with %d new games " "(total would be %d)",
                 len(new_games),
                 len(self._load_cached_game_ids()) + len(new_games),
             )
             return len(new_games)
 
-        logger.info(
-            "Rebuilding Phase 3 cache with %d new games at %s",
-            len(new_games),
-            self.cache_dir,
-        )
-
         # Import here to avoid circular imports and heavy module loading at init
-        from src.transformer.phase2.cache_builder import build_cache
+        from src.transformer.phase2.cache_builder import build_cache, update_cache
 
-        result = build_cache(
-            seasons=self.seasons,
+        # Try incremental update first
+        logger.info(
+            "Phase 3 cache has %d new games — triggering incremental update",
+            len(new_games),
+        )
+        result = update_cache(
+            new_game_ids=new_games,
             cache_dir=str(self.cache_dir),
             db_path=self.db_path,
         )
 
+        # Fall back to full rebuild if incremental update couldn't run
+        if result is None:
+            logger.info(
+                "Falling back to full cache rebuild with %d new games at %s",
+                len(new_games),
+                self.cache_dir,
+            )
+            result = build_cache(
+                seasons=self.seasons,
+                cache_dir=str(self.cache_dir),
+                db_path=self.db_path,
+            )
+
         n_total = result["n_games"]
         logger.info(
-            "Cache rebuild complete: %d total games (%d new)",
+            "Cache update complete: %d total games (%d new)",
             n_total,
             len(new_games),
         )

@@ -142,6 +142,21 @@ def update_database(
 
     logging.info(f"=== Updating database for {season} ===")
 
+    # Check for large backfill and warn user
+    try:
+        n_needing_pbp = len(get_games_needing_pbp_update(season, db_path))
+        n_needing_box = len(get_games_needing_boxscores(season, db_path))
+        n_pending = max(n_needing_pbp, n_needing_box)
+        if n_pending > 20:
+            est_minutes = (n_pending // 10) * 0.5 + 2  # rough estimate
+            logging.info(
+                f"  Backfill detected: ~{n_pending} games need updating. "
+                f"This involves many NBA API calls with rate-limit pauses "
+                f"and may take ~{est_minutes:.0f}+ minutes."
+            )
+    except Exception:
+        pass  # Don't let the estimate check block the actual update
+
     # STEP 1: Update Schedule
     update_schedule(season)
 
