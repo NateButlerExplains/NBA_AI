@@ -96,8 +96,8 @@ def fetch_birth_year(person_id):
                     return int(year_str)
                 except ValueError:
                     logger.warning(
-                        f"Could not parse birth year from '{birthdate_str}' "
-                        f"for person_id={person_id}"
+                        "Could not parse birth year for person_id=%s",
+                        person_id,
                     )
                     return None
     return None

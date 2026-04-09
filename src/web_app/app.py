@@ -168,16 +168,11 @@ def create_app(predictor):
             return jsonify(outbound_game_data)
 
         except ValueError as e:
-            return (
-                jsonify({"error": str(e)}),
-                400,
-            )
-        except Exception as e:
+            logging.warning("Bad request in get_game_data: %s", e)
+            return jsonify({"error": "Invalid request parameters"}), 400
+        except Exception:
             logging.exception("Error in get_game_data")
-            return (
-                jsonify({"error": f"Unable to fetch game data: {str(e)}"}),
-                500,
-            )
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.after_request
     def add_header(response):

@@ -22,6 +22,8 @@ Error Handling:
 - The API returns appropriate error messages and HTTP status codes for invalid inputs, missing parameters, or unexpected server errors.
 """
 
+import logging
+
 from flask import Blueprint, jsonify, request
 
 from src.config import config
@@ -146,11 +148,8 @@ def games():
 
         return jsonify(data)
     except ValueError as ve:
-        return jsonify({"error": str(ve)}), 400
-    except Exception as e:
-        import logging
-        import traceback
-
-        logging.error(f"API error: {str(e)}")
-        logging.error(traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+        logging.warning("Bad API request: %s", ve)
+        return jsonify({"error": "Invalid request parameters"}), 400
+    except Exception:
+        logging.exception("API error")
+        return jsonify({"error": "Internal server error"}), 500

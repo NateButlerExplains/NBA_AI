@@ -276,6 +276,6 @@ def dashboard_data():
         live_only = request.args.get("live_only", "true").lower() == "true"
         data = _fetch_dashboard_data(predictor=predictor, live_only=live_only)
         return jsonify(data)
-    except Exception as e:
+    except Exception:
         logging.exception("Error fetching dashboard data")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500

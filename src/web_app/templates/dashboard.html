@@ -220,7 +220,7 @@
         function updateFilters() {
             const predictor = document.getElementById("predictorSelect").value;
             const liveOnly = document.getElementById("liveOnlyToggle").checked;
-            window.location.href = `/dashboard?predictor=${predictor}&live_only=${liveOnly}`;
+            window.location.href = `/dashboard?predictor=${encodeURIComponent(predictor)}&live_only=${encodeURIComponent(liveOnly)}`;
         }
 
         function loadDashboard() {
