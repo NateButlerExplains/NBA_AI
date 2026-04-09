@@ -21,6 +21,8 @@ from pathlib import Path
 
 from src.config import config
 from src.database import DB_PATH, get_db
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 from src.logging_config import setup_logging
 from src.utils import determine_current_season, get_current_eastern_datetime
 
@@ -90,22 +92,25 @@ class PipelineOrchestrator:
             summary["errors"].append(f"database_update: {stage_result['error']}")
 
         # Stage 2: PBP enrichment (parse raw PBP into player-level stats)
+        # Only runs if the enrichment script/data is available
         stage_result = self._run_stage(
             "pbp_enrichment",
             lambda: self._stage_pbp_enrichment(dry_run),
         )
         summary["stages"]["pbp_enrichment"] = stage_result
-        if stage_result.get("error"):
-            summary["errors"].append(f"pbp_enrichment: {stage_result['error']}")
 
-        # Stage 3: L1 incremental updates
-        stage_result = self._run_stage(
-            "l1_update",
-            lambda: self._stage_l1_update(dry_run),
-        )
-        summary["stages"]["l1_update"] = stage_result
-        if stage_result.get("error"):
-            summary["errors"].append(f"l1_update: {stage_result['error']}")
+        # Stage 3: L1 incremental updates (requires Phase 5 checkpoint)
+        l1_checkpoint = PROJECT_ROOT / "models" / "phase5" / "l1.pt"
+        if l1_checkpoint.exists():
+            stage_result = self._run_stage(
+                "l1_update",
+                lambda: self._stage_l1_update(dry_run),
+            )
+            summary["stages"]["l1_update"] = stage_result
+            if stage_result.get("error"):
+                summary["errors"].append(f"l1_update: {stage_result['error']}")
+        else:
+            logger.debug("Skipping L1 update (no Phase 5 checkpoint)")
 
         summary["total_time"] = round(time.time() - t_start, 1)
 
@@ -396,16 +401,28 @@ class PipelineOrchestrator:
             save_predictions,
         )
 
-        # Run each predictor — Phase5 first (primary), then legacy predictors
-        predictors_to_run = [
-            "Phase5",
-            "Phase3",
-            "Baseline",
-            "Linear",
-            "Tree",
-            "MLP",
-            "Ensemble",
-        ]
+        # Determine which predictors are available based on model files
+        predictors_to_run = ["Baseline"]  # Always available (formula-based)
+
+        # Legacy ML models (need .joblib/.pth files)
+        if (PROJECT_ROOT / "models" / "linear" / "model.joblib").exists():
+            predictors_to_run.append("Linear")
+        if (PROJECT_ROOT / "models" / "tree" / "model.joblib").exists():
+            predictors_to_run.append("Tree")
+        if (PROJECT_ROOT / "models" / "mlp" / "model.pth").exists():
+            predictors_to_run.append("MLP")
+
+        # Deep learning models (need checkpoints)
+        if (PROJECT_ROOT / "models" / "phase5" / "l3l4.pt").exists():
+            predictors_to_run.append("Phase5")
+        if (PROJECT_ROOT / "models" / "phase3" / "model.pt").exists():
+            predictors_to_run.append("Phase3")
+
+        # Ensemble (needs at least 2 component models to have predictions)
+        if len(predictors_to_run) >= 3:  # Baseline + at least 2 others
+            predictors_to_run.append("Ensemble")
+
+        logger.info(f"Available predictors: {predictors_to_run}")
         total_preds = 0
         results_by_predictor = {}
 
