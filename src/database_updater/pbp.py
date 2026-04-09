@@ -146,7 +146,8 @@ def get_pbp(game_ids, pbp_endpoint="both", stage_logger=None):
 
     validate_game_ids(game_ids)
 
-    thread_pool_size = min(32, os.cpu_count() * 5)
+    # Limit concurrency to avoid NBA API throttling during catch-up
+    thread_pool_size = min(3, os.cpu_count() or 4)
     results = {}
 
     endpoint_settings = {
