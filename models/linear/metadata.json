@@ -1,7 +1,7 @@
 {
   "model_type": "Linear",
   "version": "0.5",
-  "model_file": "models/ridge_v0.5_mae9.7.joblib",
+  "model_file": "models/linear/model.joblib",
   "train_seasons": [
     "2000-2001",
     "2001-2002",

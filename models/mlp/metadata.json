@@ -1,7 +1,7 @@
 {
   "model_type": "MLP",
   "version": "0.5",
-  "model_file": "models/mlp_v0.5_mae9.5.pth",
+  "model_file": "models/mlp/model.pth",
   "train_seasons": [
     "2000-2001",
     "2001-2002",

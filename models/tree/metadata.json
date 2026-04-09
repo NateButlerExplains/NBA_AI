@@ -1,7 +1,7 @@
 {
   "model_type": "Tree",
   "version": "0.5",
-  "model_file": "models/xgboost_v0.5_mae9.6.joblib",
+  "model_file": "models/tree/model.joblib",
   "train_seasons": [
     "2000-2001",
     "2001-2002",

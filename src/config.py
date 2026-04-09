@@ -22,6 +22,7 @@ Global Variables:
 """
 
 import os
+from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
@@ -49,7 +50,8 @@ def load_config():
         dict: A dictionary containing the application configuration.
     """
     # Open and read the YAML configuration file
-    with open("config.yaml", "r") as file:
+    config_path = Path(__file__).resolve().parent.parent / "config.yaml"
+    with open(config_path, "r") as file:
         config = yaml.safe_load(file)
 
     # Function to replace placeholders in the config values with environment variables

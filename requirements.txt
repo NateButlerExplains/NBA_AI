@@ -21,12 +21,12 @@ scipy==1.16.3
 xgboost==3.1.2
 joblib==1.5.2
 
-# PyTorch - Optional for public release (MLP/Ensemble predictors)
-# Required for transformer training (Phase 1+ neural model, needs CUDA GPU)
-# CPU version (MLP predictor only):
-#   --extra-index-url https://download.pytorch.org/whl/cpu
-#   torch==2.8.0+cpu
-# GPU version (transformer training):
+# PyTorch — NOT included here; install it separately.
+# Required for: MLP predictor, Phase5 (hierarchical), Phase3 (transformer), and Ensemble.
+# Without PyTorch, Baseline/Linear/Tree predictors still work.
+# CPU-only (sufficient for MLP inference):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# GPU / CUDA 12.4 (needed for Phase3/Phase5 training):
 #   pip install torch --index-url https://download.pytorch.org/whl/cu124
 
 # NBA API

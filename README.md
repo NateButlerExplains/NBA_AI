@@ -9,7 +9,6 @@
 * [Web App & Dashboard](#web-app--dashboard)
 * [Prediction Engines](#prediction-engines)
 * [Quick Start](#quick-start)
-* [Development Status](#development-status)
 
 ## Project Overview
 
@@ -90,7 +89,7 @@ git clone https://github.com/NBA-Betting/NBA_AI.git
 cd NBA_AI
 
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 cp .env.example .env
@@ -98,7 +97,7 @@ cp .env.example .env
 
 ### 2. Download the Starter Database
 
-Download `NBA_AI_starter.sqlite.gz` from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases) and extract it:
+Download `NBA_AI_starter.sqlite.gz` from [GitHub Releases](https://github.com/NBA-Betting/NBA_AI/releases) into the project root, then extract it:
 
 ```bash
 python -c "import gzip, shutil; shutil.copyfileobj(gzip.open('NBA_AI_starter.sqlite.gz','rb'), open('data/NBA_AI_starter.sqlite','wb'))"
@@ -155,25 +154,4 @@ python scripts/train_legacy_models.py --cutoff-date 2026-03-31
 
 ---
 
-## Development Status
-
-**This project is a stable release. No active development is planned.**
-
-### Disclaimer
-
-This is a personal side project provided "as is" with no guarantees of quality, functionality, or ongoing maintenance. While I'll try to address issues, I can't promise timely responses or fixes.
-
-**For production or commercial use**: Consider using [SportsRadar](https://sportradar.com/), the official NBA data partner. Their API would greatly simplify data management compared to scraping the NBA Stats API. I use this approach only because I can't justify the cost for a personal project.
-
-### Usage Notes
-
-- **Data collection**: The web app reads from the database — it does not fetch from the NBA API on page load. Run the daily pipeline to keep data current.
-
-- **API rate limits**: The pipeline uses rate-limited requests to external APIs (NBA Stats, ESPN, Covers.com). Large backfills automatically throttle to avoid being blocked. Do not run multiple pipeline instances simultaneously.
-
-- **Season restrictions**: By default, the web app allows seasons 2023-2024 through 2025-2026. To restrict or expand this, modify `valid_seasons` in `config.yaml`.
-
-### Technical Notes
-
-- Database: SQLite with complete pipeline (Schedule → Players → Injuries → Betting → PBP → GameStates → Boxscores → Features → Predictions)
-- Built with Python, Flask, SQLite, PyTorch, scikit-learn, XGBoost, and nba_api
+*This is a personal side project provided "as is" with no guarantees of quality, functionality, or ongoing maintenance.*
