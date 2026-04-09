@@ -1,15 +1,15 @@
 """
 config.py
 
-This module is responsible for loading and managing the application's configuration settings. 
-It utilizes environment variables for dynamic configuration and reads settings from a YAML file. 
+This module is responsible for loading and managing the application's configuration settings.
+It utilizes environment variables for dynamic configuration and reads settings from a YAML file.
 
 The module performs the following main tasks:
 1. Loads environment variables from a .env file to ensure they are available within the application.
 2. Loads configuration data from 'config.yaml', a YAML configuration file.
-3. Replaces placeholders in the configuration values with corresponding environment variables, 
+3. Replaces placeholders in the configuration values with corresponding environment variables,
    allowing for dynamic and flexible configuration management.
-4. Computes absolute file paths for specific configuration settings, such as database paths, 
+4. Computes absolute file paths for specific configuration settings, such as database paths,
    ensuring consistent and correct file access regardless of the working directory.
 5. Ensures a secret key is set for the web application, generating one if necessary.
 
@@ -17,7 +17,7 @@ Main Functions:
 - `load_config()`: Loads and processes the application configuration.
 
 Global Variables:
-- `config`: A dictionary containing the processed configuration settings, accessible globally 
+- `config`: A dictionary containing the processed configuration settings, accessible globally
   within the application.
 """
 
@@ -28,6 +28,12 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Auto-detect PROJECT_ROOT if not set (directory containing config.yaml)
+if not os.getenv("PROJECT_ROOT"):
+    os.environ["PROJECT_ROOT"] = os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
 
 
 def load_config():
