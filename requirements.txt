@@ -38,7 +38,7 @@ nba_api==1.11.3
 python-json-logger==4.0.0
 
 # Testing
-pytest==9.0.1
+pytest==9.0.3
 pytest-cov==7.0.0
 
 # Visualization
