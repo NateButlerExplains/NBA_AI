@@ -248,7 +248,7 @@ def _load_player_games(conn, person_id: int) -> list[dict]:
         WHERE pb.player_id = ?
         AND g.status = 3
         AND pb.min > 0
-        AND g.season_type IN ('Regular Season', 'Playoffs', 'PlayIn')
+        AND g.season_type IN ('Regular Season', 'Post Season')
         ORDER BY g.date_time_utc
         """,
         (person_id,),

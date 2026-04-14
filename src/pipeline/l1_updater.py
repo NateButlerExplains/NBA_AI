@@ -631,7 +631,7 @@ class L1IncrementalUpdater:
                 JOIN Games g ON pb.game_id = g.game_id
                 WHERE g.status = 3
                 AND pb.min > 0
-                AND g.season_type IN ('Regular Season', 'Playoffs', 'PlayIn')
+                AND g.season_type IN ('Regular Season', 'Post Season')
                 GROUP BY pb.player_id
                 """).fetchall()
 
