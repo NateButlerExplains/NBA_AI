@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timedelta
 
 from flask import Flask, flash, jsonify, render_template, request
+from flask_cors import CORS
 
 from src.config import config
 from src.games_api.api import api as api_blueprint
@@ -30,6 +31,7 @@ from src.games_api.games import get_games, get_games_for_date
 from src.web_app.dashboard import dashboard as dashboard_blueprint
 from src.utils import validate_date_format
 from src.web_app.game_data_processor import get_user_datetime, process_game_data
+from src.web_app.insightbet_api import insightbet as insightbet_blueprint
 
 # Configuration variables
 DB_PATH = config["database"]["path"]
@@ -52,11 +54,25 @@ def create_app(predictor):
     # Store the predictor in the app configuration
     app.config["PREDICTOR"] = predictor
 
+    # Enable CORS for InsightBet React frontend
+    CORS(app, resources={
+        r"/api/insightbet/*": {
+            "origins": [
+                "http://localhost:3000",
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+            ]
+        }
+    })
+
     # Register the API blueprint
     app.register_blueprint(api_blueprint, url_prefix="/api")
 
     # Register the dashboard blueprint
     app.register_blueprint(dashboard_blueprint)
+
+    # Register the InsightBet API blueprint
+    app.register_blueprint(insightbet_blueprint, url_prefix="/api")
 
     @app.route("/")
     def home():
