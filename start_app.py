@@ -86,7 +86,9 @@ def main():
     app = create_app(predictor=predictor)
 
     # Run the app
-    app.run(debug=debug_mode)
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)
 
 
 if __name__ == "__main__":
