@@ -147,17 +147,20 @@ def get_insightbet_games():
     if not date_str:
         date_str = datetime.utcnow().strftime("%Y-%m-%d")
 
+    # Try to use real database first
     try:
         raw = get_games_for_date(date_str, predictor=DEFAULT_PREDICTOR)
-        # get_games_for_date returns dict keyed by game_id
-        games = [_format_game(game_id, g) for game_id, g in raw.items()]
-        return jsonify({"games": games, "date": date_str, "count": len(games)})
+        if raw:  # Only return real data if we got results
+            games = [_format_game(game_id, g) for game_id, g in raw.items()]
+            return jsonify({"games": games, "date": date_str, "count": len(games)})
     except Exception as e:
-        logging.warning("Database not available, using mock games for date %s: %s", date_str, str(e))
-        # Fallback to mock data when database is unavailable
-        raw = _get_mock_games()
-        games = [_format_game(game_id, g) for game_id, g in raw.items()]
-        return jsonify({"games": games, "date": date_str, "count": len(games), "source": "mock"})
+        logging.warning("Database error: %s", str(e))
+
+    # Fallback to mock data
+    logging.info("Returning mock games for date %s", date_str)
+    raw = _get_mock_games()
+    games = [_format_game(game_id, g) for game_id, g in raw.items()]
+    return jsonify({"games": games, "date": date_str, "count": len(games), "source": "mock"})
 
 
 @insightbet.route("/insightbet/games/<game_id>", methods=["GET"])
