@@ -9,3 +9,10 @@ services:
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: DATABASE_PATH
+        value: "/var/data/NBA_AI_dev.sqlite"
+      - key: PROJECT_ROOT
+        value: "/app"
+    disk:
+      - path: /var/data
+        sizeGB: 2
