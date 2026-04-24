@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: nba-ai
+    runtime: docker
+    plan: free
+    buildCommand: ""
+    startCommand: "python start_app.py"
+    healthCheckPath: /
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
